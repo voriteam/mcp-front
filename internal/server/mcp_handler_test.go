@@ -560,47 +560,71 @@ func TestHandleStreamablePost(t *testing.T) {
 }
 
 func TestHandleStreamableGet(t *testing.T) {
-	t.Run("successful SSE stream", func(t *testing.T) {
-		// Create a mock SSE backend
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Verify Accept header
-			assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
-
-			// Send SSE response
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.WriteHeader(http.StatusOK)
-
-			// Send some SSE data
-			_, _ = w.Write([]byte("data: {\"type\":\"connected\"}\n\n"))
-			w.(http.Flusher).Flush()
-		}))
-		defer backend.Close()
-
-		// Configure client
+	t.Run("SSE adapter sends endpoint event", func(t *testing.T) {
 		serverConfig := &config.MCPClientConfig{
-			URL:           backend.URL,
+			URL:           "http://backend.example.com",
 			TransportType: config.MCPClientTypeStreamable,
-			Headers: map[string]string{
-				"Authorization": "Bearer test-token",
-			},
-			Timeout: 5 * time.Second,
+			Timeout:       5 * time.Second,
 		}
 
 		handler := createTestMCPHandler("test-streamable", serverConfig)
 
-		// Create request with Accept header
+		ctx, cancel := context.WithCancel(context.Background())
 		req := httptest.NewRequest(http.MethodGet, "/test-streamable", nil)
 		req.Header.Set("Accept", "text/event-stream")
+		req = req.WithContext(ctx)
 		rec := httptest.NewRecorder()
 
-		// Call the function
-		handler.handleStreamableGet(context.Background(), rec, req, "user@example.com", serverConfig)
+		done := make(chan struct{})
+		go func() {
+			handler.handleStreamableGet(ctx, rec, req, "user@example.com", serverConfig)
+			close(done)
+		}()
 
-		// Verify response
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		<-done
+
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
-		assert.Contains(t, rec.Body.String(), "data: {\"type\":\"connected\"}")
+		assert.Contains(t, rec.Body.String(), "event: endpoint")
+		assert.Contains(t, rec.Body.String(), "data: http://localhost:8080/test-streamable/message")
+	})
+
+	t.Run("SSE adapter relays POST responses", func(t *testing.T) {
+		serverConfig := &config.MCPClientConfig{
+			URL:           "http://backend.example.com",
+			TransportType: config.MCPClientTypeStreamable,
+			Timeout:       5 * time.Second,
+		}
+
+		handler := createTestMCPHandler("test-streamable", serverConfig)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		getReq := httptest.NewRequest(http.MethodGet, "/test-streamable", nil)
+		getReq.Header.Set("Accept", "text/event-stream")
+		getReq = getReq.WithContext(ctx)
+		getRec := httptest.NewRecorder()
+
+		// Start GET handler in background
+		go func() {
+			handler.handleStreamableGet(ctx, getRec, getReq, "user@example.com", serverConfig)
+		}()
+
+		// Wait until the relay subscription is active
+		for !handler.msgRelay.hasSubscribers("user@example.com") {
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		// Send a relay message directly
+		handler.msgRelay.publish("user@example.com", []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`))
+
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+
+		assert.Contains(t, getRec.Body.String(), `"tools"`)
 	})
 
 	t.Run("missing Accept header", func(t *testing.T) {
@@ -669,29 +693,34 @@ func TestStreamableTransportRouting(t *testing.T) {
 		assert.Contains(t, rec.Body.String(), `{"result": "ok"}`)
 	})
 
-	t.Run("GET request routes to handleStreamableGet", func(t *testing.T) {
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("data: test\n\n"))
-		}))
-		defer backend.Close()
-
+	t.Run("GET request routes to handleStreamableGet SSE adapter", func(t *testing.T) {
 		serverConfig := &config.MCPClientConfig{
-			URL:           backend.URL,
+			URL:           "http://backend.example.com",
 			TransportType: config.MCPClientTypeStreamable,
+			Timeout:       5 * time.Second,
 		}
 
 		handler := createTestMCPHandler("test-streamable", serverConfig)
 
+		ctx, cancel := context.WithCancel(context.Background())
 		req := httptest.NewRequest(http.MethodGet, "/test-streamable", nil)
 		req.Header.Set("Accept", "text/event-stream")
+		req = req.WithContext(ctx)
 		rec := httptest.NewRecorder()
 
-		handler.ServeHTTP(rec, req)
+		done := make(chan struct{})
+		go func() {
+			handler.ServeHTTP(rec, req)
+			close(done)
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		<-done
 
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+		assert.Contains(t, rec.Body.String(), "event: endpoint")
 	})
 
 	t.Run("unsupported method returns 405", func(t *testing.T) {

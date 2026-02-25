@@ -13,8 +13,9 @@ import (
 	"github.com/dgellow/mcp-front/internal/log"
 )
 
-// forwardStreamablePostToBackend handles POST requests for streamable-http transport
-func forwardStreamablePostToBackend(ctx context.Context, w http.ResponseWriter, r *http.Request, config *config.MCPClientConfig) {
+// forwardStreamablePostToBackend handles POST requests for streamable-http transport.
+// onResponse, if non-nil, is called with the backend response headers before the response is forwarded.
+func forwardStreamablePostToBackend(ctx context.Context, w http.ResponseWriter, r *http.Request, config *config.MCPClientConfig, onResponse func(http.Header)) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.LogErrorWithFields("streamable_proxy", "Failed to read request body", map[string]any{
@@ -62,6 +63,10 @@ func forwardStreamablePostToBackend(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	defer resp.Body.Close()
+
+	if onResponse != nil {
+		onResponse(resp.Header)
+	}
 
 	contentType := resp.Header.Get("Content-Type")
 
