@@ -16,16 +16,19 @@ RUN go mod download && go mod verify
 COPY . .
 
 # Build the application with optimizations
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags='-w -s -extldflags "-static"' \
     -a -installsuffix cgo \
     -o mcp-front ./cmd/mcp-front
 
+FROM us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.27.0 AS toolbox
+
 # Final stage - use alpine for Docker CLI and tools
 FROM alpine:latest
 
-# Install runtime dependencies
-RUN apk --no-cache add ca-certificates docker-cli wget
+# Install runtime dependencies; gcompat provides glibc shim for toolbox binary
+RUN apk --no-cache add ca-certificates docker-cli wget gcompat
 
 # Create non-root user
 RUN addgroup -g 1001 -S mcp && \
@@ -35,6 +38,9 @@ WORKDIR /app
 
 # Copy the binary from builder stage
 COPY --from=builder /app/mcp-front .
+
+# Copy genai-toolbox binary
+COPY --from=toolbox /toolbox ./toolbox
 
 # Copy default config
 COPY config-oauth.example.json ./config.json
