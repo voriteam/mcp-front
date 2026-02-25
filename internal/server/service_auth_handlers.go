@@ -65,12 +65,14 @@ func (h *ServiceAuthHandlers) ConnectHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Start OAuth flow - service OAuth always returns to interstitial page
+	returnURL := r.URL.Query().Get("return")
+
 	authURL, err := h.oauthClient.StartOAuthFlow(
 		r.Context(),
 		userEmail,
 		serviceName,
 		serviceConfig,
+		returnURL,
 	)
 	if err != nil {
 		log.LogErrorWithFields("oauth_handlers", "Failed to start OAuth flow", map[string]any{
@@ -84,6 +86,25 @@ func (h *ServiceAuthHandlers) ConnectHandler(w http.ResponseWriter, r *http.Requ
 
 	// Redirect to authorization URL
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// appendParams appends query parameters to a base URL, defaulting to /my/tokens if empty.
+func appendParams(baseURL string, params url.Values) string {
+	if baseURL == "" {
+		baseURL = "/my/tokens"
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "/my/tokens"
+	}
+	q := parsed.Query()
+	for k, vals := range params {
+		for _, v := range vals {
+			q.Set(k, v)
+		}
+	}
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
 }
 
 // CallbackHandler handles OAuth callbacks from services
@@ -104,7 +125,7 @@ func (h *ServiceAuthHandlers) CallbackHandler(w http.ResponseWriter, r *http.Req
 	state := r.URL.Query().Get("state")
 	errorParam := r.URL.Query().Get("error")
 
-	// Handle OAuth errors
+	// Handle OAuth errors from the service provider
 	if errorParam != "" {
 		errorDesc := r.URL.Query().Get("error_description")
 		log.LogWarnWithFields("oauth_handlers", "OAuth error from provider", map[string]any{
@@ -113,16 +134,21 @@ func (h *ServiceAuthHandlers) CallbackHandler(w http.ResponseWriter, r *http.Req
 			"description": errorDesc,
 		})
 
-		// Service OAuth errors always redirect back to interstitial page
-		// This maintains user context in the upstream OAuth flow
 		errorMsg := getUserFriendlyOAuthError(errorParam, errorDesc)
 
-		// Redirect to interstitial page with error
-		errorURL := fmt.Sprintf("/oauth/services?error=%s&service=%s&error_msg=%s",
-			url.QueryEscape(errorParam),
-			url.QueryEscape(serviceName),
-			url.QueryEscape(errorMsg),
-		)
+		// Recover the return URL from the state so we can redirect back with context
+		returnURL := ""
+		if state != "" {
+			if stateData, decodeErr := h.oauthClient.DecodeState(state); decodeErr == nil {
+				returnURL = stateData.ReturnURL
+			}
+		}
+
+		errorURL := appendParams(returnURL, url.Values{
+			"error":     {errorParam},
+			"service":   {serviceName},
+			"error_msg": {errorMsg},
+		})
 		http.Redirect(w, r, errorURL, http.StatusFound)
 		return
 	}
@@ -139,8 +165,8 @@ func (h *ServiceAuthHandlers) CallbackHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Handle callback
-	userEmail, err := h.oauthClient.HandleCallback(
+	// Handle callback — returnURL is recovered from the signed state
+	userEmail, returnURL, err := h.oauthClient.HandleCallback(
 		r.Context(),
 		serviceName,
 		code,
@@ -153,18 +179,16 @@ func (h *ServiceAuthHandlers) CallbackHandler(w http.ResponseWriter, r *http.Req
 			"error":   err.Error(),
 		})
 
-		// User-friendly error message
 		message := "Failed to complete OAuth authorization"
 		if strings.Contains(err.Error(), "invalid state") {
 			message = "OAuth session expired. Please try again"
 		}
 
-		// Service OAuth callback errors always redirect back to interstitial page
-		// This maintains user context in the upstream OAuth flow
-		errorURL := fmt.Sprintf("/oauth/services?error=callback_failed&service=%s&error_msg=%s",
-			url.QueryEscape(serviceName),
-			url.QueryEscape(message),
-		)
+		errorURL := appendParams(returnURL, url.Values{
+			"error":     {"callback_failed"},
+			"service":   {serviceName},
+			"error_msg": {message},
+		})
 		http.Redirect(w, r, errorURL, http.StatusFound)
 		return
 	}
@@ -181,10 +205,10 @@ func (h *ServiceAuthHandlers) CallbackHandler(w http.ResponseWriter, r *http.Req
 		displayName = serviceConfig.UserAuthentication.DisplayName
 	}
 
-	// Service OAuth success redirects to /my/tokens with success message
-	successURL := fmt.Sprintf("/my/tokens?message=%s&type=success",
-		url.QueryEscape(fmt.Sprintf("Successfully connected to %s", displayName)),
-	)
+	successURL := appendParams(returnURL, url.Values{
+		"message": {fmt.Sprintf("Successfully connected to %s", displayName)},
+		"type":    {"success"},
+	})
 	http.Redirect(w, r, successURL, http.StatusFound)
 }
 

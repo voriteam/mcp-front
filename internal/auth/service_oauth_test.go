@@ -37,6 +37,7 @@ func TestStartOAuthFlow(t *testing.T) {
 		"user@example.com",
 		"test-service",
 		serviceConfig,
+		"",
 	)
 
 	require.NoError(t, err)
@@ -85,6 +86,7 @@ func TestHandleCallback(t *testing.T) {
 		"user@example.com",
 		"test-service",
 		serviceConfig,
+		"/oauth/services?state=upstream-signed-state",
 	)
 	require.NoError(t, err)
 
@@ -95,7 +97,7 @@ func TestHandleCallback(t *testing.T) {
 	require.NotEmpty(t, state)
 
 	// Handle callback
-	userEmail, err := client.HandleCallback(
+	userEmail, returnURL, err := client.HandleCallback(
 		context.Background(),
 		"test-service",
 		"test-code",
@@ -105,6 +107,7 @@ func TestHandleCallback(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "user@example.com", userEmail)
+	assert.Equal(t, "/oauth/services?state=upstream-signed-state", returnURL)
 
 	// Verify token was stored
 	storedToken, err := store.GetUserToken(context.Background(), "user@example.com", "test-service")
