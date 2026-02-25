@@ -1,13 +1,16 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dgellow/mcp-front/internal/client"
 	"github.com/dgellow/mcp-front/internal/config"
@@ -43,6 +46,8 @@ type MCPHandler struct {
 	sharedSSEServer *server.SSEServer // Shared SSE server for stdio servers
 	sharedMCPServer *server.MCPServer // Shared MCP server for stdio servers
 	getUserToken    UserTokenFunc     // Function to get formatted user tokens
+	sessionStore    *streamableSessionStore
+	msgRelay        *messageRelay
 }
 
 // NewMCPHandler creates a new MCP handler with session management
@@ -67,6 +72,8 @@ func NewMCPHandler(
 		sharedSSEServer: sharedSSEServer,
 		sharedMCPServer: sharedMCPServer,
 		getUserToken:    getUserToken,
+		sessionStore:    newStreamableSessionStore(),
+		msgRelay:        newMessageRelay(),
 	}
 }
 
@@ -356,18 +363,140 @@ func (h *MCPHandler) forwardMessageToBackend(ctx context.Context, w http.Respons
 	}
 }
 
-// handleStreamablePost handles POST requests for streamable-http transport
+// handleStreamablePost handles POST requests for streamable-http transport.
+// If an active SSE relay exists for the user (SSE transport mode), the backend response is
+// forwarded via the relay channel and the client receives 202 Accepted. Otherwise the response
+// is returned directly (streamable-http mode).
 func (h *MCPHandler) handleStreamablePost(ctx context.Context, w http.ResponseWriter, r *http.Request, userEmail string, config *config.MCPClientConfig) {
+	// Inject stored session ID if the client didn't include one.
+	if r.Header.Get("Mcp-Session-Id") == "" && userEmail != "" {
+		if id, ok := h.sessionStore.get(userEmail); ok {
+			r = r.Clone(ctx)
+			r.Header.Set("Mcp-Session-Id", id)
+		}
+	}
+
 	log.LogInfoWithFields("mcp", "Proxying streamable POST request to backend", map[string]any{
-		"service": h.serverName,
-		"user":    userEmail,
-		"backend": config.URL,
+		"service":    h.serverName,
+		"user":       userEmail,
+		"backend":    config.URL,
+		"hasSession": r.Header.Get("Mcp-Session-Id") != "",
 	})
 
-	forwardStreamablePostToBackend(ctx, w, r, config)
+	if userEmail != "" && h.msgRelay.hasSubscribers(userEmail) {
+		h.handleStreamablePostWithRelay(ctx, w, r, userEmail, config)
+		return
+	}
+
+	var onResponse func(http.Header)
+	if userEmail != "" {
+		onResponse = func(headers http.Header) {
+			if sessionID := headers.Get("Mcp-Session-Id"); sessionID != "" {
+				h.sessionStore.store(userEmail, sessionID)
+			}
+		}
+	}
+
+	forwardStreamablePostToBackend(ctx, w, r, config, onResponse)
 }
 
-// handleStreamableGet handles GET requests for streamable-http transport
+// handleStreamablePostWithRelay forwards a POST to the backend, relays the response to the
+// active SSE stream, and returns 202 Accepted to the MCP client.
+func (h *MCPHandler) handleStreamablePostWithRelay(ctx context.Context, w http.ResponseWriter, r *http.Request, userEmail string, config *config.MCPClientConfig) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.LogErrorWithFields("mcp", "Failed to read request body", map[string]any{
+			"service": h.serverName,
+			"error":   err.Error(),
+		})
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.URL, bytes.NewReader(body))
+	if err != nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	copyRequestHeaders(req.Header, r.Header)
+	for k, v := range config.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	client := &http.Client{Timeout: config.Timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.LogErrorWithFields("mcp", "Backend request failed in relay mode", map[string]any{
+			"service": h.serverName,
+			"error":   err.Error(),
+		})
+		errData, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"error":   map[string]any{"code": -32603, "message": "backend request failed"},
+		})
+		h.msgRelay.publish(userEmail, errData)
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	defer resp.Body.Close()
+
+	if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
+		h.sessionStore.store(userEmail, sessionID)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	log.LogInfoWithFields("mcp", "Backend response in relay mode", map[string]any{
+		"service":     h.serverName,
+		"user":        userEmail,
+		"status":      resp.StatusCode,
+		"contentType": contentType,
+	})
+
+	if strings.HasPrefix(contentType, "text/event-stream") {
+		scanner := bufio.NewScanner(resp.Body)
+		published := 0
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "data: ") {
+				payload := []byte(strings.TrimPrefix(line, "data: "))
+				if len(payload) > 0 {
+					h.msgRelay.publish(userEmail, payload)
+					published++
+				}
+			}
+		}
+		log.LogInfoWithFields("mcp", "Relayed SSE events from backend", map[string]any{
+			"service":   h.serverName,
+			"user":      userEmail,
+			"published": published,
+		})
+	} else {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if len(respBody) > 0 {
+			published := h.msgRelay.publish(userEmail, respBody)
+			log.LogInfoWithFields("mcp", "Relayed JSON response from backend", map[string]any{
+				"service":   h.serverName,
+				"user":      userEmail,
+				"bytes":     len(respBody),
+				"published": published,
+			})
+		}
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleStreamableGet handles GET requests for streamable-http transport.
+// It acts as an SSE adapter: sends an endpoint event so SSE transport clients (like Claude Code)
+// know where to POST, then relays POST responses back through this stream.
+// The backend session is created lazily on the first POST; we do not pre-initialize here to
+// avoid sending a duplicate initialize to the backend.
 func (h *MCPHandler) handleStreamableGet(ctx context.Context, w http.ResponseWriter, r *http.Request, userEmail string, config *config.MCPClientConfig) {
 	acceptHeader := r.Header.Get("Accept")
 	if !strings.Contains(acceptHeader, "text/event-stream") {
@@ -375,11 +504,129 @@ func (h *MCPHandler) handleStreamableGet(ctx context.Context, w http.ResponseWri
 		return
 	}
 
-	log.LogInfoWithFields("mcp", "Proxying streamable GET request to backend", map[string]any{
+	var ch chan []byte
+	var unsub func()
+	if userEmail != "" {
+		ch, unsub = h.msgRelay.subscribe(userEmail)
+		defer unsub()
+	}
+
+	log.LogInfoWithFields("mcp", "Opening SSE adapter for streamable backend", map[string]any{
 		"service": h.serverName,
 		"user":    userEmail,
 		"backend": config.URL,
 	})
 
-	forwardSSEToBackend(ctx, w, r, config)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		log.LogError("Response writer doesn't support flushing")
+		return
+	}
+
+	// Send endpoint event with the full message URL so SSE transport clients can POST.
+	endpointURL := fmt.Sprintf("%s/%s/message", strings.TrimSuffix(h.setupBaseURL, "/"), h.serverName)
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURL)
+	flusher.Flush()
+
+	if ch == nil {
+		<-ctx.Done()
+		return
+	}
+
+	for {
+		select {
+		case data := <-ch:
+			log.LogInfoWithFields("mcp", "Relaying message to SSE client", map[string]any{
+				"service": h.serverName,
+				"user":    userEmail,
+				"bytes":   len(data),
+			})
+			// Compact to a single line to keep SSE format valid.
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, data); err == nil {
+				data = compact.Bytes()
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// ensureBackendSession returns a stored session ID or creates one via POST initialize.
+func (h *MCPHandler) ensureBackendSession(ctx context.Context, userEmail string, cfg *config.MCPClientConfig) string {
+	if id, ok := h.sessionStore.get(userEmail); ok {
+		return id
+	}
+
+	initBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]any{
+				"name":    h.info.Name,
+				"version": h.info.Version,
+			},
+		},
+	})
+	if err != nil {
+		log.LogErrorWithFields("mcp", "Failed to marshal initialize request", map[string]any{
+			"service": h.serverName,
+			"error":   err.Error(),
+		})
+		return ""
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(initBody))
+	if err != nil {
+		log.LogErrorWithFields("mcp", "Failed to create initialize request", map[string]any{
+			"service": h.serverName,
+			"error":   err.Error(),
+		})
+		return ""
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for k, v := range cfg.Headers {
+		req.Header.Set(k, v)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.LogErrorWithFields("mcp", "Backend initialize request failed", map[string]any{
+			"service": h.serverName,
+			"error":   err.Error(),
+		})
+		return ""
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		log.LogWarnWithFields("mcp", "Backend did not return Mcp-Session-Id", map[string]any{
+			"service": h.serverName,
+			"status":  resp.StatusCode,
+		})
+		return ""
+	}
+
+	h.sessionStore.store(userEmail, sessionID)
+	log.LogInfoWithFields("mcp", "Backend session established", map[string]any{
+		"service":   h.serverName,
+		"user":      userEmail,
+		"sessionID": sessionID,
+	})
+	return sessionID
 }
