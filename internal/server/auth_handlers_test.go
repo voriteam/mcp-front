@@ -128,7 +128,7 @@ func TestAuthenticationBoundaries(t *testing.T) {
 		serviceOAuthClient,
 	)
 
-	tokenHandlers := NewTokenHandlers(store, map[string]*config.MCPClientConfig{}, true, serviceOAuthClient, []byte(oauthConfig.EncryptionKey))
+	tokenHandlers := NewTokenHandlers(store, map[string]*config.MCPClientConfig{}, serviceOAuthClient, []byte(oauthConfig.EncryptionKey))
 
 	// Build mux with middlewares
 	mux := http.NewServeMux()
