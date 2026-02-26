@@ -35,12 +35,13 @@ type AuthHandlers struct {
 }
 
 type UpstreamOAuthState struct {
-	Identity    idp.Identity `json:"identity"`
-	ClientID    string       `json:"client_id"`
-	RedirectURI string       `json:"redirect_uri"`
-	Scopes      []string     `json:"scopes"`
-	Audience    []string     `json:"audience"`
-	State       string       `json:"state"`
+	Identity      idp.Identity `json:"identity"`
+	ClientID      string       `json:"client_id"`
+	RedirectURI   string       `json:"redirect_uri"`
+	Scopes        []string     `json:"scopes"`
+	Audience      []string     `json:"audience"`
+	State         string       `json:"state"`
+	PKCEChallenge string       `json:"pkce_challenge,omitempty"`
 }
 
 func NewAuthHandlers(
@@ -613,12 +614,13 @@ func (h *AuthHandlers) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandlers) signUpstreamOAuthState(params *oauth.AuthorizeParams, identity idp.Identity) (string, error) {
 	state := UpstreamOAuthState{
-		Identity:    identity,
-		ClientID:    params.ClientID,
-		RedirectURI: params.RedirectURI,
-		Scopes:      params.Scopes,
-		Audience:    params.Audience,
-		State:       params.State,
+		Identity:      identity,
+		ClientID:      params.ClientID,
+		RedirectURI:   params.RedirectURI,
+		Scopes:        params.Scopes,
+		Audience:      params.Audience,
+		State:         params.State,
+		PKCEChallenge: params.PKCEChallenge,
 	}
 
 	return h.oauthStateToken.Sign(state)
@@ -763,11 +765,12 @@ func (h *AuthHandlers) CompleteOAuthHandler(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 
 	params := &oauth.AuthorizeParams{
-		ClientID:    upstreamOAuthState.ClientID,
-		RedirectURI: upstreamOAuthState.RedirectURI,
-		State:       upstreamOAuthState.State,
-		Scopes:      upstreamOAuthState.Scopes,
-		Audience:    upstreamOAuthState.Audience,
+		ClientID:      upstreamOAuthState.ClientID,
+		RedirectURI:   upstreamOAuthState.RedirectURI,
+		State:         upstreamOAuthState.State,
+		Scopes:        upstreamOAuthState.Scopes,
+		Audience:      upstreamOAuthState.Audience,
+		PKCEChallenge: upstreamOAuthState.PKCEChallenge,
 	}
 
 	grant, err := h.authServer.IssueCode(params, upstreamOAuthState.Identity)
