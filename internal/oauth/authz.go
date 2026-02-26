@@ -12,24 +12,26 @@ import (
 )
 
 type AuthorizationServer struct {
-	accessTokenSigner  crypto.TokenSigner
-	refreshTokenSigner crypto.TokenSigner
-	codeLifespan       time.Duration
-	accessTokenTTL     time.Duration
-	refreshTokenTTL    time.Duration
-	issuer             string
-	minStateEntropy    int
-	refreshTokenScopes []string
+	accessTokenSigner       crypto.TokenSigner
+	refreshTokenSigner      crypto.TokenSigner
+	codeLifespan            time.Duration
+	accessTokenTTL          time.Duration
+	refreshTokenTTL         time.Duration
+	issuer                  string
+	minStateEntropy         int
+	refreshTokenScopes      []string
+	requireResourceParam    bool
 }
 
 type AuthorizationServerConfig struct {
-	JWTSecret          []byte
-	Issuer             string
-	AccessTokenTTL     time.Duration
-	RefreshTokenTTL    time.Duration
-	CodeLifespan       time.Duration
-	MinStateEntropy    int
-	RefreshTokenScopes []string
+	JWTSecret               []byte
+	Issuer                  string
+	AccessTokenTTL          time.Duration
+	RefreshTokenTTL         time.Duration
+	CodeLifespan            time.Duration
+	MinStateEntropy         int
+	RefreshTokenScopes      []string
+	RequireResourceParam    bool
 }
 
 func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer, error) {
@@ -48,14 +50,15 @@ func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer
 	}
 
 	return &AuthorizationServer{
-		accessTokenSigner:  crypto.NewTokenSigner(cfg.JWTSecret, cfg.AccessTokenTTL),
-		refreshTokenSigner: crypto.NewTokenSigner(cfg.JWTSecret, cfg.RefreshTokenTTL),
-		codeLifespan:       cfg.CodeLifespan,
-		accessTokenTTL:     cfg.AccessTokenTTL,
-		refreshTokenTTL:    cfg.RefreshTokenTTL,
-		issuer:             cfg.Issuer,
-		minStateEntropy:    cfg.MinStateEntropy,
-		refreshTokenScopes: cfg.RefreshTokenScopes,
+		accessTokenSigner:    crypto.NewTokenSigner(cfg.JWTSecret, cfg.AccessTokenTTL),
+		refreshTokenSigner:   crypto.NewTokenSigner(cfg.JWTSecret, cfg.RefreshTokenTTL),
+		codeLifespan:         cfg.CodeLifespan,
+		accessTokenTTL:       cfg.AccessTokenTTL,
+		refreshTokenTTL:      cfg.RefreshTokenTTL,
+		issuer:               cfg.Issuer,
+		minStateEntropy:      cfg.MinStateEntropy,
+		refreshTokenScopes:   cfg.RefreshTokenScopes,
+		requireResourceParam: cfg.RequireResourceParam,
 	}, nil
 }
 
