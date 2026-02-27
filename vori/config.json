@@ -1,0 +1,134 @@
+{
+  "version": "v0.0.1-DEV_EDITION_EXPECT_CHANGES",
+  "proxy": {
+    "name": "Vori MCP Proxy",
+    "baseURL": { "$env": "BASE_URL" },
+    "addr": ":8080",
+    "auth": {
+      "kind": "oauth",
+      "issuer": { "$env": "BASE_URL" },
+      "idp": {
+        "provider": "google",
+        "clientId": { "$env": "GOOGLE_CLIENT_ID" },
+        "clientSecret": { "$env": "GOOGLE_CLIENT_SECRET" },
+        "redirectUri": { "$env": "OAUTH_REDIRECT_URI" }
+      },
+      "allowedDomains": ["vori.com"],
+      "allowedOrigins": ["https://claude.ai"],
+      "tokenTtl": "4h",
+      "storage": "firestore",
+      "gcpProject": { "$env": "GOOGLE_CLOUD_PROJECT" },
+      "firestoreDatabase": "(default)",
+      "firestoreCollection": "mcp_front_oauth_clients",
+      "jwtSecret": { "$env": "JWT_SECRET" },
+      "encryptionKey": { "$env": "ENCRYPTION_KEY" }
+    }
+  },
+  "mcpServers": {
+    "prod-db-replica": {
+      "transportType": "stdio",
+      "command": "/app/toolbox",
+      "args": ["--prebuilt", "cloud-sql-postgres", "--stdio"],
+      "env": {
+        "CLOUD_SQL_POSTGRES_PROJECT": { "$env": "GOOGLE_CLOUD_PROJECT" },
+        "CLOUD_SQL_POSTGRES_REGION": "us-central1",
+        "CLOUD_SQL_POSTGRES_INSTANCE": { "$env": "CLOUD_SQL_POSTGRES_INSTANCE" },
+        "CLOUD_SQL_POSTGRES_DATABASE": { "$env": "CLOUD_SQL_POSTGRES_DATABASE" },
+        "CLOUD_SQL_POSTGRES_IP_TYPE": { "$env": "CLOUD_SQL_POSTGRES_IP_TYPE" }
+      },
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "clientId": { "$env": "GOOGLE_CLIENT_ID" },
+        "clientSecret": { "$env": "GOOGLE_CLIENT_SECRET" },
+        "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
+      }
+    },
+    "bigquery": {
+      "transportType": "stdio",
+      "command": "/app/toolbox",
+      "args": ["--prebuilt", "bigquery", "--stdio"],
+      "env": {
+        "BIGQUERY_PROJECT": { "$env": "GOOGLE_CLOUD_PROJECT" }
+      },
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "clientId": { "$env": "GOOGLE_CLIENT_ID" },
+        "clientSecret": { "$env": "GOOGLE_CLIENT_SECRET" },
+        "scopes": ["https://www.googleapis.com/auth/bigquery"],
+        "inject": {
+          "env": "GOOGLE_OAUTH_ACCESS_TOKEN"
+        }
+      }
+    },
+    "datadog": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.us3.datadoghq.com/api/unstable/mcp-server/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "headers": {
+        "DD_API_KEY": { "$env": "DD_API_KEY" },
+        "DD_APPLICATION_KEY": { "$env": "DD_APPLICATION_KEY" }
+      },
+      "requiresUserToken": false
+    },
+    "sentry": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.sentry.dev/mcp",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://mcp.sentry.dev/oauth/authorize",
+        "tokenUrl": "https://mcp.sentry.dev/oauth/token",
+        "scopes": ["org:read", "project:read", "project:write", "team:read", "event:write"],
+        "displayName": "Sentry"
+      }
+    },
+    "github": {
+      "transportType": "streamable-http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "clientId": { "$env": "GITHUB_CLIENT_ID" },
+        "clientSecret": { "$env": "GITHUB_CLIENT_SECRET" },
+        "authorizationUrl": "https://github.com/login/oauth/authorize",
+        "tokenUrl": "https://github.com/login/oauth/access_token",
+        "scopes": ["repo", "read:org", "gist"],
+        "displayName": "GitHub"
+      }
+    },
+    "linear": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.linear.app/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "clientId": { "$env": "LINEAR_CLIENT_ID" },
+        "clientSecret": { "$env": "LINEAR_CLIENT_SECRET" },
+        "authorizationUrl": "https://linear.app/oauth/authorize",
+        "tokenUrl": "https://api.linear.app/oauth/token",
+        "scopes": ["read"],
+        "displayName": "Linear"
+      }
+    }
+  }
+}

@@ -42,9 +42,6 @@ COPY --from=builder /app/mcp-front .
 # Copy genai-toolbox binary
 COPY --from=toolbox /toolbox ./toolbox
 
-# Copy default config
-COPY config-oauth.example.json ./config.json
-
 # Change ownership
 RUN chown -R mcp:mcp /app
 
@@ -57,6 +54,9 @@ EXPOSE 8080
 # Health check using existing /health endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Copy Vori config
+COPY vori/config.json ./config.json
 
 # Run the application
 CMD ["./mcp-front", "-config", "config.json"]
