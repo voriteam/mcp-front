@@ -48,7 +48,7 @@ func updateHandler() {
 
 	var handler slog.Handler
 	if strings.ToUpper(os.Getenv("LOG_FORMAT")) == "JSON" {
-		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: level,
 			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 				if a.Key == slog.TimeKey {
@@ -67,7 +67,7 @@ func updateHandler() {
 			},
 		})
 	} else {
-		handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: level,
 			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 				if a.Key == slog.TimeKey {
