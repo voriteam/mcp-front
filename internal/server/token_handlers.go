@@ -79,11 +79,20 @@ func (h *TokenHandlers) ListTokensHandler(w http.ResponseWriter, r *http.Request
 						service.ConnectURL = h.serviceOAuthClient.GetConnectURL(name, "/my/tokens")
 					}
 
-					// Check if OAuth is already connected
+					// Check if OAuth is already connected and token is still valid
 					storedToken, err := h.tokenStore.GetUserToken(r.Context(), userEmail, name)
 					if err == nil && storedToken.Type == storage.TokenTypeOAuth {
-						service.IsOAuthConnected = true
-						service.HasToken = true
+						if h.serviceOAuthClient != nil {
+							if err := h.serviceOAuthClient.RefreshToken(r.Context(), userEmail, name, serverConfig); err != nil {
+								service.OAuthError = "Connection expired. Please reconnect."
+							} else {
+								service.IsOAuthConnected = true
+								service.HasToken = true
+							}
+						} else {
+							service.IsOAuthConnected = true
+							service.HasToken = true
+						}
 					}
 				} else if serverConfig.UserAuthentication.Type == config.UserAuthTypeManual {
 					if serverConfig.UserAuthentication.Instructions != "" {

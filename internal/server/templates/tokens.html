@@ -240,6 +240,9 @@
                     </form>
                 </div>
                 {{else}}
+                {{if .OAuthError}}
+                <div class="message error" style="margin-bottom: 10px;">{{.OAuthError}}</div>
+                {{end}}
                 <div class="oauth-status">
                     <a href="{{.ConnectURL}}" style="display: inline;">
                         <button type="button" class="oauth">Connect with {{.DisplayName}}</button>

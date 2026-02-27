@@ -35,6 +35,7 @@ type ServiceTokenData struct {
 	AuthType         string // "oauth", "bearer", or "none"
 	SupportsOAuth    bool   // Whether this service supports OAuth authentication
 	IsOAuthConnected bool   // Whether the user has connected OAuth for this service
+	OAuthError       string // Error message if OAuth token refresh failed
 	ConnectURL       string // Pre-generated OAuth connect URL
 }
 

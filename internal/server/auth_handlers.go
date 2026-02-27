@@ -697,8 +697,16 @@ func (h *AuthHandlers) ServiceSelectionHandler(w http.ResponseWriter, r *http.Re
 
 			token, _ := h.storage.GetUserToken(r.Context(), userEmail, name)
 			status := "not_connected"
-			if token != nil {
-				status = "connected"
+			if token != nil && token.Type == storage.TokenTypeOAuth {
+				if h.serviceOAuthClient != nil {
+					if err := h.serviceOAuthClient.RefreshToken(r.Context(), userEmail, name, serverConfig); err != nil {
+						status = "not_connected"
+					} else {
+						status = "connected"
+					}
+				} else {
+					status = "connected"
+				}
 			}
 
 			displayName := name
