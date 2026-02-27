@@ -60,3 +60,6 @@ Dockerfile.*
 
 # Logs
 *.log
+
+vori/
+!vori/config.json

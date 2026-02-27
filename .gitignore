@@ -58,3 +58,7 @@ config-oauth-local.json
 # Temporary directories
 tmp/
 temp/
+
+vori/.env
+!vori/config.json
+.playwright-mcp/
