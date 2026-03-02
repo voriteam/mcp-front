@@ -41,7 +41,7 @@ func TestValidateTokenMiddleware_GCPFallback(t *testing.T) {
 	})
 
 	t.Run("custom token works with nil GCP validator", func(t *testing.T) {
-		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil)
+		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil, nil)
 		wrapped := middleware(handler)
 
 		req := httptest.NewRequest(http.MethodGet, "/gateway/sse", nil)
@@ -54,7 +54,7 @@ func TestValidateTokenMiddleware_GCPFallback(t *testing.T) {
 	})
 
 	t.Run("invalid token rejected with nil GCP validator", func(t *testing.T) {
-		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil)
+		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil, nil)
 		wrapped := middleware(handler)
 
 		req := httptest.NewRequest(http.MethodGet, "/gateway/sse", nil)
@@ -66,7 +66,7 @@ func TestValidateTokenMiddleware_GCPFallback(t *testing.T) {
 	})
 
 	t.Run("missing authorization header rejected", func(t *testing.T) {
-		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil)
+		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil, nil)
 		wrapped := middleware(handler)
 
 		req := httptest.NewRequest(http.MethodGet, "/gateway/sse", nil)
@@ -74,6 +74,20 @@ func TestValidateTokenMiddleware_GCPFallback(t *testing.T) {
 
 		wrapped.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("JWT auth ignores X-On-Behalf-Of header", func(t *testing.T) {
+		middleware := NewValidateTokenMiddleware(authServer, "https://test.example.com", true, nil, nil)
+		wrapped := middleware(handler)
+
+		req := httptest.NewRequest(http.MethodGet, "/gateway/sse", nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		req.Header.Set("X-On-Behalf-Of", "impersonated@example.com")
+		rec := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "user@example.com", rec.Body.String())
 	})
 }
 

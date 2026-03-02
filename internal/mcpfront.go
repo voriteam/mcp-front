@@ -412,7 +412,7 @@ func buildHTTPHandler(
 		}
 
 		if authServer != nil {
-			mcpMiddlewares = append(mcpMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator))
+			mcpMiddlewares = append(mcpMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator, authConfig.AllowedDomains))
 		}
 
 		if len(serverConfig.ServiceAuths) > 0 {
@@ -432,7 +432,7 @@ func buildHTTPHandler(
 		corsMiddleware,
 	}
 	if authServer != nil {
-		gatewayMiddlewares = append(gatewayMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator))
+		gatewayMiddlewares = append(gatewayMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator, authConfig.AllowedDomains))
 	}
 	gatewayMiddlewares = append(gatewayMiddlewares, mcpRecover)
 

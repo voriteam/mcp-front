@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/dgellow/mcp-front/internal/crypto"
+	"github.com/dgellow/mcp-front/internal/emailutil"
 	jsonwriter "github.com/dgellow/mcp-front/internal/json"
 	"github.com/dgellow/mcp-front/internal/log"
 )
@@ -50,7 +52,7 @@ func GenerateJWTSecret(providedSecret string) ([]byte, error) {
 	return secret, nil
 }
 
-func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, acceptIssuerAudience bool, gcpValidator *GCPIDTokenValidator) func(http.Handler) http.Handler {
+func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, acceptIssuerAudience bool, gcpValidator *GCPIDTokenValidator, allowedDomains []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -98,6 +100,19 @@ func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, 
 					return
 				}
 				userEmail = gcpEmail
+
+				if onBehalf := r.Header.Get("X-On-Behalf-Of"); onBehalf != "" {
+					domain := emailutil.ExtractDomain(onBehalf)
+					if domain == "" || (len(allowedDomains) > 0 && !slices.Contains(allowedDomains, domain)) {
+						jsonwriter.WriteForbidden(w, "Impersonation target not in allowed domains")
+						return
+					}
+					log.LogInfoWithFields("oauth", "GCP service account impersonating user", map[string]any{
+						"service_account": gcpEmail,
+						"on_behalf_of":    onBehalf,
+					})
+					userEmail = onBehalf
+				}
 			} else {
 				jsonwriter.WriteUnauthorizedRFC9728(w, "Invalid or expired token", metadataURI)
 				return
