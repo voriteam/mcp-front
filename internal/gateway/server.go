@@ -95,7 +95,7 @@ func defaultCreateTransport(_ string, conf *config.MCPClientConfig) (client.MCPC
 
 func (s *Server) HandleInitialize(_ string) map[string]any {
 	return map[string]any{
-		"protocolVersion": "2025-11-25",
+		"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},

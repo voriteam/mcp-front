@@ -683,7 +683,7 @@ func (h *MCPHandler) ensureBackendSession(ctx context.Context, userEmail string,
 		"id":      1,
 		"method":  "initialize",
 		"params": map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
 				"name":    h.info.Name,
