@@ -735,7 +735,7 @@ func (h *AuthHandlers) ServiceSelectionHandler(w http.ResponseWriter, r *http.Re
 
 	pageData := ServicesPageData{
 		Services:    services,
-		State:       url.QueryEscape(signedState),
+		State:       signedState,
 		ReturnURL:   url.QueryEscape(returnURL),
 		Message:     message,
 		MessageType: messageType,

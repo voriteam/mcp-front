@@ -348,6 +348,51 @@ func TestOAuthEndpointHandlers(t *testing.T) {
 		assert.Contains(t, rec.Body.String(), "Missing state parameter")
 	})
 
+	t.Run("ServiceSelectionHandler does not double-encode state in links", func(t *testing.T) {
+		stateToken := crypto.NewTokenSigner([]byte(oauthConfig.EncryptionKey), 10*time.Minute)
+		upstreamState := UpstreamOAuthState{
+			Params: oauth.AuthorizeParams{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:12345/callback",
+				State:       "client-state",
+				Audience:    []string{"https://test.example.com/gateway"},
+			},
+			Identity: idp.Identity{
+				ProviderType:  "google",
+				Email:         "test@example.com",
+				EmailVerified: true,
+				Name:          "Test User",
+				Picture:       "https://example.com/photo.jpg",
+				Domain:        "example.com",
+			},
+		}
+		signedState, err := stateToken.Sign(upstreamState)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodGet, "/oauth/services?state="+signedState, nil)
+		sessionData := session.BrowserCookie{
+			Email:   "test@example.com",
+			Expires: time.Now().Add(24 * time.Hour),
+		}
+		jsonData, err := json.Marshal(sessionData)
+		require.NoError(t, err)
+		encrypted, err := sessionEncryptor.Encrypt(string(jsonData))
+		require.NoError(t, err)
+		req.AddCookie(&http.Cookie{
+			Name:  "mcp_session",
+			Value: encrypted,
+		})
+
+		rec := httptest.NewRecorder()
+		authHandlers.ServiceSelectionHandler(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		body := rec.Body.String()
+		assert.NotContains(t, body, "%253D", "State should not be double URL-encoded")
+		assert.Contains(t, body, "/oauth/complete?state=", "Should contain complete link")
+	})
+
 	t.Run("RegisterHandler creates confidential client", func(t *testing.T) {
 		reqBody := `{
 			"redirect_uris": ["https://client.example.com/callback"],
