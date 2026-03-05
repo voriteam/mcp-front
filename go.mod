@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	cloud.google.com/go/firestore v1.20.0
-	github.com/mark3labs/mcp-go v0.43.0
+	github.com/mark3labs/mcp-go v0.44.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.45.0
 	golang.org/x/oauth2 v0.33.0
