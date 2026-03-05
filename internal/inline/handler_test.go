@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/dgellow/mcp-front/internal/jsonrpc"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/dgellow/mcp-front/internal/mcpspec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -108,7 +108,7 @@ func TestHandler_Message_Initialize(t *testing.T) {
 	result, ok := response.Result.(map[string]any)
 	require.True(t, ok)
 
-	assert.Equal(t, mcp.LATEST_PROTOCOL_VERSION, result["protocolVersion"])
+	assert.Equal(t, mcpspec.ProtocolVersion, result["protocolVersion"])
 	assert.Contains(t, result, "capabilities")
 	assert.Contains(t, result, "serverInfo")
 }

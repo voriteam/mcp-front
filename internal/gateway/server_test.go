@@ -7,6 +7,7 @@ import (
 
 	"github.com/dgellow/mcp-front/internal/client"
 	"github.com/dgellow/mcp-front/internal/config"
+	"github.com/dgellow/mcp-front/internal/mcpspec"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,7 +91,7 @@ func TestServer_HandleInitialize(t *testing.T) {
 	s := newTestServer(map[string]*mockMCPClient{})
 	result := s.HandleInitialize("user@example.com")
 
-	assert.Equal(t, mcp.LATEST_PROTOCOL_VERSION, result["protocolVersion"])
+	assert.Equal(t, mcpspec.ProtocolVersion, result["protocolVersion"])
 	serverInfo := result["serverInfo"].(map[string]any)
 	assert.Equal(t, "gateway", serverInfo["name"])
 }

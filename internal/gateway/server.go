@@ -10,6 +10,7 @@ import (
 	"github.com/dgellow/mcp-front/internal/client"
 	"github.com/dgellow/mcp-front/internal/config"
 	"github.com/dgellow/mcp-front/internal/log"
+	"github.com/dgellow/mcp-front/internal/mcpspec"
 	"github.com/dgellow/mcp-front/internal/oauth"
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -96,7 +97,7 @@ func defaultCreateTransport(_ string, conf *config.MCPClientConfig) (client.MCPC
 
 func (s *Server) HandleInitialize(_ string) map[string]any {
 	return map[string]any{
-		"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
+		"protocolVersion": mcpspec.ProtocolVersion,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},

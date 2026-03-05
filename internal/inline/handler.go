@@ -11,8 +11,8 @@ import (
 	jsonwriter "github.com/dgellow/mcp-front/internal/json"
 	"github.com/dgellow/mcp-front/internal/jsonrpc"
 	"github.com/dgellow/mcp-front/internal/log"
+	"github.com/dgellow/mcp-front/internal/mcpspec"
 	"github.com/dgellow/mcp-front/internal/sse"
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // MCPServer defines the interface that Handler depends on
@@ -142,7 +142,7 @@ func (h *Handler) handleMessage(w http.ResponseWriter, r *http.Request) {
 // handleInitialize handles the initialize request
 func (h *Handler) handleInitialize(w http.ResponseWriter, req *jsonrpc.Request) {
 	result := map[string]any{
-		"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
+		"protocolVersion": mcpspec.ProtocolVersion,
 		"capabilities":    h.server.GetCapabilities(),
 		"serverInfo": map[string]any{
 			"name":    h.name,
