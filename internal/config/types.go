@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const DefaultAggregateDelimiter = "."
+
 // Secret is a string type that redacts itself when printed
 type Secret string
 
@@ -204,6 +206,7 @@ type MCPClientConfig struct {
 	// Aggregate server configuration
 	Servers   []string         `json:"servers,omitempty"`
 	Discovery *DiscoveryConfig `json:"discovery,omitempty"`
+	Delimiter string           `json:"delimiter,omitempty"`
 }
 
 // IsStdio returns true if this is a stdio-based MCP server
