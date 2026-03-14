@@ -460,8 +460,11 @@ func formatTools(tools []cachedTool, streamline bool) []map[string]any {
 			entry["description"] = desc
 		}
 
-		if len(t.Tool.RawInputSchema) > 0 {
-			raw := t.Tool.RawInputSchema
+		raw := t.Tool.RawInputSchema
+		if len(raw) == 0 && t.Tool.InputSchema.Type != "" {
+			raw, _ = json.Marshal(t.Tool.InputSchema)
+		}
+		if len(raw) > 0 {
 			if streamline {
 				raw = streamlineInputSchema(raw)
 			}
@@ -469,8 +472,6 @@ func formatTools(tools []cachedTool, streamline bool) []map[string]any {
 			if err := json.Unmarshal(raw, &schema); err == nil {
 				entry["inputSchema"] = schema
 			}
-		} else if t.Tool.InputSchema.Type != "" {
-			entry["inputSchema"] = t.Tool.InputSchema
 		}
 		result = append(result, entry)
 	}
