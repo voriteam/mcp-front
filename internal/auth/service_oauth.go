@@ -427,6 +427,22 @@ func (c *ServiceOAuthClient) RefreshToken(
 			"user":    userEmail,
 			"error":   err.Error(),
 		})
+
+		if isUnrecoverableTokenError(err) {
+			if delErr := c.storage.DeleteUserToken(ctx, userEmail, serviceName); delErr != nil {
+				log.LogErrorWithFields("service_oauth", "Failed to delete invalid token", map[string]any{
+					"service": serviceName,
+					"user":    userEmail,
+					"error":   delErr.Error(),
+				})
+			} else {
+				log.LogInfoWithFields("service_oauth", "Deleted invalid token after refresh failure", map[string]any{
+					"service": serviceName,
+					"user":    userEmail,
+				})
+			}
+		}
+
 		return fmt.Errorf("failed to refresh token: %w", err)
 	}
 
@@ -449,6 +465,15 @@ func (c *ServiceOAuthClient) RefreshToken(
 	})
 
 	return nil
+}
+
+// isUnrecoverableTokenError returns true if the error indicates the refresh
+// token is permanently invalid and the user must re-authenticate.
+func isUnrecoverableTokenError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "invalid_grant") ||
+		strings.Contains(msg, "invalid_client") ||
+		strings.Contains(msg, "unauthorized_client")
 }
 
 // GetConnectURL generates the OAuth connect URL for a service
