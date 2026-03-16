@@ -345,11 +345,13 @@ func (s *Server) discoverTools(ctx context.Context, userEmail string, session *u
 
 	deadline := time.After(discoveryDeadline)
 	received := 0
+	responded := make(map[string]bool, remoteCount)
 
 	for received < remoteCount {
 		select {
 		case r := <-results:
 			received++
+			responded[r.serviceName] = true
 			if r.err != nil {
 				log.LogWarnWithFields("gateway", "Failed to discover tools from backend", map[string]any{
 					"service": r.serviceName,
@@ -366,10 +368,20 @@ func (s *Server) discoverTools(ctx context.Context, userEmail string, session *u
 				})
 			}
 		case <-deadline:
+			var pending []string
+			for name := range s.serverConfigs {
+				if _, isInline := s.inlineProviders[name]; isInline {
+					continue
+				}
+				if !responded[name] {
+					pending = append(pending, name)
+				}
+			}
 			log.LogWarnWithFields("gateway", "Discovery deadline reached, returning partial results", map[string]any{
-				"received": received,
-				"total":    remoteCount,
-				"user":     userEmail,
+				"received":         received,
+				"total":            remoteCount,
+				"user":             userEmail,
+				"pending_services": pending,
 			})
 			return allCached, nil
 		}
