@@ -85,18 +85,9 @@
       "url": "https://api.githubcopilot.com/mcp/",
       "options": { "timeout": "30s" },
       "headers": {
-        "Authorization": { "$userToken": "Bearer {{token}}" }
+        "Authorization": { "$env": "GITHUB_MCP_PAT" }
       },
-      "requiresUserToken": true,
-      "userAuthentication": {
-        "type": "oauth",
-        "clientId": { "$env": "GITHUB_CLIENT_ID" },
-        "clientSecret": { "$env": "GITHUB_CLIENT_SECRET" },
-        "authorizationUrl": "https://github.com/login/oauth/authorize",
-        "tokenUrl": "https://github.com/login/oauth/access_token",
-        "scopes": ["repo", "read:org", "gist"],
-        "displayName": "GitHub"
-      }
+      "requiresUserToken": false
     },
     "linear": {
       "transportType": "streamable-http",
