@@ -35,6 +35,7 @@ func AuthorizationServerMetadata(issuer string) (map[string]any, error) {
 		"grant_types_supported": []string{
 			"authorization_code",
 			"refresh_token",
+			"urn:ietf:params:oauth:grant-type:token-exchange",
 		},
 		"code_challenge_methods_supported": []string{
 			"S256",
