@@ -128,6 +128,7 @@ func TestAuthenticationBoundaries(t *testing.T) {
 		sessionEncryptor,
 		map[string]*config.MCPClientConfig{},
 		serviceOAuthClient,
+		nil,
 	)
 
 	tokenHandlers := NewTokenHandlers(store, map[string]*config.MCPClientConfig{}, serviceOAuthClient, []byte(oauthConfig.EncryptionKey))
@@ -270,6 +271,7 @@ func TestOAuthEndpointHandlers(t *testing.T) {
 		sessionEncryptor,
 		map[string]*config.MCPClientConfig{},
 		serviceOAuthClient,
+		nil,
 	)
 
 	t.Run("WellKnownHandler", func(t *testing.T) {
@@ -583,6 +585,7 @@ func TestUpstreamOAuthStatePreservesPKCE(t *testing.T) {
 		store,
 		sessionEncryptor,
 		map[string]*config.MCPClientConfig{},
+		nil,
 		nil,
 	)
 

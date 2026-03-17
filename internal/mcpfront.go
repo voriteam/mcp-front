@@ -56,7 +56,7 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 		return nil, fmt.Errorf("failed to setup storage: %w", err)
 	}
 
-	authServer, idpProvider, sessionEncryptor, authConfig, serviceOAuthClient, err := setupAuthentication(ctx, cfg, store)
+	authServer, idpProvider, sessionEncryptor, authConfig, serviceOAuthClient, gcpValidator, err := setupAuthentication(ctx, cfg, store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup authentication: %w", err)
 	}
@@ -103,6 +103,7 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 		sessionEncryptor,
 		authConfig,
 		serviceOAuthClient,
+		gcpValidator,
 		sessionManager,
 		userTokenService,
 		baseURL.String(),
@@ -224,17 +225,17 @@ func setupStorage(ctx context.Context, cfg config.Config) (storage.Storage, erro
 	return storage.NewMemoryStorage(), nil
 }
 
-func setupAuthentication(ctx context.Context, cfg config.Config, store storage.Storage) (*oauth.AuthorizationServer, idp.Provider, crypto.Encryptor, config.OAuthAuthConfig, *auth.ServiceOAuthClient, error) {
+func setupAuthentication(ctx context.Context, cfg config.Config, store storage.Storage) (*oauth.AuthorizationServer, idp.Provider, crypto.Encryptor, config.OAuthAuthConfig, *auth.ServiceOAuthClient, *oauth.GCPAccessTokenValidator, error) {
 	oauthAuth := cfg.Proxy.Auth
 	if oauthAuth == nil {
-		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil
+		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, nil
 	}
 
 	log.LogDebug("initializing OAuth components")
 
 	idpProvider, err := idp.NewProvider(oauthAuth.IDP)
 	if err != nil {
-		return nil, nil, nil, config.OAuthAuthConfig{}, nil, fmt.Errorf("failed to create identity provider: %w", err)
+		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to create identity provider: %w", err)
 	}
 
 	log.LogInfoWithFields("mcpfront", "Identity provider configured", map[string]any{
@@ -243,13 +244,13 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 
 	jwtSecret, err := oauth.GenerateJWTSecret(string(oauthAuth.JWTSecret))
 	if err != nil {
-		return nil, nil, nil, config.OAuthAuthConfig{}, nil, fmt.Errorf("failed to setup JWT secret: %w", err)
+		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to setup JWT secret: %w", err)
 	}
 
 	encryptionKey := []byte(oauthAuth.EncryptionKey)
 	sessionEncryptor, err := oauth.NewSessionEncryptor(encryptionKey)
 	if err != nil {
-		return nil, nil, nil, config.OAuthAuthConfig{}, nil, fmt.Errorf("failed to create session encryptor: %w", err)
+		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to create session encryptor: %w", err)
 	}
 
 	minEntropy := 8
@@ -267,12 +268,13 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		RefreshTokenScopes: oauthAuth.RefreshTokenScopes,
 	})
 	if err != nil {
-		return nil, nil, nil, config.OAuthAuthConfig{}, nil, fmt.Errorf("failed to create authorization server: %w", err)
+		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to create authorization server: %w", err)
 	}
 
 	serviceOAuthClient := auth.NewServiceOAuthClient(store, cfg.Proxy.BaseURL, encryptionKey)
+	gcpValidator := oauth.NewGCPAccessTokenValidator()
 
-	return authServer, idpProvider, sessionEncryptor, *oauthAuth, serviceOAuthClient, nil
+	return authServer, idpProvider, sessionEncryptor, *oauthAuth, serviceOAuthClient, gcpValidator, nil
 }
 
 func buildHTTPHandler(
@@ -283,6 +285,7 @@ func buildHTTPHandler(
 	sessionEncryptor crypto.Encryptor,
 	authConfig config.OAuthAuthConfig,
 	serviceOAuthClient *auth.ServiceOAuthClient,
+	gcpValidator *oauth.GCPAccessTokenValidator,
 	sessionManager *client.StdioSessionManager,
 	userTokenService *server.UserTokenService,
 	baseURL string,
@@ -328,6 +331,7 @@ func buildHTTPHandler(
 			sessionEncryptor,
 			cfg.MCPServers,
 			serviceOAuthClient,
+			gcpValidator,
 		)
 
 		mux.Handle(route("/.well-known/oauth-authorization-server"), server.ChainMiddleware(http.HandlerFunc(authHandlers.WellKnownHandler), oauthMiddleware...))

@@ -32,6 +32,7 @@ type AuthHandlers struct {
 	mcpServers         map[string]*config.MCPClientConfig
 	oauthStateToken    crypto.TokenSigner
 	serviceOAuthClient *auth.ServiceOAuthClient
+	gcpValidator       *oauth.GCPAccessTokenValidator
 }
 
 type UpstreamOAuthState struct {
@@ -47,6 +48,7 @@ func NewAuthHandlers(
 	sessionEncryptor crypto.Encryptor,
 	mcpServers map[string]*config.MCPClientConfig,
 	serviceOAuthClient *auth.ServiceOAuthClient,
+	gcpValidator *oauth.GCPAccessTokenValidator,
 ) *AuthHandlers {
 	return &AuthHandlers{
 		authServer:         authServer,
@@ -57,6 +59,7 @@ func NewAuthHandlers(
 		mcpServers:         mcpServers,
 		oauthStateToken:    crypto.NewTokenSigner([]byte(authConfig.EncryptionKey), 10*time.Minute),
 		serviceOAuthClient: serviceOAuthClient,
+		gcpValidator:       gcpValidator,
 	}
 }
 
@@ -506,6 +509,60 @@ func (h *AuthHandlers) TokenHandler(w http.ResponseWriter, r *http.Request) {
 			} else {
 				oauth.WriteTokenError(w, http.StatusInternalServerError, oauth.NewOAuthError(oauth.ErrServerError, err.Error()))
 			}
+			return
+		}
+
+	case "urn:ietf:params:oauth:grant-type:token-exchange":
+		if h.gcpValidator == nil {
+			oauth.WriteTokenError(w, http.StatusBadRequest, oauth.NewOAuthError(oauth.ErrInvalidRequest, "Token exchange not available"))
+			return
+		}
+
+		subjectToken := r.FormValue("subject_token")
+		subjectTokenType := r.FormValue("subject_token_type")
+
+		if subjectToken == "" {
+			oauth.WriteTokenError(w, http.StatusBadRequest, oauth.NewOAuthError(oauth.ErrInvalidRequest, "Missing subject_token"))
+			return
+		}
+		if subjectTokenType != "urn:ietf:params:oauth:token-type:access_token" {
+			oauth.WriteTokenError(w, http.StatusBadRequest, oauth.NewOAuthError(oauth.ErrInvalidRequest, "subject_token_type must be urn:ietf:params:oauth:token-type:access_token"))
+			return
+		}
+
+		gcpEmail, gcpErr := h.gcpValidator.Validate(r.Context(), subjectToken)
+		if gcpErr != nil {
+			log.LogErrorWithFields("oauth", "Token exchange: GCP token validation failed", map[string]any{
+				"error": gcpErr.Error(),
+			})
+			oauth.WriteTokenError(w, http.StatusBadRequest, oauth.NewOAuthError(oauth.ErrInvalidGrant, "Invalid GCP access token"))
+			return
+		}
+
+		identity := idp.Identity{
+			ProviderType:  "gcp",
+			Email:         gcpEmail,
+			EmailVerified: true,
+		}
+
+		var scopes []string
+		if scopeStr := r.FormValue("scope"); scopeStr != "" {
+			scopes = strings.Fields(scopeStr)
+		}
+
+		var audience []string
+		for _, resource := range strings.Fields(r.FormValue("resource")) {
+			audience = append(audience, resource)
+		}
+
+		log.LogInfoWithFields("oauth", "Token exchange: issuing tokens for GCP service account", map[string]any{
+			"email":     gcpEmail,
+			"client_id": clientID,
+		})
+
+		pair, err = h.authServer.ExchangeToken(identity, client.ID, scopes, audience)
+		if err != nil {
+			oauth.WriteTokenError(w, http.StatusInternalServerError, oauth.NewOAuthError(oauth.ErrServerError, err.Error()))
 			return
 		}
 
