@@ -77,6 +77,7 @@ func TestOAuthEndpointsCORS(t *testing.T) {
 		map[string]*config.MCPClientConfig{},
 		serviceOAuthClient,
 		nil,
+		nil,
 	)
 
 	// Test endpoints that should have CORS headers

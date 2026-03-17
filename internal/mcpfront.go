@@ -323,6 +323,7 @@ func buildHTTPHandler(
 			cfg.MCPServers,
 			serviceOAuthClient,
 			[]string{"gateway"},
+			gcpValidator,
 		)
 
 		mux.Handle(route("/.well-known/oauth-authorization-server"), server.ChainMiddleware(http.HandlerFunc(authHandlers.WellKnownHandler), oauthMiddleware...))

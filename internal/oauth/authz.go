@@ -203,6 +203,13 @@ func (s *AuthorizationServer) RefreshTokens(refreshToken string, client Client, 
 	return s.issueTokenPair(claims.Identity, claims.ClientID, claims.Scopes, claims.Audience)
 }
 
+// ExchangeToken issues a token pair for a pre-validated identity.
+// Used by the RFC 8693 token exchange flow where the identity has already been
+// verified (e.g., via GCP access token validation).
+func (s *AuthorizationServer) ExchangeToken(identity idp.Identity, clientID string, scopes []string, audience []string) (*TokenPair, error) {
+	return s.issueTokenPair(identity, clientID, scopes, audience)
+}
+
 func (s *AuthorizationServer) ValidateAccessToken(token string) (*AccessTokenClaims, error) {
 	var claims AccessTokenClaims
 	if err := s.accessTokenSigner.Verify(token, &claims); err != nil {
