@@ -27,6 +27,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/storage"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
+	"golang.org/x/oauth2/google"
 )
 
 type MCPFront struct {
@@ -572,4 +573,18 @@ func buildClientCredentialsSources(servers map[string]*config.MCPClientConfig) m
 		})
 	}
 	return sources
+}
+
+func newGCPTokenSource(ctx context.Context, servers map[string]*config.MCPClientConfig) (oauth2.TokenSource, error) {
+	for _, cfg := range servers {
+		if cfg.GCPAuth {
+			ts, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
+			if err != nil {
+				return nil, fmt.Errorf("failed to create GCP default token source: %w", err)
+			}
+			log.LogInfoWithFields("gcp_auth", "GCP token source initialized from application default credentials", nil)
+			return ts, nil
+		}
+	}
+	return nil, nil
 }
