@@ -115,7 +115,7 @@
       "headers": {
         "x-goog-user-project": "vori-1bdf0"
       },
-      "forwardAuthToken": true
+      "gcpAuth": true
     },
     "notion": {
       "transportType": "streamable-http",

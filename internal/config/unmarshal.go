@@ -26,6 +26,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		Options            *Options                   `json:"options,omitempty"`
 		RequiresUserToken  bool                       `json:"requiresUserToken,omitempty"`
 		ForwardAuthToken   bool                       `json:"forwardAuthToken,omitempty"`
+		GCPAuth            bool                       `json:"gcpAuth,omitempty"`
 		UserAuthentication *UserAuthentication        `json:"userAuthentication,omitempty"`
 		ServiceAuths       []ServiceAuth              `json:"serviceAuths,omitempty"`
 		InlineConfig       json.RawMessage            `json:"inline,omitempty"`
@@ -40,6 +41,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	c.Options = raw.Options
 	c.RequiresUserToken = raw.RequiresUserToken
 	c.ForwardAuthToken = raw.ForwardAuthToken
+	c.GCPAuth = raw.GCPAuth
 	c.UserAuthentication = raw.UserAuthentication
 	c.ServiceAuths = raw.ServiceAuths
 	c.InlineConfig = raw.InlineConfig

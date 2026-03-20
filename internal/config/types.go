@@ -185,6 +185,10 @@ type MCPClientConfig struct {
 	// Forward the inbound auth token to this backend's Authorization header
 	ForwardAuthToken bool `json:"forwardAuthToken,omitempty"`
 
+	// Use GCP Application Default Credentials for this backend's Authorization header.
+	// The token is refreshed automatically before expiry.
+	GCPAuth bool `json:"gcpAuth,omitempty"`
+
 	// Inline MCP server configuration
 	InlineConfig json.RawMessage `json:"inline,omitempty"`
 }
