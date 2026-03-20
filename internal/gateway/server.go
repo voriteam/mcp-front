@@ -173,7 +173,7 @@ func (s *Server) HandleToolCall(ctx context.Context, userEmail string, namespace
 	req.Params.Name = toolName
 	req.Params.Arguments = args
 
-	if serverConfig.ForwardAuthToken || serverConfig.GCPAuth {
+	if serverConfig.ForwardAuthToken {
 		return s.callWithDynamicAuth(ctx, userEmail, serviceName, serverConfig, req)
 	}
 
