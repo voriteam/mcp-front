@@ -24,6 +24,8 @@ import (
 	"github.com/dgellow/mcp-front/internal/storage"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 type MCPFront struct {
@@ -416,7 +418,12 @@ func buildHTTPHandler(
 		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(handler, mcpMiddlewares...))
 	}
 
-	gatewayServer := gateway.NewServer(cfg.MCPServers, inlineProviders, userTokenService.GetUserToken, baseURL, cfg.Gateway.StreamlineResponses)
+	gcpTokenSource, err := newGCPTokenSource(context.Background(), cfg.MCPServers)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create GCP token source: %w", err)
+	}
+
+	gatewayServer := gateway.NewServer(cfg.MCPServers, inlineProviders, userTokenService.GetUserToken, gcpTokenSource, baseURL, cfg.Gateway.StreamlineResponses)
 	gatewayHandler := gateway.NewHandler("gateway", gatewayServer, baseURL)
 
 	gatewayMiddlewares := []server.MiddlewareFunc{
@@ -549,4 +556,18 @@ func buildStdioSSEServer(serverName, baseURL string, sessionManager *client.Stdi
 	)
 
 	return sseServer, mcpServer, nil
+}
+
+func newGCPTokenSource(ctx context.Context, servers map[string]*config.MCPClientConfig) (oauth2.TokenSource, error) {
+	for _, cfg := range servers {
+		if cfg.GCPAuth {
+			ts, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
+			if err != nil {
+				return nil, fmt.Errorf("failed to create GCP default token source: %w", err)
+			}
+			log.LogInfoWithFields("gcp_auth", "GCP token source initialized from application default credentials", nil)
+			return ts, nil
+		}
+	}
+	return nil, nil
 }

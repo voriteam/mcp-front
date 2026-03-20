@@ -14,6 +14,7 @@ import (
 	"github.com/dgellow/mcp-front/internal/mcpspec"
 	"github.com/dgellow/mcp-front/internal/oauth"
 	"github.com/mark3labs/mcp-go/mcp"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -41,6 +42,7 @@ type Server struct {
 	serverConfigs        map[string]*config.MCPClientConfig
 	inlineProviders      map[string]InlineToolProvider
 	getUserToken         UserTokenFunc
+	gcpTokenSource       oauth2.TokenSource
 	baseURL              string
 	createTransport      TransportCreator
 	streamlineResponses  bool
@@ -71,16 +73,18 @@ func NewServer(
 	serverConfigs map[string]*config.MCPClientConfig,
 	inlineProviders map[string]InlineToolProvider,
 	getUserToken UserTokenFunc,
+	gcpTokenSource oauth2.TokenSource,
 	baseURL string,
 	streamlineResponses bool,
 ) *Server {
-	return newServer(serverConfigs, inlineProviders, getUserToken, baseURL, defaultCreateTransport, streamlineResponses)
+	return newServer(serverConfigs, inlineProviders, getUserToken, gcpTokenSource, baseURL, defaultCreateTransport, streamlineResponses)
 }
 
 func newServer(
 	serverConfigs map[string]*config.MCPClientConfig,
 	inlineProviders map[string]InlineToolProvider,
 	getUserToken UserTokenFunc,
+	gcpTokenSource oauth2.TokenSource,
 	baseURL string,
 	createTransport TransportCreator,
 	streamlineResponses bool,
@@ -89,6 +93,7 @@ func newServer(
 		serverConfigs:       serverConfigs,
 		inlineProviders:     inlineProviders,
 		getUserToken:        getUserToken,
+		gcpTokenSource:      gcpTokenSource,
 		baseURL:             baseURL,
 		createTransport:     createTransport,
 		streamlineResponses: streamlineResponses,
@@ -169,7 +174,7 @@ func (s *Server) HandleToolCall(ctx context.Context, userEmail string, namespace
 	req.Params.Arguments = args
 
 	if serverConfig.ForwardAuthToken {
-		return s.callWithForwardedAuth(ctx, userEmail, serviceName, serverConfig, req)
+		return s.callWithDynamicAuth(ctx, userEmail, serviceName, serverConfig, req)
 	}
 
 	session := s.getOrCreateSession(userEmail)
@@ -182,10 +187,10 @@ func (s *Server) HandleToolCall(ctx context.Context, userEmail string, namespace
 	return backend.client.CallTool(ctx, req)
 }
 
-func (s *Server) callWithForwardedAuth(ctx context.Context, userEmail, serviceName string, serverConfig *config.MCPClientConfig, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	appliedConfig := serverConfig
-	if authToken, ok := oauth.GetAuthTokenFromContext(ctx); ok {
-		appliedConfig = appliedConfig.WithForwardedAuthToken(authToken)
+func (s *Server) callWithDynamicAuth(ctx context.Context, userEmail, serviceName string, serverConfig *config.MCPClientConfig, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	appliedConfig, err := s.applyDynamicAuth(ctx, serviceName, serverConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	mcpClient, err := s.createTransport(serviceName, appliedConfig)
@@ -210,6 +215,23 @@ func (s *Server) callWithForwardedAuth(ctx context.Context, userEmail, serviceNa
 	}
 
 	return mcpClient.CallTool(ctx, req)
+}
+
+func (s *Server) applyDynamicAuth(ctx context.Context, serviceName string, serverConfig *config.MCPClientConfig) (*config.MCPClientConfig, error) {
+	if serverConfig.GCPAuth {
+		if s.gcpTokenSource == nil {
+			return nil, fmt.Errorf("GCP auth required for %s but no token source configured", serviceName)
+		}
+		token, err := s.gcpTokenSource.Token()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get GCP token for %s: %w", serviceName, err)
+		}
+		return serverConfig.WithForwardedAuthToken(token.AccessToken), nil
+	}
+	if authToken, ok := oauth.GetAuthTokenFromContext(ctx); ok {
+		return serverConfig.WithForwardedAuthToken(authToken), nil
+	}
+	return serverConfig, nil
 }
 
 func (s *Server) callInlineTool(ctx context.Context, provider InlineToolProvider, toolName string, args map[string]any) (*mcp.CallToolResult, error) {
@@ -412,9 +434,11 @@ func (s *Server) getOrCreateBackend(ctx context.Context, userEmail, serviceName 
 		appliedConfig = serverConfig.ApplyUserToken(token)
 	}
 
-	if serverConfig.ForwardAuthToken {
-		if authToken, ok := oauth.GetAuthTokenFromContext(ctx); ok {
-			appliedConfig = appliedConfig.WithForwardedAuthToken(authToken)
+	if serverConfig.ForwardAuthToken || serverConfig.GCPAuth {
+		var err error
+		appliedConfig, err = s.applyDynamicAuth(ctx, serviceName, appliedConfig)
+		if err != nil {
+			return nil, err
 		}
 	}
 
