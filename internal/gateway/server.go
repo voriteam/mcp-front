@@ -49,6 +49,9 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*userSession
+
+	initMu      sync.Mutex
+	initLocks   map[string]*sync.Mutex
 }
 
 type userSession struct {
@@ -98,6 +101,7 @@ func newServer(
 		createTransport:     createTransport,
 		streamlineResponses: streamlineResponses,
 		sessions:            make(map[string]*userSession),
+		initLocks:           make(map[string]*sync.Mutex),
 	}
 }
 
@@ -184,7 +188,16 @@ func (s *Server) HandleToolCall(ctx context.Context, userEmail string, namespace
 		return nil, fmt.Errorf("failed to connect to %s: %w", serviceName, err)
 	}
 
-	return backend.client.CallTool(ctx, req)
+	result, err := backend.client.CallTool(ctx, req)
+	if err != nil {
+		s.evictBackend(session, serviceName)
+		backend, err = s.getOrCreateBackend(ctx, userEmail, serviceName, session)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconnect to %s: %w", serviceName, err)
+		}
+		return backend.client.CallTool(ctx, req)
+	}
+	return result, nil
 }
 
 func (s *Server) callWithDynamicAuth(ctx context.Context, userEmail, serviceName string, serverConfig *config.MCPClientConfig, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -287,6 +300,34 @@ func (s *Server) Shutdown() {
 	}
 }
 
+func (s *Server) serviceInitLock(serviceName string) *sync.Mutex {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+
+	mu, ok := s.initLocks[serviceName]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.initLocks[serviceName] = mu
+	}
+	return mu
+}
+
+func (s *Server) evictBackend(session *userSession, serviceName string) {
+	session.backendsMu.Lock()
+	backend, ok := session.backends[serviceName]
+	if ok {
+		delete(session.backends, serviceName)
+	}
+	session.backendsMu.Unlock()
+
+	if ok {
+		backend.client.Close()
+		log.LogInfoWithFields("gateway", "Evicted stale backend", map[string]any{
+			"service": serviceName,
+		})
+	}
+}
+
 func (s *Server) getOrCreateSession(userEmail string) *userSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -340,28 +381,16 @@ func (s *Server) discoverTools(ctx context.Context, userEmail string, session *u
 			backendCtx, backendCancel := context.WithTimeout(ctx, perBackendTimeout)
 			defer backendCancel()
 
-			backend, err := s.getOrCreateBackend(backendCtx, userEmail, svcName, session)
+			tools, err := s.listToolsFromBackend(backendCtx, userEmail, svcName, session)
+			if err != nil {
+				s.evictBackend(session, svcName)
+				tools, err = s.listToolsFromBackend(backendCtx, userEmail, svcName, session)
+			}
 			if err != nil {
 				results <- result{serviceName: svcName, err: err}
 				return
 			}
-
-			var allTools []mcp.Tool
-			req := mcp.ListToolsRequest{}
-			for {
-				resp, err := backend.client.ListTools(backendCtx, req)
-				if err != nil {
-					results <- result{serviceName: svcName, err: err}
-					return
-				}
-				allTools = append(allTools, resp.Tools...)
-				if resp.NextCursor == "" {
-					break
-				}
-				req.Params.Cursor = resp.NextCursor
-			}
-
-			results <- result{serviceName: svcName, tools: allTools}
+			results <- result{serviceName: svcName, tools: tools}
 		}(serviceName)
 	}
 
@@ -412,6 +441,28 @@ func (s *Server) discoverTools(ctx context.Context, userEmail string, session *u
 	return allCached, nil
 }
 
+func (s *Server) listToolsFromBackend(ctx context.Context, userEmail, serviceName string, session *userSession) ([]mcp.Tool, error) {
+	backend, err := s.getOrCreateBackend(ctx, userEmail, serviceName, session)
+	if err != nil {
+		return nil, err
+	}
+
+	var allTools []mcp.Tool
+	req := mcp.ListToolsRequest{}
+	for {
+		resp, err := backend.client.ListTools(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		allTools = append(allTools, resp.Tools...)
+		if resp.NextCursor == "" {
+			break
+		}
+		req.Params.Cursor = resp.NextCursor
+	}
+	return allTools, nil
+}
+
 func (s *Server) getOrCreateBackend(ctx context.Context, userEmail, serviceName string, session *userSession) (*backendConn, error) {
 	session.backendsMu.Lock()
 	if backend, ok := session.backends[serviceName]; ok {
@@ -424,6 +475,22 @@ func (s *Server) getOrCreateBackend(ctx context.Context, userEmail, serviceName 
 	if !ok {
 		return nil, fmt.Errorf("unknown service: %s", serviceName)
 	}
+
+	// Serialize backend initialization per service to prevent thundering herd.
+	// Without this, a pod restart causes all users to simultaneously initialize
+	// connections to each backend, overwhelming sidecars like supergateway that
+	// spawn child processes per session.
+	svcLock := s.serviceInitLock(serviceName)
+	svcLock.Lock()
+	defer svcLock.Unlock()
+
+	// Re-check after acquiring lock — another goroutine may have created it.
+	session.backendsMu.Lock()
+	if backend, ok := session.backends[serviceName]; ok {
+		session.backendsMu.Unlock()
+		return backend, nil
+	}
+	session.backendsMu.Unlock()
 
 	appliedConfig := serverConfig
 	if serverConfig.RequiresUserToken && s.getUserToken != nil {

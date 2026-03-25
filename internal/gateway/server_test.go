@@ -14,10 +14,11 @@ import (
 )
 
 type mockMCPClient struct {
-	tools      []mcp.Tool
-	callResult *mcp.CallToolResult
-	callErr    error
-	closed     bool
+	tools        []mcp.Tool
+	listToolsErr error
+	callResult   *mcp.CallToolResult
+	callErr      error
+	closed       bool
 }
 
 func (m *mockMCPClient) Initialize(_ context.Context, _ mcp.InitializeRequest) (*mcp.InitializeResult, error) {
@@ -25,6 +26,9 @@ func (m *mockMCPClient) Initialize(_ context.Context, _ mcp.InitializeRequest) (
 }
 
 func (m *mockMCPClient) ListTools(_ context.Context, _ mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
+	if m.listToolsErr != nil {
+		return nil, m.listToolsErr
+	}
 	return &mcp.ListToolsResult{Tools: m.tools}, nil
 }
 
@@ -211,6 +215,69 @@ func TestServer_HandleToolsList_BackendFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, tools, 1)
 	assert.Equal(t, "good__tool1", tools[0]["name"])
+}
+
+func TestServer_HandleToolsList_StaleSessionRetry(t *testing.T) {
+	callCount := 0
+	staleMock := &mockMCPClient{
+		listToolsErr: fmt.Errorf("Bad Request: No valid session ID provided"),
+	}
+	freshMock := &mockMCPClient{
+		tools: []mcp.Tool{{Name: "query_db"}},
+	}
+
+	configs := map[string]*config.MCPClientConfig{
+		"sentry": {TransportType: config.MCPClientTypeStreamable, URL: "http://localhost:8000/mcp"},
+	}
+
+	creator := func(_ string, _ *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		callCount++
+		if callCount == 1 {
+			return staleMock, nil
+		}
+		return freshMock, nil
+	}
+
+	s := newServer(configs, nil, nil, nil, "http://localhost:8080", creator, false)
+
+	tools, err := s.HandleToolsList(context.Background(), "user@example.com")
+	require.NoError(t, err)
+	assert.Len(t, tools, 1)
+	assert.Equal(t, "sentry__query_db", tools[0]["name"])
+	assert.Equal(t, 2, callCount, "should have created a fresh backend after eviction")
+	assert.True(t, staleMock.closed, "stale backend should be closed")
+}
+
+func TestServer_HandleToolCall_StaleSessionRetry(t *testing.T) {
+	callCount := 0
+	staleMock := &mockMCPClient{
+		tools:   []mcp.Tool{{Name: "query_db"}},
+		callErr: fmt.Errorf("Bad Request: No valid session ID provided"),
+	}
+	freshMock := &mockMCPClient{
+		tools: []mcp.Tool{{Name: "query_db"}},
+	}
+
+	configs := map[string]*config.MCPClientConfig{
+		"sentry": {TransportType: config.MCPClientTypeStreamable, URL: "http://localhost:8000/mcp"},
+	}
+
+	creator := func(_ string, _ *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		callCount++
+		if callCount == 1 {
+			return staleMock, nil
+		}
+		return freshMock, nil
+	}
+
+	s := newServer(configs, nil, nil, nil, "http://localhost:8080", creator, false)
+
+	result, err := s.HandleToolCall(context.Background(), "user@example.com", "sentry__query_db", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Equal(t, 2, callCount, "should have created a fresh backend after eviction")
+	assert.True(t, staleMock.closed, "stale backend should be closed")
 }
 
 func TestServer_Shutdown(t *testing.T) {
