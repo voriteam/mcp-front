@@ -64,6 +64,14 @@
       },
       "requiresUserToken": false
     },
+    "notion-read-only": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:8001/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "requiresUserToken": false
+    },
     "sentry": {
       "transportType": "streamable-http",
       "url": "https://mcp.sentry.dev/mcp",
