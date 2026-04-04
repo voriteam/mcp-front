@@ -2,6 +2,8 @@ package inline
 
 import (
 	"encoding/json"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // Config represents an inline MCP server configuration
@@ -16,6 +18,7 @@ type ToolConfig struct {
 	Name        string                     `json:"name"`
 	Description string                     `json:"description"`
 	InputSchema json.RawMessage            `json:"inputSchema"`
+	Annotations *mcp.ToolAnnotation        `json:"annotations,omitempty"`
 	Command     string                     `json:"command"`              // Command to run (e.g., "docker", "gcloud", etc.)
 	Args        []json.RawMessage          `json:"args,omitempty"`       // Arguments with {"$env": "..."} support
 	Env         map[string]json.RawMessage `json:"env,omitempty"`        // Environment variables with {"$env": "..."} support
@@ -45,6 +48,7 @@ type ResolvedToolConfig struct {
 	Name        string              `json:"name"`
 	Description string              `json:"description"`
 	InputSchema json.RawMessage     `json:"inputSchema"`
+	Annotations *mcp.ToolAnnotation `json:"annotations,omitempty"`
 	Command     string              `json:"command"`
 	Args        []string            `json:"args,omitempty"`
 	Env         map[string]string   `json:"env,omitempty"`

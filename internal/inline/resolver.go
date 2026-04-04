@@ -22,6 +22,7 @@ func ResolveConfig(rawConfig json.RawMessage) (Config, []ResolvedToolConfig, err
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
+			Annotations: tool.Annotations,
 			Command:     tool.Command,
 			Timeout:     tool.Timeout,
 			Args:        make([]string, 0, len(tool.Args)),

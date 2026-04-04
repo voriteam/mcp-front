@@ -165,6 +165,7 @@
           {
             "name": "search",
             "description": "Search Vori help documentation by keyword",
+            "annotations": { "readOnlyHint": true },
             "inputSchema": {
               "type": "object",
               "properties": {
@@ -186,6 +187,7 @@
           {
             "name": "fetch",
             "description": "Fetch full article content from a help.vori.com URL",
+            "annotations": { "readOnlyHint": true },
             "inputSchema": {
               "type": "object",
               "properties": {
@@ -211,6 +213,7 @@
           {
             "name": "execute",
             "description": "Execute a DQL statement against the Ditto database. Supports SELECT, INSERT, UPDATE, DELETE, and UPSERT.",
+            "annotations": { "destructiveHint": true },
             "inputSchema": {
               "type": "object",
               "properties": {

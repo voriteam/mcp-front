@@ -16,6 +16,7 @@ import (
 
 	"github.com/dgellow/mcp-front/internal/gateway"
 	"github.com/dgellow/mcp-front/internal/log"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 const (
@@ -70,15 +71,20 @@ func mintCubeJWT(secret string) (string, time.Time) {
 }
 
 func (s *Server) ListInlineTools() []gateway.InlineTool {
+	readOnly := true
+	cubeAnnotations := &mcp.ToolAnnotation{ReadOnlyHint: &readOnly}
+
 	return []gateway.InlineTool{
 		{
 			Name:        "meta",
 			Description: "Returns the Cube semantic model: cubes, views, measures, dimensions, joins, and descriptions. Call this first to understand what data is available before formulating queries.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			Annotations: cubeAnnotations,
 		},
 		{
 			Name:        "query",
 			Description: "Executes a structured Cube query and returns results. Use cube_meta first to discover available measures and dimensions.",
+			Annotations: cubeAnnotations,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -140,6 +146,7 @@ func (s *Server) ListInlineTools() []gateway.InlineTool {
 		{
 			Name:        "dimension_search",
 			Description: "Searches for matching values of a dimension. Use this to resolve ambiguous references like store names, product names, or categories before querying.",
+			Annotations: cubeAnnotations,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"properties": {

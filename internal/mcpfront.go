@@ -480,16 +480,20 @@ type inlineAdapter struct {
 func (a *inlineAdapter) ListInlineTools() []gateway.InlineTool {
 	caps := a.server.GetCapabilities()
 	tools := make([]gateway.InlineTool, 0, len(caps.Tools))
-	for _, tool := range caps.Tools {
+	for name, tool := range caps.Tools {
 		var schema json.RawMessage
 		if tool.InputSchema != nil {
 			schema, _ = json.Marshal(tool.InputSchema)
 		}
-		tools = append(tools, gateway.InlineTool{
+		it := gateway.InlineTool{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: schema,
-		})
+		}
+		if resolved, ok := a.server.GetResolvedTool(name); ok && resolved.Annotations != nil {
+			it.Annotations = resolved.Annotations
+		}
+		tools = append(tools, it)
 	}
 	return tools
 }

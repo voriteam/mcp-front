@@ -36,6 +36,7 @@ type InlineTool struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+	Annotations *mcp.ToolAnnotation
 }
 
 type Server struct {
@@ -354,6 +355,9 @@ func (s *Server) discoverTools(ctx context.Context, userEmail string, session *u
 			if len(tool.InputSchema) > 0 {
 				t.RawInputSchema = tool.InputSchema
 			}
+			if tool.Annotations != nil {
+				t.Annotations = *tool.Annotations
+			}
 			allCached = append(allCached, cachedTool{Tool: t, ServiceName: serviceName})
 		}
 	}
@@ -553,6 +557,7 @@ func (s *Server) getOrCreateBackend(ctx context.Context, userEmail, serviceName 
 type ToolInfo struct {
 	Name        string
 	Description string
+	Annotations mcp.ToolAnnotation
 }
 
 // ServiceTools groups tools by service for display purposes.
@@ -597,6 +602,7 @@ func (s *Server) ListToolsByService(ctx context.Context, userEmail string) ([]Se
 		grouped[t.ServiceName] = append(grouped[t.ServiceName], ToolInfo{
 			Name:        toolName,
 			Description: t.Tool.Description,
+			Annotations: t.Tool.Annotations,
 		})
 	}
 
@@ -660,6 +666,11 @@ func formatTools(tools []cachedTool, streamline bool) []map[string]any {
 				entry["inputSchema"] = schema
 			}
 		}
+
+		if ann := t.Tool.Annotations; ann.Title != "" || ann.ReadOnlyHint != nil || ann.DestructiveHint != nil || ann.IdempotentHint != nil || ann.OpenWorldHint != nil {
+			entry["annotations"] = ann
+		}
+
 		result = append(result, entry)
 	}
 	return result

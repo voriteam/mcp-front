@@ -73,6 +73,12 @@ func (s *Server) GetCapabilities() ServerCapabilities {
 	}
 }
 
+// GetResolvedTool returns the resolved tool config by name
+func (s *Server) GetResolvedTool(name string) (ResolvedToolConfig, bool) {
+	t, ok := s.tools[name]
+	return t, ok
+}
+
 // GetDescription returns the server description
 func (s *Server) GetDescription() string {
 	return s.config.Description
