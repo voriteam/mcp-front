@@ -15,6 +15,7 @@ import (
 	"github.com/dgellow/mcp-front/internal/client"
 	"github.com/dgellow/mcp-front/internal/config"
 	"github.com/dgellow/mcp-front/internal/crypto"
+	"github.com/dgellow/mcp-front/internal/cube"
 	"github.com/dgellow/mcp-front/internal/gateway"
 	"github.com/dgellow/mcp-front/internal/idp"
 	"github.com/dgellow/mcp-front/internal/inline"
@@ -372,7 +373,9 @@ func buildHTTPHandler(
 		var mcpServer *mcpserver.MCPServer
 		var sseServer *mcpserver.SSEServer
 
-		if serverConfig.TransportType == config.MCPClientTypeInline {
+		if serverConfig.TransportType == config.MCPClientTypeCube {
+			inlineProviders[serverName] = cube.NewServer(serverConfig.Env["CUBE_API_URL"], serverConfig.Env["CUBE_SIGNING_SECRET"])
+		} else if serverConfig.TransportType == config.MCPClientTypeInline {
 			var inlineServer *inline.Server
 			handler, inlineServer, err = buildInlineHandler(serverName, serverConfig)
 			if err != nil {
