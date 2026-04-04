@@ -11,38 +11,62 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgellow/mcp-front/internal/gateway"
 	"github.com/dgellow/mcp-front/internal/log"
 )
 
-const defaultTimeout = 30 * time.Second
+const (
+	defaultTimeout      = 30 * time.Second
+	tokenTTL            = 1 * time.Hour
+	tokenRefreshLeadTime = 10 * time.Minute
+)
 
 type Server struct {
-	apiURL string
-	token  string
-	client *http.Client
+	apiURL        string
+	signingSecret string
+	client        *http.Client
+
+	mu       sync.Mutex
+	token    string
+	tokenExp time.Time
 }
 
 func NewServer(apiURL string, signingSecret string) *Server {
-	return &Server{
-		apiURL: strings.TrimRight(apiURL, "/"),
-		token:  mintCubeJWT(signingSecret),
-		client: &http.Client{Timeout: defaultTimeout},
+	s := &Server{
+		apiURL:        strings.TrimRight(apiURL, "/"),
+		signingSecret: signingSecret,
+		client:        &http.Client{Timeout: defaultTimeout},
 	}
+	s.token, s.tokenExp = mintCubeJWT(signingSecret)
+	return s
 }
 
-func mintCubeJWT(secret string) string {
+func (s *Server) getToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if time.Now().After(s.tokenExp.Add(-tokenRefreshLeadTime)) {
+		s.token, s.tokenExp = mintCubeJWT(s.signingSecret)
+	}
+	return s.token
+}
+
+func mintCubeJWT(secret string) (string, time.Time) {
+	exp := time.Now().Add(tokenTTL)
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"internal":true}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(
+		fmt.Sprintf(`{"internal":true,"exp":%d}`, exp.Unix()),
+	))
 	unsigned := header + "." + payload
 
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(unsigned))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-	return unsigned + "." + sig
+	return unsigned + "." + sig, exp
 }
 
 func (s *Server) ListInlineTools() []gateway.InlineTool {
@@ -202,7 +226,7 @@ func (s *Server) callDimensionSearch(ctx context.Context, args map[string]any) (
 }
 
 func (s *Server) doRequest(req *http.Request) (any, error) {
-	req.Header.Set("Authorization", s.token)
+	req.Header.Set("Authorization", s.getToken())
 
 	log.LogDebug("Cube API request: %s %s", req.Method, req.URL.String())
 
