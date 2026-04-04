@@ -25,20 +25,28 @@ import (
 	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/server"
 	"github.com/stainless-api/mcp-front/internal/storage"
+	"github.com/stainless-api/mcp-front/internal/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 	"golang.org/x/oauth2/google"
 )
 
 type MCPFront struct {
-	config         config.Config
-	httpServer     *server.HTTPServer
-	sessionManager *client.StdioSessionManager
-	aggregates     []*aggregate.Server
-	storage        storage.Storage
+	config            config.Config
+	httpServer        *server.HTTPServer
+	sessionManager    *client.StdioSessionManager
+	aggregates        []*aggregate.Server
+	storage           storage.Storage
+	telemetryProvider *telemetry.Provider
 }
 
 func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*MCPFront, error) {
+	telemetryProvider, err := telemetry.NewProvider(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup telemetry: %w", err)
+	}
+
 	http.DefaultTransport = httputil.NewUserAgentTransport(buildVersion, http.DefaultTransport)
 
 	log.LogInfoWithFields("mcpfront", "Building MCP proxy application", map[string]any{
@@ -113,14 +121,15 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 		return nil, fmt.Errorf("failed to build HTTP handler: %w", err)
 	}
 
-	httpServer := server.NewHTTPServer(mux, cfg.Proxy.Addr)
+	httpServer := server.NewHTTPServer(otelhttp.NewHandler(mux, ""), cfg.Proxy.Addr)
 
 	return &MCPFront{
-		config:         cfg,
-		httpServer:     httpServer,
-		sessionManager: sessionManager,
-		aggregates:     aggregates,
-		storage:        store,
+		config:            cfg,
+		httpServer:        httpServer,
+		sessionManager:    sessionManager,
+		aggregates:        aggregates,
+		storage:           store,
+		telemetryProvider: telemetryProvider,
 	}, nil
 }
 
@@ -187,6 +196,12 @@ func (m *MCPFront) Run() error {
 
 	if m.sessionManager != nil {
 		m.sessionManager.Shutdown()
+	}
+
+	if err := m.telemetryProvider.Shutdown(shutdownCtx); err != nil {
+		log.LogErrorWithFields("mcpfront", "Telemetry shutdown error", map[string]any{
+			"error": err.Error(),
+		})
 	}
 
 	log.LogInfoWithFields("mcpfront", "Application shutdown complete", map[string]any{
