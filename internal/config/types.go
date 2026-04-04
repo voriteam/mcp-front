@@ -35,6 +35,7 @@ const (
 	MCPClientTypeSSE        MCPClientType = "sse"
 	MCPClientTypeStreamable MCPClientType = "streamable-http"
 	MCPClientTypeInline     MCPClientType = "inline"
+	MCPClientTypeCube       MCPClientType = "cube"
 )
 
 // AuthKind represents the type of authentication

@@ -150,6 +150,13 @@
       },
       "requiresUserToken": false
     },
+    "cube": {
+      "transportType": "cube",
+      "env": {
+        "CUBE_API_URL": { "$env": "CUBE_API_URL" },
+        "CUBE_SIGNING_SECRET": { "$env": "CUBE_SIGNING_SECRET" }
+      }
+    },
     "help-docs": {
       "transportType": "inline",
       "inline": {
