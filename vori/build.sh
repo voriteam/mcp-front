@@ -1,1 +1,2 @@
-docker buildx build --builder mybuilder1 --platform linux/amd64,linux/arm64 -t us-docker.pkg.dev/vori-1bdf0/services/mcp-front:$(git rev-parse HEAD) -t us-docker.pkg.dev/vori-1bdf0/services/mcp-front:latest . --load --push
+GIT_SHA=$(git rev-parse HEAD)
+docker buildx build --builder mybuilder1 --platform linux/amd64,linux/arm64 --build-arg BUILD_VERSION="$GIT_SHA" -t us-docker.pkg.dev/vori-1bdf0/services/mcp-front:"$GIT_SHA" -t us-docker.pkg.dev/vori-1bdf0/services/mcp-front:latest . --load --push

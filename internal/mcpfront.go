@@ -14,6 +14,7 @@ import (
 	"github.com/dgellow/mcp-front/internal/auth"
 	"github.com/dgellow/mcp-front/internal/client"
 	"github.com/dgellow/mcp-front/internal/config"
+	"github.com/dgellow/mcp-front/internal/httputil"
 	"github.com/dgellow/mcp-front/internal/crypto"
 	"github.com/dgellow/mcp-front/internal/cube"
 	"github.com/dgellow/mcp-front/internal/gateway"
@@ -37,7 +38,9 @@ type MCPFront struct {
 	gatewayServer  *gateway.Server
 }
 
-func NewMCPFront(ctx context.Context, cfg config.Config) (*MCPFront, error) {
+func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*MCPFront, error) {
+	http.DefaultTransport = httputil.NewUserAgentTransport(buildVersion, http.DefaultTransport)
+
 	log.LogInfoWithFields("mcpfront", "Building MCP proxy application", map[string]any{
 		"baseURL":    cfg.Proxy.BaseURL,
 		"mcpServers": len(cfg.MCPServers),

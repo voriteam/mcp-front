@@ -17,8 +17,9 @@ COPY . .
 
 # Build the application with optimizations
 ARG TARGETARCH
+ARG BUILD_VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-    -ldflags='-w -s -extldflags "-static"' \
+    -ldflags="-w -s -extldflags '-static' -X main.BuildVersion=${BUILD_VERSION}" \
     -a -installsuffix cgo \
     -o mcp-front ./cmd/mcp-front
 
