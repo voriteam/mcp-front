@@ -173,7 +173,7 @@ func main() {
 	})
 
 	ctx := context.Background()
-	mcpFront, err := internal.NewMCPFront(ctx, cfg)
+	mcpFront, err := internal.NewMCPFront(ctx, cfg, BuildVersion)
 	if err != nil {
 		log.LogError("Failed to create MCP proxy: %v", err)
 		os.Exit(1)

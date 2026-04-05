@@ -58,3 +58,6 @@ config-oauth-local.json
 # Temporary directories
 tmp/
 temp/
+
+# Playwright MCP browser session artifacts (logs, screenshots)
+.playwright-mcp/

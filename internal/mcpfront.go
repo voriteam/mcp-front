@@ -18,6 +18,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/crypto"
+	"github.com/stainless-api/mcp-front/internal/httputil"
 	"github.com/stainless-api/mcp-front/internal/idp"
 	"github.com/stainless-api/mcp-front/internal/inline"
 	"github.com/stainless-api/mcp-front/internal/log"
@@ -34,7 +35,9 @@ type MCPFront struct {
 	storage        storage.Storage
 }
 
-func NewMCPFront(ctx context.Context, cfg config.Config) (*MCPFront, error) {
+func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*MCPFront, error) {
+	http.DefaultTransport = httputil.NewUserAgentTransport(buildVersion, http.DefaultTransport)
+
 	log.LogInfoWithFields("mcpfront", "Building MCP proxy application", map[string]any{
 		"baseURL":    cfg.Proxy.BaseURL,
 		"mcpServers": len(cfg.MCPServers),
