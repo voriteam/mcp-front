@@ -16,8 +16,10 @@ RUN go mod download && go mod verify
 COPY . .
 
 # Build the application with optimizations
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags='-w -s -extldflags "-static"' \
+ARG TARGETARCH
+ARG BUILD_VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+    -ldflags="-w -s -extldflags '-static' -X main.BuildVersion=${BUILD_VERSION}" \
     -a -installsuffix cgo \
     -o mcp-front ./cmd/mcp-front
 
