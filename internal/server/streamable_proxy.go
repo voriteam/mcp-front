@@ -71,7 +71,7 @@ func forwardStreamablePostToBackend(ctx context.Context, w http.ResponseWriter, 
 		})
 
 		for k, v := range resp.Header {
-			if k == "Content-Type" || k == "Cache-Control" || k == "Connection" {
+			if k == "Content-Type" || k == "Cache-Control" || k == "Connection" || k == "Mcp-Session-Id" {
 				w.Header()[k] = v
 			}
 		}
