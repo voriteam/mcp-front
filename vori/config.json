@@ -88,6 +88,21 @@
         "displayName": "Sentry"
       }
     },
+    "coder": {
+      "transportType": "streamable-http",
+      "url": "https://coder.vori.com/api/experimental/mcp/http",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://coder.vori.com/oauth2/authorize",
+        "tokenUrl": "https://coder.vori.com/oauth2/tokens",
+        "displayName": "Coder"
+      }
+    },
     "github": {
       "transportType": "streamable-http",
       "url": "https://api.githubcopilot.com/mcp/",

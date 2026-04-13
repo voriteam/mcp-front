@@ -45,10 +45,11 @@ type ServiceOAuthClient struct {
 
 // ServiceOAuthState stores OAuth flow state for external service authentication (mcp-front → external service)
 type ServiceOAuthState struct {
-	Service   string    `json:"service"`
-	UserEmail string    `json:"user_email"`
-	ReturnURL string    `json:"return_url,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Service      string    `json:"service"`
+	UserEmail    string    `json:"user_email"`
+	ReturnURL    string    `json:"return_url,omitempty"`
+	PKCEVerifier string    `json:"pkce_verifier"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // CallbackResult contains the result of a successful OAuth callback
@@ -249,12 +250,15 @@ func (c *ServiceOAuthClient) StartOAuthFlow(
 		return "", fmt.Errorf("failed to get OAuth config: %w", err)
 	}
 
+	verifier := oauth2.GenerateVerifier()
+
 	// Generate signed state parameter (stateless - no cache needed)
 	stateData := ServiceOAuthState{
-		Service:   serviceName,
-		UserEmail: userEmail,
-		ReturnURL: returnURL,
-		CreatedAt: time.Now(),
+		Service:      serviceName,
+		UserEmail:    userEmail,
+		ReturnURL:    returnURL,
+		PKCEVerifier: verifier,
+		CreatedAt:    time.Now(),
 	}
 
 	state, err := c.stateSigner.Sign(stateData)
@@ -262,8 +266,8 @@ func (c *ServiceOAuthClient) StartOAuthFlow(
 		return "", fmt.Errorf("failed to sign state: %w", err)
 	}
 
-	// Generate authorization URL
-	authURL := oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	// Generate authorization URL with PKCE (S256)
+	authURL := oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
 
 	log.LogInfoWithFields("service_oauth", "Starting OAuth flow", map[string]any{
 		"service":  serviceName,
@@ -304,8 +308,8 @@ func (c *ServiceOAuthClient) HandleCallback(
 		return nil, fmt.Errorf("failed to get OAuth config: %w", err)
 	}
 
-	// Exchange code for token
-	token, err := oauth2Config.Exchange(ctx, code)
+	// Exchange code for token with PKCE verifier
+	token, err := oauth2Config.Exchange(ctx, code, oauth2.VerifierOption(stateData.PKCEVerifier))
 	if err != nil {
 		log.LogErrorWithFields("service_oauth", "Failed to exchange code for token", map[string]any{
 			"service": serviceName,
