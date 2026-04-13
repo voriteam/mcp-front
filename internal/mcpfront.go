@@ -25,6 +25,8 @@ import (
 	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/server"
 	"github.com/stainless-api/mcp-front/internal/storage"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 type MCPFront struct {
@@ -548,4 +550,26 @@ func buildStdioSSEServer(serverName, baseURL string, sessionManager *client.Stdi
 	)
 
 	return sseServer, mcpServer, nil
+}
+
+func buildClientCredentialsSources(servers map[string]*config.MCPClientConfig) map[string]oauth2.TokenSource {
+	sources := make(map[string]oauth2.TokenSource)
+	for name, cfg := range servers {
+		if cfg.ClientCredentials == nil {
+			continue
+		}
+		cc := cfg.ClientCredentials
+		ccConfig := clientcredentials.Config{
+			ClientID:     string(cc.ClientID),
+			ClientSecret: string(cc.ClientSecret),
+			TokenURL:     cc.TokenURL,
+			Scopes:       cc.Scopes,
+		}
+		sources[name] = ccConfig.TokenSource(context.Background())
+		log.LogInfoWithFields("client_credentials", "Token source initialized", map[string]any{
+			"service":  name,
+			"tokenURL": cc.TokenURL,
+		})
+	}
+	return sources
 }

@@ -28,6 +28,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		RequiresUserToken  bool                       `json:"requiresUserToken,omitempty"`
 		UserAuthentication *UserAuthentication        `json:"userAuthentication,omitempty"`
 		ServiceAuths       []ServiceAuth              `json:"serviceAuths,omitempty"`
+		ClientCredentials  *ClientCredentialsConfig   `json:"clientCredentials,omitempty"`
 		InlineConfig       json.RawMessage            `json:"inline,omitempty"`
 		Servers            []string                   `json:"servers,omitempty"`
 		Discovery          json.RawMessage            `json:"discovery,omitempty"`
@@ -138,6 +139,26 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		}
 		c.Headers = values
 		c.HeadersNeedToken = needsToken
+	}
+
+	// Parse client credentials if present
+	if raw.ClientCredentials != nil {
+		cc := raw.ClientCredentials
+		if cc.ClientIDRaw != nil {
+			parsed, err := ParseConfigValue(cc.ClientIDRaw)
+			if err != nil {
+				return fmt.Errorf("parsing clientCredentials.clientId: %w", err)
+			}
+			cc.ClientID = Secret(parsed.value)
+		}
+		if cc.ClientSecretRaw != nil {
+			parsed, err := ParseConfigValue(cc.ClientSecretRaw)
+			if err != nil {
+				return fmt.Errorf("parsing clientCredentials.clientSecret: %w", err)
+			}
+			cc.ClientSecret = Secret(parsed.value)
+		}
+		c.ClientCredentials = cc
 	}
 
 	return nil
