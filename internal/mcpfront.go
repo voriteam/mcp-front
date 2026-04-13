@@ -27,6 +27,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 	"golang.org/x/oauth2/google"
 )
 
@@ -430,7 +431,9 @@ func buildHTTPHandler(
 		return nil, nil, fmt.Errorf("failed to create GCP token source: %w", err)
 	}
 
-	gatewayServer := gateway.NewServer(cfg.MCPServers, inlineProviders, userTokenService.GetUserToken, gcpTokenSource, baseURL, cfg.Gateway.StreamlineResponses)
+	tokenSources := buildClientCredentialsSources(cfg.MCPServers)
+
+	gatewayServer := gateway.NewServer(cfg.MCPServers, inlineProviders, userTokenService.GetUserToken, gcpTokenSource, tokenSources, baseURL, cfg.Gateway.StreamlineResponses)
 	gatewayHandler := gateway.NewHandler("gateway", gatewayServer, baseURL)
 
 	gatewayMiddlewares := []server.MiddlewareFunc{
@@ -567,6 +570,28 @@ func buildStdioSSEServer(serverName, baseURL string, sessionManager *client.Stdi
 	)
 
 	return sseServer, mcpServer, nil
+}
+
+func buildClientCredentialsSources(servers map[string]*config.MCPClientConfig) map[string]oauth2.TokenSource {
+	sources := make(map[string]oauth2.TokenSource)
+	for name, cfg := range servers {
+		if cfg.ClientCredentials == nil {
+			continue
+		}
+		cc := cfg.ClientCredentials
+		ccConfig := clientcredentials.Config{
+			ClientID:     string(cc.ClientID),
+			ClientSecret: string(cc.ClientSecret),
+			TokenURL:     cc.TokenURL,
+			Scopes:       cc.Scopes,
+		}
+		sources[name] = ccConfig.TokenSource(context.Background())
+		log.LogInfoWithFields("client_credentials", "Token source initialized", map[string]any{
+			"service":  name,
+			"tokenURL": cc.TokenURL,
+		})
+	}
+	return sources
 }
 
 func newGCPTokenSource(ctx context.Context, servers map[string]*config.MCPClientConfig) (oauth2.TokenSource, error) {

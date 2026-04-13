@@ -44,6 +44,7 @@ type Server struct {
 	inlineProviders      map[string]InlineToolProvider
 	getUserToken         UserTokenFunc
 	gcpTokenSource       oauth2.TokenSource
+	tokenSources         map[string]oauth2.TokenSource
 	baseURL              string
 	createTransport      TransportCreator
 	streamlineResponses  bool
@@ -78,10 +79,11 @@ func NewServer(
 	inlineProviders map[string]InlineToolProvider,
 	getUserToken UserTokenFunc,
 	gcpTokenSource oauth2.TokenSource,
+	tokenSources map[string]oauth2.TokenSource,
 	baseURL string,
 	streamlineResponses bool,
 ) *Server {
-	return newServer(serverConfigs, inlineProviders, getUserToken, gcpTokenSource, baseURL, defaultCreateTransport, streamlineResponses)
+	return newServer(serverConfigs, inlineProviders, getUserToken, gcpTokenSource, tokenSources, baseURL, defaultCreateTransport, streamlineResponses)
 }
 
 func newServer(
@@ -89,6 +91,7 @@ func newServer(
 	inlineProviders map[string]InlineToolProvider,
 	getUserToken UserTokenFunc,
 	gcpTokenSource oauth2.TokenSource,
+	tokenSources map[string]oauth2.TokenSource,
 	baseURL string,
 	createTransport TransportCreator,
 	streamlineResponses bool,
@@ -98,6 +101,7 @@ func newServer(
 		inlineProviders:     inlineProviders,
 		getUserToken:        getUserToken,
 		gcpTokenSource:      gcpTokenSource,
+		tokenSources:        tokenSources,
 		baseURL:             baseURL,
 		createTransport:     createTransport,
 		streamlineResponses: streamlineResponses,
@@ -239,6 +243,13 @@ func (s *Server) applyDynamicAuth(ctx context.Context, serviceName string, serve
 		token, err := s.gcpTokenSource.Token()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get GCP token for %s: %w", serviceName, err)
+		}
+		return serverConfig.WithForwardedAuthToken(token.AccessToken), nil
+	}
+	if ts, ok := s.tokenSources[serviceName]; ok {
+		token, err := ts.Token()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get token for %s: %w", serviceName, err)
 		}
 		return serverConfig.WithForwardedAuthToken(token.AccessToken), nil
 	}
@@ -505,7 +516,7 @@ func (s *Server) getOrCreateBackend(ctx context.Context, userEmail, serviceName 
 		appliedConfig = serverConfig.ApplyUserToken(token)
 	}
 
-	if serverConfig.ForwardAuthToken || serverConfig.GCPAuth {
+	if serverConfig.ForwardAuthToken || serverConfig.GCPAuth || serverConfig.ClientCredentials != nil {
 		var err error
 		appliedConfig, err = s.applyDynamicAuth(ctx, serviceName, appliedConfig)
 		if err != nil {

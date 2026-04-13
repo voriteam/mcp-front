@@ -190,8 +190,23 @@ type MCPClientConfig struct {
 	// The token is refreshed automatically before expiry.
 	GCPAuth bool `json:"gcpAuth,omitempty"`
 
+	// OAuth2 client credentials grant for service-level authentication.
+	// mcp-front exchanges client ID/secret for an access token and refreshes it automatically.
+	ClientCredentials *ClientCredentialsConfig `json:"clientCredentials,omitempty"`
+
 	// Inline MCP server configuration
 	InlineConfig json.RawMessage `json:"inline,omitempty"`
+}
+
+// ClientCredentialsConfig configures OAuth2 client credentials grant (RFC 6749 Section 4.4).
+type ClientCredentialsConfig struct {
+	ClientID     Secret   `json:"-"`
+	ClientSecret Secret   `json:"-"`
+	TokenURL     string   `json:"tokenUrl"`
+	Scopes       []string `json:"scopes,omitempty"`
+
+	ClientIDRaw     json.RawMessage `json:"clientId"`
+	ClientSecretRaw json.RawMessage `json:"clientSecret"`
 }
 
 // IsStdio returns true if this is a stdio-based MCP server
