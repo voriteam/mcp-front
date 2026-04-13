@@ -103,6 +103,17 @@
         "displayName": "Coder"
       }
     },
+    "help-docs-mintlify": {
+      "transportType": "streamable-http",
+      "url": "https://vori.mintlify.io/authed/mcp",
+      "options": { "timeout": "30s" },
+      "clientCredentials": {
+        "clientId": { "$env": "MINTLIFY_CLIENT_ID" },
+        "clientSecret": { "$env": "MINTLIFY_CLIENT_SECRET" },
+        "tokenUrl": "https://vori.mintlify.io/authed/mcp/oauth/token"
+      },
+      "requiresUserToken": false
+    },
     "github": {
       "transportType": "streamable-http",
       "url": "https://api.githubcopilot.com/mcp/",
