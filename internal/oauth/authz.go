@@ -12,24 +12,26 @@ import (
 )
 
 type AuthorizationServer struct {
-	accessTokenSigner  crypto.TokenSigner
-	refreshTokenSigner crypto.TokenSigner
-	codeLifespan       time.Duration
-	accessTokenTTL     time.Duration
-	refreshTokenTTL    time.Duration
-	issuer             string
-	minStateEntropy    int
-	refreshTokenScopes []string
+	accessTokenSigner      crypto.TokenSigner
+	refreshTokenSigner     crypto.TokenSigner
+	codeLifespan           time.Duration
+	accessTokenTTL         time.Duration
+	refreshTokenTTL        time.Duration
+	issuer                 string
+	minStateEntropy        int
+	refreshTokenScopes     []string
+	acceptIssuerAudience   bool
 }
 
 type AuthorizationServerConfig struct {
-	JWTSecret          []byte
-	Issuer             string
-	AccessTokenTTL     time.Duration
-	RefreshTokenTTL    time.Duration
-	CodeLifespan       time.Duration
-	MinStateEntropy    int
-	RefreshTokenScopes []string
+	JWTSecret              []byte
+	Issuer                 string
+	AccessTokenTTL         time.Duration
+	RefreshTokenTTL        time.Duration
+	CodeLifespan           time.Duration
+	MinStateEntropy        int
+	RefreshTokenScopes     []string
+	AcceptIssuerAudience   bool
 }
 
 func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer, error) {
@@ -48,14 +50,15 @@ func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer
 	}
 
 	return &AuthorizationServer{
-		accessTokenSigner:  crypto.NewTokenSigner(cfg.JWTSecret, cfg.AccessTokenTTL),
-		refreshTokenSigner: crypto.NewTokenSigner(cfg.JWTSecret, cfg.RefreshTokenTTL),
-		codeLifespan:       cfg.CodeLifespan,
-		accessTokenTTL:     cfg.AccessTokenTTL,
-		refreshTokenTTL:    cfg.RefreshTokenTTL,
-		issuer:             cfg.Issuer,
-		minStateEntropy:    cfg.MinStateEntropy,
-		refreshTokenScopes: cfg.RefreshTokenScopes,
+		accessTokenSigner:    crypto.NewTokenSigner(cfg.JWTSecret, cfg.AccessTokenTTL),
+		refreshTokenSigner:   crypto.NewTokenSigner(cfg.JWTSecret, cfg.RefreshTokenTTL),
+		codeLifespan:         cfg.CodeLifespan,
+		accessTokenTTL:       cfg.AccessTokenTTL,
+		refreshTokenTTL:      cfg.RefreshTokenTTL,
+		issuer:               cfg.Issuer,
+		minStateEntropy:      cfg.MinStateEntropy,
+		refreshTokenScopes:   cfg.RefreshTokenScopes,
+		acceptIssuerAudience: cfg.AcceptIssuerAudience,
 	}, nil
 }
 
@@ -107,7 +110,16 @@ func (s *AuthorizationServer) ValidateAuthorizeRequest(r *http.Request, client C
 	}
 
 	if len(audience) == 0 {
-		return nil, NewOAuthError(ErrInvalidRequest, "resource parameter is required (RFC 8707)")
+		if s.acceptIssuerAudience {
+			// Fall back to the base issuer URI as audience for clients that don't
+			// send the RFC 8707 resource parameter (e.g. Claude Code, Codex).
+			// Combined with DangerouslyAcceptIssuerAudience on the token validation
+			// middleware, this allows such clients to obtain working tokens at the
+			// cost of per-service token isolation.
+			audience = []string{s.issuer}
+		} else {
+			return nil, NewOAuthError(ErrInvalidRequest, "resource parameter is required (RFC 8707)")
+		}
 	}
 
 	return &AuthorizeParams{

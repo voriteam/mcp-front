@@ -139,6 +139,22 @@ func TestAuthorizationServer_ValidateAuthorizeRequest(t *testing.T) {
 		assert.Contains(t, oauthErr.Description, "resource")
 	})
 
+	t.Run("missing resource parameter with acceptIssuerAudience", func(t *testing.T) {
+		srv, err := NewAuthorizationServer(AuthorizationServerConfig{
+			JWTSecret:            []byte(strings.Repeat("s", 32)),
+			Issuer:               "https://mcp.example.com",
+			AccessTokenTTL:       time.Hour,
+			RefreshTokenTTL:      30 * 24 * time.Hour,
+			AcceptIssuerAudience: true,
+		})
+		require.NoError(t, err)
+
+		r := httptest.NewRequest("GET", "/authorize?response_type=code&client_id=test-client-id&redirect_uri=http://localhost:6274/callback&code_challenge="+challenge+"&code_challenge_method=S256&state=x", nil)
+		params, err := srv.ValidateAuthorizeRequest(r, client)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"https://mcp.example.com"}, params.Audience)
+	})
+
 	t.Run("with resource parameters", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/authorize?response_type=code&client_id=test-client-id&redirect_uri=http://localhost:6274/callback&code_challenge="+challenge+"&code_challenge_method=S256&state=x&resource=https://mcp.example.com/postgres", nil)
 		params, err := s.ValidateAuthorizeRequest(r, client)
