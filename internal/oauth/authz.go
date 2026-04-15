@@ -17,19 +17,21 @@ type AuthorizationServer struct {
 	codeLifespan       time.Duration
 	accessTokenTTL     time.Duration
 	refreshTokenTTL    time.Duration
-	issuer             string
-	minStateEntropy    int
-	refreshTokenScopes []string
+	issuer               string
+	minStateEntropy      int
+	refreshTokenScopes   []string
+	requireResourceParam bool
 }
 
 type AuthorizationServerConfig struct {
-	JWTSecret          []byte
-	Issuer             string
-	AccessTokenTTL     time.Duration
-	RefreshTokenTTL    time.Duration
-	CodeLifespan       time.Duration
-	MinStateEntropy    int
-	RefreshTokenScopes []string
+	JWTSecret            []byte
+	Issuer               string
+	AccessTokenTTL       time.Duration
+	RefreshTokenTTL      time.Duration
+	CodeLifespan         time.Duration
+	MinStateEntropy      int
+	RefreshTokenScopes   []string
+	RequireResourceParam bool
 }
 
 func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer, error) {
@@ -53,9 +55,10 @@ func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer
 		codeLifespan:       cfg.CodeLifespan,
 		accessTokenTTL:     cfg.AccessTokenTTL,
 		refreshTokenTTL:    cfg.RefreshTokenTTL,
-		issuer:             cfg.Issuer,
-		minStateEntropy:    cfg.MinStateEntropy,
-		refreshTokenScopes: cfg.RefreshTokenScopes,
+		issuer:               cfg.Issuer,
+		minStateEntropy:      cfg.MinStateEntropy,
+		refreshTokenScopes:   cfg.RefreshTokenScopes,
+		requireResourceParam: cfg.RequireResourceParam,
 	}, nil
 }
 
@@ -107,7 +110,10 @@ func (s *AuthorizationServer) ValidateAuthorizeRequest(r *http.Request, client C
 	}
 
 	if len(audience) == 0 {
-		return nil, NewOAuthError(ErrInvalidRequest, "resource parameter is required (RFC 8707)")
+		if s.requireResourceParam {
+			return nil, NewOAuthError(ErrInvalidRequest, "resource parameter is required (RFC 8707)")
+		}
+		audience = []string{s.issuer}
 	}
 
 	return &AuthorizeParams{

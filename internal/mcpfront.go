@@ -260,12 +260,13 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 	}
 
 	authServer, err := oauth.NewAuthorizationServer(oauth.AuthorizationServerConfig{
-		JWTSecret:          jwtSecret,
-		Issuer:             oauthAuth.Issuer,
-		AccessTokenTTL:     oauthAuth.TokenTTL,
-		RefreshTokenTTL:    oauthAuth.RefreshTokenTTL,
-		MinStateEntropy:    minEntropy,
-		RefreshTokenScopes: oauthAuth.RefreshTokenScopes,
+		JWTSecret:            jwtSecret,
+		Issuer:               oauthAuth.Issuer,
+		AccessTokenTTL:       oauthAuth.TokenTTL,
+		RefreshTokenTTL:      oauthAuth.RefreshTokenTTL,
+		MinStateEntropy:      minEntropy,
+		RefreshTokenScopes:   oauthAuth.RefreshTokenScopes,
+		RequireResourceParam: !oauthAuth.DangerouslyAcceptIssuerAudience,
 	})
 	if err != nil {
 		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to create authorization server: %w", err)

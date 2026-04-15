@@ -129,14 +129,11 @@ func TestAuthorizationServer_ValidateAuthorizeRequest(t *testing.T) {
 		assert.Contains(t, err.Error(), "S256")
 	})
 
-	t.Run("missing resource parameter", func(t *testing.T) {
+	t.Run("missing resource parameter falls back to issuer", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/authorize?response_type=code&client_id=test-client-id&redirect_uri=http://localhost:6274/callback&code_challenge="+challenge+"&code_challenge_method=S256&state=x", nil)
-		_, err := s.ValidateAuthorizeRequest(r, client)
-		require.Error(t, err)
-		var oauthErr *OAuthError
-		require.ErrorAs(t, err, &oauthErr)
-		assert.Equal(t, ErrInvalidRequest, oauthErr.Code)
-		assert.Contains(t, oauthErr.Description, "resource")
+		params, err := s.ValidateAuthorizeRequest(r, client)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"https://mcp.example.com"}, params.Audience)
 	})
 
 	t.Run("with resource parameters", func(t *testing.T) {
@@ -144,6 +141,30 @@ func TestAuthorizationServer_ValidateAuthorizeRequest(t *testing.T) {
 		params, err := s.ValidateAuthorizeRequest(r, client)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"https://mcp.example.com/postgres"}, params.Audience)
+	})
+
+	t.Run("missing resource when required", func(t *testing.T) {
+		strict, err := NewAuthorizationServer(AuthorizationServerConfig{
+			JWTSecret:            []byte(strings.Repeat("s", 32)),
+			Issuer:               "https://mcp.example.com",
+			AccessTokenTTL:       time.Hour,
+			RequireResourceParam: true,
+		})
+		require.NoError(t, err)
+		r := httptest.NewRequest("GET", "/authorize?response_type=code&client_id=test-client-id&redirect_uri=http://localhost:6274/callback&code_challenge="+challenge+"&code_challenge_method=S256&state=x", nil)
+		_, err = strict.ValidateAuthorizeRequest(r, client)
+		require.Error(t, err)
+		var oauthErr *OAuthError
+		require.ErrorAs(t, err, &oauthErr)
+		assert.Equal(t, ErrInvalidRequest, oauthErr.Code)
+		assert.Contains(t, oauthErr.Description, "resource parameter")
+	})
+
+	t.Run("missing resource when not required falls back to issuer", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/authorize?response_type=code&client_id=test-client-id&redirect_uri=http://localhost:6274/callback&code_challenge="+challenge+"&code_challenge_method=S256&state=x", nil)
+		params, err := s.ValidateAuthorizeRequest(r, client)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"https://mcp.example.com"}, params.Audience)
 	})
 }
 
