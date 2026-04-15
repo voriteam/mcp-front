@@ -109,8 +109,15 @@ func (s *AuthorizationServer) ValidateAuthorizeRequest(r *http.Request, client C
 		audience = append(audience, resource)
 	}
 
-	if len(audience) == 0 && s.requireResourceParam {
-		return nil, NewOAuthError(ErrInvalidRequest, "resource parameter is required (RFC 8707)")
+	if len(audience) == 0 {
+		if s.requireResourceParam {
+			return nil, NewOAuthError(ErrInvalidRequest, "resource parameter is required (RFC 8707)")
+		}
+		// Fall back to the base issuer URI as audience for clients that don't
+		// send the RFC 8707 resource parameter (e.g. Claude Code, Codex).
+		// Without this, tokens are issued with an empty audience which fails
+		// ValidateAudienceForService even when acceptIssuerAudience is enabled.
+		audience = []string{s.issuer}
 	}
 
 	return &AuthorizeParams{

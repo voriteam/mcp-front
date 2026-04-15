@@ -153,11 +153,11 @@ func TestAuthorizationServer_ValidateAuthorizeRequest(t *testing.T) {
 		assert.Contains(t, oauthErr.Description, "resource parameter")
 	})
 
-	t.Run("missing resource when not required", func(t *testing.T) {
+	t.Run("missing resource when not required falls back to issuer", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/authorize?response_type=code&client_id=test-client-id&redirect_uri=http://localhost:6274/callback&code_challenge="+challenge+"&code_challenge_method=S256&state=x", nil)
 		params, err := s.ValidateAuthorizeRequest(r, client)
 		require.NoError(t, err)
-		assert.Empty(t, params.Audience)
+		assert.Equal(t, []string{"https://mcp.example.com"}, params.Audience)
 	})
 }
 
