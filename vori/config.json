@@ -21,7 +21,8 @@
       "firestoreDatabase": "(default)",
       "firestoreCollection": "mcp_front_oauth_clients",
       "jwtSecret": { "$env": "JWT_SECRET" },
-      "encryptionKey": { "$env": "ENCRYPTION_KEY" }
+      "encryptionKey": { "$env": "ENCRYPTION_KEY" },
+      "dangerouslyAcceptIssuerAudience": true
     }
   },
   "gateway": {
