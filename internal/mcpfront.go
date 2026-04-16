@@ -467,6 +467,17 @@ func buildHTTPHandler(
 
 		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(agg.Handler(), aggMiddlewares...))
 
+		if authServer != nil {
+			toolsHandler := server.NewToolsHandler(agg)
+			toolsMiddleware := []server.MiddlewareFunc{
+				corsMiddleware,
+				tokenLogger,
+				server.NewBrowserSSOMiddleware(authConfig, idpProvider, sessionEncryptor, browserStateToken),
+				mcpRecover,
+			}
+			mux.Handle(route("/"+serverName+"/tools"), server.ChainMiddleware(toolsHandler, toolsMiddleware...))
+		}
+
 		log.LogInfoWithFields("server", "Registered aggregate MCP server", map[string]any{
 			"name":     serverName,
 			"backends": serverConfig.Servers,

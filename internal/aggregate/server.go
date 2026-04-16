@@ -151,6 +151,22 @@ func (s *Server) Handler() http.Handler {
 	return s.transport
 }
 
+// Name returns the aggregate server's name (used as a URL path prefix).
+func (s *Server) Name() string {
+	return s.name
+}
+
+// Backends returns the map of backend service configs.
+func (s *Server) Backends() map[string]*config.MCPClientConfig {
+	return s.backends
+}
+
+// ListToolsByBackend discovers and returns tools grouped by backend name.
+// This is used for displaying tools on the /tools page.
+func (s *Server) ListToolsByBackend(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+	return s.getTools(ctx, userEmail)
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	s.shutdownOnce.Do(func() {
