@@ -443,9 +443,12 @@ func buildHTTPHandler(
 		agg.Start()
 		aggregates = append(aggregates, agg)
 
-		aggMiddlewares := []server.MiddlewareFunc{mcpLogger, corsMiddleware}
+		// CORS must wrap the auth chain so OPTIONS preflights short-circuit
+		// with 200 instead of being rejected as unauthenticated by the
+		// RequireAuth gate (ChainMiddleware makes later entries outer).
+		aggMiddlewares := []server.MiddlewareFunc{mcpLogger}
 		aggMiddlewares = append(aggMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, serverConfig.ServiceAuths)...)
-		aggMiddlewares = append(aggMiddlewares, mcpRecover)
+		aggMiddlewares = append(aggMiddlewares, corsMiddleware, mcpRecover)
 
 		aggHandler := server.ChainMiddleware(agg.Handler(), aggMiddlewares...)
 		mux.Handle(route("/"+serverName+"/"), aggHandler)
