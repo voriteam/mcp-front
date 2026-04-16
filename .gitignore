@@ -51,6 +51,7 @@ pids
 
 # Config files with secrets (keep examples)
 config.json
+!vori/config.json
 gcp-service-account.json
 config-oauth-local.json
 *-local.json

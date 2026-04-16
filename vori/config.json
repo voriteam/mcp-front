@@ -1,0 +1,256 @@
+{
+  "version": "v0.0.1-DEV_EDITION_EXPECT_CHANGES",
+  "proxy": {
+    "name": "Vori MCP Proxy",
+    "baseURL": { "$env": "BASE_URL" },
+    "addr": ":8080",
+    "auth": {
+      "kind": "oauth",
+      "issuer": { "$env": "BASE_URL" },
+      "idp": {
+        "provider": "google",
+        "clientId": { "$env": "GOOGLE_CLIENT_ID" },
+        "clientSecret": { "$env": "GOOGLE_CLIENT_SECRET" },
+        "redirectUri": { "$env": "OAUTH_REDIRECT_URI" }
+      },
+      "allowedDomains": ["vori.com"],
+      "allowedOrigins": ["https://claude.ai"],
+      "tokenTtl": "4h",
+      "storage": "firestore",
+      "gcpProject": { "$env": "GOOGLE_CLOUD_PROJECT" },
+      "firestoreDatabase": "(default)",
+      "firestoreCollection": "mcp_front_oauth_clients",
+      "jwtSecret": { "$env": "JWT_SECRET" },
+      "encryptionKey": { "$env": "ENCRYPTION_KEY" },
+      "dangerouslyAcceptIssuerAudience": true
+    }
+  },
+  "mcpServers": {
+    "gateway": {
+      "type": "aggregate",
+      "transportType": "sse",
+      "streamlineResponses": true,
+      "delimiter": "__",
+      "servers": [
+        "postgres",
+        "bigquery",
+        "datadog",
+        "sentry-read-only",
+        "notion-read-only",
+        "sentry",
+        "coder",
+        "help-docs",
+        "github",
+        "linear",
+        "gke",
+        "notion",
+        "subcog"
+      ]
+    },
+    "gateway-streamable": {
+      "type": "aggregate",
+      "transportType": "streamable-http",
+      "streamlineResponses": true,
+      "delimiter": "__",
+      "servers": [
+        "postgres",
+        "bigquery",
+        "datadog",
+        "sentry-read-only",
+        "notion-read-only",
+        "sentry",
+        "coder",
+        "help-docs",
+        "github",
+        "linear",
+        "gke",
+        "notion",
+        "subcog"
+      ]
+    },
+    "postgres": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:5000/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "requiresUserToken": false
+    },
+    "bigquery": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:5001/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "requiresUserToken": false
+    },
+    "datadog": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.us3.datadoghq.com/api/unstable/mcp-server/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "headers": {
+        "DD_API_KEY": { "$env": "DD_API_KEY" },
+        "DD_APPLICATION_KEY": { "$env": "DD_APPLICATION_KEY" }
+      },
+      "requiresUserToken": false
+    },
+    "sentry-read-only": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:8000/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "requiresUserToken": false
+    },
+    "notion-read-only": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:8001/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "requiresUserToken": false
+    },
+    "sentry": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.sentry.dev/mcp",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://mcp.sentry.dev/oauth/authorize",
+        "tokenUrl": "https://mcp.sentry.dev/oauth/token",
+        "scopes": ["org:read", "project:read", "project:write", "team:read", "event:write"],
+        "displayName": "Sentry"
+      }
+    },
+    "coder": {
+      "transportType": "streamable-http",
+      "url": "https://coder.vori.com/api/experimental/mcp/http",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://coder.vori.com/oauth2/authorize",
+        "tokenUrl": "https://coder.vori.com/oauth2/tokens",
+        "displayName": "Coder"
+      }
+    },
+    "help-docs": {
+      "transportType": "streamable-http",
+      "url": "https://vori.mintlify.io/authed/mcp",
+      "options": { "timeout": "30s" },
+      "clientCredentials": {
+        "clientId": { "$env": "MINTLIFY_CLIENT_ID" },
+        "clientSecret": { "$env": "MINTLIFY_CLIENT_SECRET" },
+        "tokenUrl": "https://vori.mintlify.io/authed/mcp/oauth/token"
+      },
+      "requiresUserToken": false
+    },
+    "github": {
+      "transportType": "streamable-http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$env": "GITHUB_MCP_PAT" }
+      },
+      "requiresUserToken": false
+    },
+    "linear": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.linear.app/mcp",
+      "options": {
+        "timeout": "30s"
+      },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "clientId": { "$env": "LINEAR_CLIENT_ID" },
+        "clientSecret": { "$env": "LINEAR_CLIENT_SECRET" },
+        "authorizationUrl": "https://linear.app/oauth/authorize",
+        "tokenUrl": "https://api.linear.app/oauth/token",
+        "scopes": ["read", "write"],
+        "displayName": "Linear"
+      }
+    },
+    "gke": {
+      "transportType": "streamable-http",
+      "url": "https://container.googleapis.com/mcp",
+      "headers": {
+        "x-goog-user-project": "vori-1bdf0"
+      },
+      "gcpAuth": true
+    },
+    "notion": {
+      "transportType": "streamable-http",
+      "url": "https://mcp.notion.com/mcp",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Bearer {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "oauth",
+        "authorizationUrl": "https://mcp.notion.com/authorize",
+        "tokenUrl": "https://mcp.notion.com/token",
+        "displayName": "Notion"
+      }
+    },
+    "subcog": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:8090/mcp",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$env": "SUBCOG_BEARER_TOKEN" }
+      },
+      "requiresUserToken": false
+    },
+    "cube": {
+      "transportType": "cube",
+      "env": {
+        "CUBE_API_URL": { "$env": "CUBE_API_URL" },
+        "CUBE_SIGNING_SECRET": { "$env": "CUBE_SIGNING_SECRET" }
+      }
+    },
+    "ditto-read-only": {
+      "transportType": "inline",
+      "inline": {
+        "description": "Ditto DQL database",
+        "tools": [
+          {
+            "name": "execute",
+            "description": "Execute a DQL statement against the Ditto database. Supports SELECT, INSERT, UPDATE, DELETE, and UPSERT.",
+            "annotations": { "destructiveHint": true },
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "statement": { "type": "string", "description": "DQL statement to execute" },
+                "args": { "type": "object", "description": "Named parameters for parameterized queries" }
+              },
+              "required": ["statement"]
+            },
+            "http": {
+              "method": "POST",
+              "url": { "$env": "DITTO_API_URL" },
+              "headers": {
+                "Authorization": { "$env": "DITTO_AUTH_HEADER" },
+                "Content-Type": "application/json"
+              }
+            },
+            "timeout": "30s"
+          }
+        ]
+      }
+    }
+  }
+}
