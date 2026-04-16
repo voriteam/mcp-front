@@ -55,7 +55,10 @@ func NewCORSMiddleware(allowedOrigins []string) MiddlewareFunc {
 			// If origin not allowed, don't set Access-Control-Allow-Origin header
 
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Cache-Control, mcp-protocol-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Cache-Control, mcp-protocol-version, Mcp-Session-Id")
+			// Expose Mcp-Session-Id so streamable-http clients can read it from the
+			// initialize response and include it in subsequent requests.
+			w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
 			w.Header().Set("Access-Control-Max-Age", "3600")
 
 			// Handle preflight requests

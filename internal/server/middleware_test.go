@@ -107,7 +107,8 @@ func TestCorsMiddleware(t *testing.T) {
 
 			// Check that standard CORS headers are always set
 			assert.Equal(t, "GET, POST, OPTIONS", rr.Header().Get("Access-Control-Allow-Methods"))
-			assert.Equal(t, "Content-Type, Authorization, Cache-Control, mcp-protocol-version", rr.Header().Get("Access-Control-Allow-Headers"))
+			assert.Equal(t, "Content-Type, Authorization, Cache-Control, mcp-protocol-version, Mcp-Session-Id", rr.Header().Get("Access-Control-Allow-Headers"))
+			assert.Equal(t, "Mcp-Session-Id", rr.Header().Get("Access-Control-Expose-Headers"))
 			assert.Equal(t, "3600", rr.Header().Get("Access-Control-Max-Age"))
 
 			// For OPTIONS requests, check status code
