@@ -447,7 +447,12 @@ func buildHTTPHandler(
 		aggMiddlewares = append(aggMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, serverConfig.ServiceAuths)...)
 		aggMiddlewares = append(aggMiddlewares, mcpRecover)
 
-		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(agg.Handler(), aggMiddlewares...))
+		aggHandler := server.ChainMiddleware(agg.Handler(), aggMiddlewares...)
+		mux.Handle(route("/"+serverName+"/"), aggHandler)
+		// Also register the no-trailing-slash variant so POST requests without a
+		// trailing slash don't get 301-redirected (which HTTP clients often turn
+		// into GET, breaking MCP handshakes).
+		mux.Handle(route("/"+serverName), aggHandler)
 
 		if authServer != nil {
 			toolsHandler := server.NewToolsHandler(agg)
