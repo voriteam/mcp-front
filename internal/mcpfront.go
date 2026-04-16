@@ -454,17 +454,18 @@ func buildHTTPHandler(
 		agg.Start()
 		aggregates = append(aggregates, agg)
 
-		aggMiddlewares := []server.MiddlewareFunc{
-			mcpLogger,
-			corsMiddleware,
+		// Middleware order (ChainMiddleware applies inner → outer):
+		// outermost first: logger → recover → CORS → auth → serviceAuth → handler.
+		// CORS must wrap auth so OPTIONS preflights short-circuit with 200 instead
+		// of being rejected as unauthenticated.
+		var aggMiddlewares []server.MiddlewareFunc
+		if len(serverConfig.ServiceAuths) > 0 {
+			aggMiddlewares = append(aggMiddlewares, server.NewServiceAuthMiddleware(serverConfig.ServiceAuths))
 		}
 		if authServer != nil {
 			aggMiddlewares = append(aggMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience))
 		}
-		if len(serverConfig.ServiceAuths) > 0 {
-			aggMiddlewares = append(aggMiddlewares, server.NewServiceAuthMiddleware(serverConfig.ServiceAuths))
-		}
-		aggMiddlewares = append(aggMiddlewares, mcpRecover)
+		aggMiddlewares = append(aggMiddlewares, corsMiddleware, mcpRecover, mcpLogger)
 
 		aggHandler := server.ChainMiddleware(agg.Handler(), aggMiddlewares...)
 		mux.Handle(route("/"+serverName+"/"), aggHandler)
