@@ -132,7 +132,7 @@ func TestOAuthEndpointsCORS(t *testing.T) {
 			corsHeaders := map[string]string{
 				"Access-Control-Allow-Origin":      "http://localhost:6274",
 				"Access-Control-Allow-Methods":     "GET, POST, OPTIONS",
-				"Access-Control-Allow-Headers":     "Content-Type, Authorization, Cache-Control, mcp-protocol-version",
+				"Access-Control-Allow-Headers":     "Content-Type, Authorization, Cache-Control, mcp-protocol-version, Mcp-Session-Id",
 				"Access-Control-Allow-Credentials": "true",
 				"Access-Control-Max-Age":           "3600",
 			}
