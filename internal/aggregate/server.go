@@ -60,13 +60,14 @@ type mcpTransport interface {
 // Server aggregates multiple MCP backends into a single endpoint.
 // Tools from backends are namespaced as "backend.toolName".
 type Server struct {
-	name            string
-	backends        map[string]*config.MCPClientConfig
-	discovery       *config.DiscoveryConfig
-	delimiter       string
-	getUserToken    UserTokenFunc
-	createTransport client.TransportCreator
-	baseURL         string
+	name                string
+	backends            map[string]*config.MCPClientConfig
+	discovery           *config.DiscoveryConfig
+	delimiter           string
+	streamlineResponses bool
+	getUserToken        UserTokenFunc
+	createTransport     client.TransportCreator
+	baseURL             string
 
 	cacheMu        sync.RWMutex
 	cache          *cachedTools
@@ -86,14 +87,15 @@ type Server struct {
 }
 
 type ServerConfig struct {
-	Name            string
-	TransportType   config.MCPClientType
-	Backends        map[string]*config.MCPClientConfig
-	Discovery       *config.DiscoveryConfig
-	Delimiter       string
-	GetUserToken    UserTokenFunc
-	CreateTransport client.TransportCreator
-	BaseURL         string
+	Name                string
+	TransportType       config.MCPClientType
+	Backends            map[string]*config.MCPClientConfig
+	Discovery           *config.DiscoveryConfig
+	Delimiter           string
+	StreamlineResponses bool
+	GetUserToken        UserTokenFunc
+	CreateTransport     client.TransportCreator
+	BaseURL             string
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -103,15 +105,16 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	s := &Server{
-		name:            cfg.Name,
-		backends:        cfg.Backends,
-		discovery:       cfg.Discovery,
-		delimiter:       delimiter,
-		getUserToken:    cfg.GetUserToken,
-		createTransport: cfg.CreateTransport,
-		baseURL:         cfg.BaseURL,
-		conns:           make(map[connKey]*conn),
-		stopCleanup:     make(chan struct{}),
+		name:                cfg.Name,
+		backends:            cfg.Backends,
+		discovery:           cfg.Discovery,
+		delimiter:           delimiter,
+		streamlineResponses: cfg.StreamlineResponses,
+		getUserToken:        cfg.GetUserToken,
+		createTransport:     cfg.CreateTransport,
+		baseURL:             cfg.BaseURL,
+		conns:               make(map[connKey]*conn),
+		stopCleanup:         make(chan struct{}),
 	}
 
 	hooks := &mcpserver.Hooks{}
@@ -234,6 +237,12 @@ func (s *Server) onRegisterSession(ctx context.Context, session mcpserver.Client
 		for _, tool := range backendTools {
 			namespacedName := PrefixToolName(backendName, tool.Name, s.delimiter)
 			tool.Name = namespacedName
+			if s.streamlineResponses {
+				tool.Description = streamlineDescription(tool.Description)
+				if len(tool.RawInputSchema) > 0 {
+					tool.RawInputSchema = streamlineInputSchema(tool.RawInputSchema)
+				}
+			}
 			sessionTools[namespacedName] = mcpserver.ServerTool{
 				Tool:    tool,
 				Handler: s.makeToolHandler(userEmail, backendName),

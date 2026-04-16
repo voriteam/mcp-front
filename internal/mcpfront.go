@@ -441,14 +441,15 @@ func buildHTTPHandler(
 		}
 
 		agg := aggregate.NewServer(aggregate.ServerConfig{
-			Name:            serverName,
-			TransportType:   serverConfig.TransportType,
-			Backends:        backendConfigs,
-			Discovery:       serverConfig.Discovery,
-			Delimiter:       serverConfig.Delimiter,
-			GetUserToken:    userTokenService.GetUserToken,
-			CreateTransport: client.DefaultTransportCreator,
-			BaseURL:         baseURL,
+			Name:                serverName,
+			TransportType:       serverConfig.TransportType,
+			Backends:            backendConfigs,
+			Discovery:           serverConfig.Discovery,
+			Delimiter:           serverConfig.Delimiter,
+			StreamlineResponses: serverConfig.StreamlineResponses,
+			GetUserToken:        userTokenService.GetUserToken,
+			CreateTransport:     client.DefaultTransportCreator,
+			BaseURL:             baseURL,
 		})
 		agg.Start()
 		aggregates = append(aggregates, agg)

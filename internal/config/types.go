@@ -215,9 +215,10 @@ type MCPClientConfig struct {
 	InlineConfig json.RawMessage `json:"inline,omitempty"`
 
 	// Aggregate server configuration
-	Servers   []string         `json:"servers,omitempty"`
-	Discovery *DiscoveryConfig `json:"discovery,omitempty"`
-	Delimiter string           `json:"delimiter,omitempty"`
+	Servers             []string         `json:"servers,omitempty"`
+	Discovery           *DiscoveryConfig `json:"discovery,omitempty"`
+	Delimiter           string           `json:"delimiter,omitempty"`
+	StreamlineResponses bool             `json:"streamlineResponses,omitempty"`
 }
 
 // ClientCredentialsConfig configures OAuth2 client credentials grant (RFC 6749 Section 4.4).
