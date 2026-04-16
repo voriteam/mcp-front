@@ -391,11 +391,8 @@ func TestValidateFile(t *testing.T) {
 			wantErrors: []string{
 				"authorizationUrl is required for OAuth configuration",
 				"tokenUrl is required for OAuth configuration",
-				"scopes is required for OAuth configuration",
-				"scopes must be an array",
-				"clientSecret is required for OAuth configuration",
 			},
-			wantErrCount: 5,
+			wantErrCount: 2,
 		},
 	}
 

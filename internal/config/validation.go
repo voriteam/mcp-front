@@ -324,10 +324,12 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 					Message: "inline configuration is required for inline transport",
 				})
 			}
+		case "cube":
+			// Cube servers are validated via env vars at runtime
 		default:
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    fmt.Sprintf("mcpServers.%s.transportType", name),
-				Message: fmt.Sprintf("invalid transportType '%s' - supported types: stdio, sse, streamable-http, inline", transportType),
+				Message: fmt.Sprintf("invalid transportType '%s' - supported types: stdio, sse, streamable-http, inline, cube", transportType),
 			})
 		}
 
@@ -723,10 +725,12 @@ func validateUserAuthentication(userAuth any, path string, result *ValidationRes
 	}
 }
 
-// validateOAuthServiceConfig validates OAuth service configuration
+// validateOAuthServiceConfig validates OAuth service configuration.
+// authorizationUrl and tokenUrl are required. clientId, clientSecret, and scopes
+// are optional — if omitted, mcp-front performs dynamic client registration (RFC 7591)
+// with the upstream service.
 func validateOAuthServiceConfig(oauth map[string]any, path string, result *ValidationResult) {
-	// Check required fields
-	requiredFields := []string{"clientId", "authorizationUrl", "tokenUrl", "scopes"}
+	requiredFields := []string{"authorizationUrl", "tokenUrl"}
 	for _, field := range requiredFields {
 		if _, ok := oauth[field]; !ok {
 			result.Errors = append(result.Errors, ValidationError{
@@ -736,29 +740,26 @@ func validateOAuthServiceConfig(oauth map[string]any, path string, result *Valid
 		}
 	}
 
-	// Validate scopes is an array
-	if scopes, ok := oauth["scopes"].([]any); ok {
-		if len(scopes) == 0 {
+	// Scopes are optional (some providers support dynamic registration without explicit scopes)
+	// but if provided, must be a non-empty array
+	if rawScopes, ok := oauth["scopes"]; ok {
+		scopes, isArray := rawScopes.([]any)
+		if !isArray {
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    path + ".scopes",
-				Message: "at least one scope is required",
+				Message: "scopes must be an array",
+			})
+		} else if len(scopes) == 0 {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    path + ".scopes",
+				Message: "at least one scope is required when scopes is specified",
 			})
 		}
-	} else {
-		result.Errors = append(result.Errors, ValidationError{
-			Path:    path + ".scopes",
-			Message: "scopes must be an array",
-		})
 	}
 
-	// Check client secret uses env var
+	// If clientSecret is provided, it must use env var reference
 	if clientSecret, ok := oauth["clientSecret"]; ok {
 		validateSecretReference(clientSecret, path+".clientSecret", result)
-	} else {
-		result.Errors = append(result.Errors, ValidationError{
-			Path:    path + ".clientSecret",
-			Message: "clientSecret is required for OAuth configuration",
-		})
 	}
 }
 
