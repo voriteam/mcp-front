@@ -37,6 +37,7 @@ const (
 	MCPClientTypeSSE        MCPClientType = "sse"
 	MCPClientTypeStreamable MCPClientType = "streamable-http"
 	MCPClientTypeInline     MCPClientType = "inline"
+	MCPClientTypeCube       MCPClientType = "cube"
 )
 
 // ServerType represents whether a server is a direct backend or an aggregate
