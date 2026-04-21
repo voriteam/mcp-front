@@ -129,9 +129,6 @@ func NewServer(cfg ServerConfig) *Server {
 	case config.MCPClientTypeStreamable:
 		streamable := mcpserver.NewStreamableHTTPServer(s.mcpServer,
 			mcpserver.WithEndpointPath("/"+cfg.Name+"/"),
-			mcpserver.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-				return r.Context()
-			}),
 		)
 		s.transport = streamable
 	default:
