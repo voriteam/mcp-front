@@ -122,6 +122,12 @@ func NewServer(cfg ServerConfig) *Server {
 
 	hooks := &mcpserver.Hooks{}
 	hooks.AddOnRegisterSession(s.onRegisterSession)
+	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcp.ListToolsRequest) {
+		s.populateToolsFromContext(ctx)
+	})
+	hooks.AddBeforeCallTool(func(ctx context.Context, _ any, _ *mcp.CallToolRequest) {
+		s.populateToolsFromContext(ctx)
+	})
 
 	s.mcpServer = mcpserver.NewMCPServer(cfg.Name, "1.0.0",
 		mcpserver.WithHooks(hooks),
@@ -130,8 +136,14 @@ func NewServer(cfg ServerConfig) *Server {
 
 	switch cfg.TransportType {
 	case config.MCPClientTypeStreamable:
+		// StatelessGeneratingSessionIdManager mints fresh UUIDs for
+		// `initialize` requests and validates subsequent IDs by format
+		// only. A stale ID surviving a pod restart passes validation
+		// instead of 400-ing, and the before-tool hooks above rebuild
+		// the per-session tool list lazily for those rehydrated sessions.
 		streamable := mcpserver.NewStreamableHTTPServer(s.mcpServer,
 			mcpserver.WithEndpointPath("/"+cfg.Name+"/"),
+			mcpserver.WithSessionIdManager(&mcpserver.StatelessGeneratingSessionIdManager{}),
 		)
 		s.transport = streamable
 	default:
@@ -201,6 +213,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) onRegisterSession(ctx context.Context, session mcpserver.ClientSession) {
+	s.ensureSessionTools(ctx, session)
+}
+
+// ensureSessionTools populates per-session tools if they are missing. It is
+// called from OnRegisterSession (when a client runs `initialize`) and from
+// the tools/list and tools/call before-hooks so that ephemeral sessions
+// created for requests carrying a stale session ID (e.g. after a pod restart)
+// transparently get their tool list rebuilt from the aggregate's cached
+// discovery instead of appearing empty.
+func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.ClientSession) {
+	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
+	if !ok {
+		log.LogErrorWithFields("aggregate", "Session does not support per-session tools", map[string]any{
+			"server":    s.name,
+			"sessionID": session.SessionID(),
+		})
+		return
+	}
+	if len(sessionWithTools.GetSessionTools()) > 0 {
+		return
+	}
+
 	userEmail, _ := oauth.GetUserFromContext(ctx)
 	if userEmail == "" {
 		userEmail = "anonymous"
@@ -216,15 +250,6 @@ func (s *Server) onRegisterSession(ctx context.Context, session mcpserver.Client
 			"server": s.name,
 			"user":   userEmail,
 			"error":  err.Error(),
-		})
-		return
-	}
-
-	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
-	if !ok {
-		log.LogErrorWithFields("aggregate", "Session does not support per-session tools", map[string]any{
-			"server":    s.name,
-			"sessionID": session.SessionID(),
 		})
 		return
 	}
@@ -254,6 +279,12 @@ func (s *Server) onRegisterSession(ctx context.Context, session mcpserver.Client
 		"user":      userEmail,
 		"toolCount": len(sessionTools),
 	})
+}
+
+func (s *Server) populateToolsFromContext(ctx context.Context) {
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		s.ensureSessionTools(ctx, session)
+	}
 }
 
 // getTools returns cached tool schemas or triggers fresh discovery.
