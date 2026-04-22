@@ -425,7 +425,7 @@ func buildHTTPHandler(
 		}
 
 		mcpMiddlewares := []server.MiddlewareFunc{mcpLogger, corsMiddleware}
-		mcpMiddlewares = append(mcpMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, serverConfig.ServiceAuths)...)
+		mcpMiddlewares = append(mcpMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, gcpValidator, serverConfig.ServiceAuths)...)
 		mcpMiddlewares = append(mcpMiddlewares, mcpRecover)
 
 		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(handler, mcpMiddlewares...))
@@ -460,7 +460,7 @@ func buildHTTPHandler(
 		// with 200 instead of being rejected as unauthenticated by the
 		// RequireAuth gate (ChainMiddleware makes later entries outer).
 		aggMiddlewares := []server.MiddlewareFunc{mcpLogger}
-		aggMiddlewares = append(aggMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, serverConfig.ServiceAuths)...)
+		aggMiddlewares = append(aggMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, gcpValidator, serverConfig.ServiceAuths)...)
 		aggMiddlewares = append(aggMiddlewares, corsMiddleware, mcpRecover)
 
 		aggHandler := server.ChainMiddleware(agg.Handler(), aggMiddlewares...)
@@ -522,7 +522,7 @@ func buildInlineHandler(serverName string, serverConfig *config.MCPClientConfig)
 // server.ChainMiddleware wraps last-first (the last slice item becomes the
 // outermost wrapper and executes first), so the returned slice is ordered
 // inner-to-outer: [RequireAuth, OAuthValidate, ServiceAuth].
-func buildAuthMiddlewares(serverName string, authServer *oauth.AuthorizationServer, authConfig config.OAuthAuthConfig, serviceAuths []config.ServiceAuth) []server.MiddlewareFunc {
+func buildAuthMiddlewares(serverName string, authServer *oauth.AuthorizationServer, authConfig config.OAuthAuthConfig, gcpValidator *oauth.GCPAccessTokenValidator, serviceAuths []config.ServiceAuth) []server.MiddlewareFunc {
 	if authServer == nil && len(serviceAuths) == 0 {
 		return nil
 	}
@@ -530,7 +530,7 @@ func buildAuthMiddlewares(serverName string, authServer *oauth.AuthorizationServ
 		server.NewRequireAuthMiddleware(authServer != nil, authConfig.Issuer),
 	}
 	if authServer != nil {
-		mws = append(mws, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience))
+		mws = append(mws, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator, authConfig.AllowedDomains))
 	}
 	if len(serviceAuths) > 0 {
 		mws = append(mws, server.NewServiceAuthMiddleware(serverName, serviceAuths))

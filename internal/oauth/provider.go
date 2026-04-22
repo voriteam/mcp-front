@@ -6,14 +6,23 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/stainless-api/mcp-front/internal/crypto"
+	"github.com/stainless-api/mcp-front/internal/emailutil"
+	jsonwriter "github.com/stainless-api/mcp-front/internal/json"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/servicecontext"
 )
 
 const userContextKey contextKey = "user_email"
+const authTokenContextKey contextKey = "auth_token"
+
+func GetAuthTokenFromContext(ctx context.Context) (string, bool) {
+	token, ok := ctx.Value(authTokenContextKey).(string)
+	return token, ok
+}
 
 func GetUserFromContext(ctx context.Context) (string, bool) {
 	email, ok := ctx.Value(userContextKey).(string)
@@ -51,11 +60,12 @@ func GenerateJWTSecret(providedSecret string) ([]byte, error) {
 }
 
 // NewValidateTokenMiddleware tries to authenticate the request as an OAuth
-// Bearer token. On success it sets the OAuth user-email context and continues.
-// On any failure (missing header, wrong scheme, invalid signature, expired,
-// wrong audience) it passes through unchanged — the downstream RequireAuth
-// gate produces the 401 with the RFC 9728 Bearer challenge.
-func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, acceptIssuerAudience bool) func(http.Handler) http.Handler {
+// Bearer token, falling back to GCP service account access tokens when a
+// validator is configured. On success it sets the user-email context and
+// continues. On any failure (missing header, wrong scheme, invalid signature,
+// expired, wrong audience) it passes through unchanged — the downstream
+// RequireAuth gate produces the 401 with the RFC 9728 Bearer challenge.
+func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, acceptIssuerAudience bool, gcpValidator *GCPAccessTokenValidator, allowedDomains []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -78,10 +88,40 @@ func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, 
 				return
 			}
 
-			claims, err := authServer.ValidateAccessToken(parts[1])
+			token := parts[1]
+			claims, err := authServer.ValidateAccessToken(token)
 			if err != nil {
-				log.LogTraceWithFields("oauth", "Token validation failed", map[string]any{"error": err.Error()})
-				next.ServeHTTP(w, r)
+				// Not one of our JWTs — try it as a GCP service account
+				// access token before passing through to the gate.
+				if gcpValidator == nil {
+					log.LogTraceWithFields("oauth", "Token validation failed", map[string]any{"error": err.Error()})
+					next.ServeHTTP(w, r)
+					return
+				}
+				gcpEmail, gcpErr := gcpValidator.Validate(ctx, token)
+				if gcpErr != nil {
+					log.LogTraceWithFields("oauth", "Token validation failed", map[string]any{"error": gcpErr.Error()})
+					next.ServeHTTP(w, r)
+					return
+				}
+				userEmail := gcpEmail
+				ctx = context.WithValue(ctx, authTokenContextKey, token)
+
+				if onBehalf := r.Header.Get("X-On-Behalf-Of"); onBehalf != "" {
+					domain := emailutil.ExtractDomain(onBehalf)
+					if domain == "" || (len(allowedDomains) > 0 && !slices.Contains(allowedDomains, domain)) {
+						jsonwriter.WriteForbidden(w, "Impersonation target not in allowed domains")
+						return
+					}
+					log.LogInfoWithFields("oauth", "GCP service account impersonating user", map[string]any{
+						"service_account": gcpEmail,
+						"on_behalf_of":    onBehalf,
+					})
+					userEmail = onBehalf
+				}
+
+				ctx = context.WithValue(ctx, userContextKey, userEmail)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
