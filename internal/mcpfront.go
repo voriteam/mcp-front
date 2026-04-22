@@ -370,7 +370,7 @@ func buildHTTPHandler(
 	sseServers := make(map[string]*mcpserver.SSEServer)
 	var aggregates []*aggregate.Server
 
-	backendTokenSources, err := buildGCPTokenSources(context.Background(), cfg.MCPServers)
+	backendTokenSources, err := buildBackendTokenSources(context.Background(), cfg.MCPServers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -631,3 +631,17 @@ func buildGCPTokenSources(ctx context.Context, servers map[string]*config.MCPCli
 	return sources, nil
 }
 
+func buildBackendTokenSources(ctx context.Context, servers map[string]*config.MCPClientConfig) (map[string]oauth2.TokenSource, error) {
+	sources := make(map[string]oauth2.TokenSource)
+	gcp, err := buildGCPTokenSources(ctx, servers)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range gcp {
+		sources[k] = v
+	}
+	for k, v := range buildClientCredentialsSources(servers) {
+		sources[k] = v
+	}
+	return sources, nil
+}
