@@ -35,6 +35,7 @@
         "postgres",
         "bigquery",
         "datadog",
+        "ditto-read-only",
         "sentry-read-only",
         "notion-read-only",
         "sentry",
@@ -56,6 +57,7 @@
         "postgres",
         "bigquery",
         "datadog",
+        "ditto-read-only",
         "sentry-read-only",
         "notion-read-only",
         "sentry",
@@ -215,41 +217,17 @@
       },
       "requiresUserToken": false
     },
+    "ditto-read-only": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:8002/mcp",
+      "options": { "timeout": "30s" },
+      "requiresUserToken": false
+    },
     "cube": {
       "transportType": "cube",
       "env": {
         "CUBE_API_URL": { "$env": "CUBE_API_URL" },
         "CUBE_SIGNING_SECRET": { "$env": "CUBE_SIGNING_SECRET" }
-      }
-    },
-    "ditto-read-only": {
-      "transportType": "inline",
-      "inline": {
-        "description": "Ditto DQL database",
-        "tools": [
-          {
-            "name": "execute",
-            "description": "Execute a DQL statement against the Ditto database. Supports SELECT, INSERT, UPDATE, DELETE, and UPSERT.",
-            "annotations": { "destructiveHint": true },
-            "inputSchema": {
-              "type": "object",
-              "properties": {
-                "statement": { "type": "string", "description": "DQL statement to execute" },
-                "args": { "type": "object", "description": "Named parameters for parameterized queries" }
-              },
-              "required": ["statement"]
-            },
-            "http": {
-              "method": "POST",
-              "url": { "$env": "DITTO_API_URL" },
-              "headers": {
-                "Authorization": { "$env": "DITTO_AUTH_HEADER" },
-                "Content-Type": "application/json"
-              }
-            },
-            "timeout": "30s"
-          }
-        ]
       }
     }
   }
