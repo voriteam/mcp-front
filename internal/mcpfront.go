@@ -430,7 +430,7 @@ func buildHTTPHandler(
 		}
 
 		if authServer != nil {
-			mcpMiddlewares = append(mcpMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience))
+			mcpMiddlewares = append(mcpMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator, authConfig.AllowedDomains))
 		}
 
 		if len(serverConfig.ServiceAuths) > 0 {
@@ -476,7 +476,7 @@ func buildHTTPHandler(
 			aggMiddlewares = append(aggMiddlewares, server.NewServiceAuthMiddleware(serverConfig.ServiceAuths))
 		}
 		if authServer != nil {
-			aggMiddlewares = append(aggMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience))
+			aggMiddlewares = append(aggMiddlewares, oauth.NewValidateTokenMiddleware(authServer, authConfig.Issuer, authConfig.DangerouslyAcceptIssuerAudience, gcpValidator, authConfig.AllowedDomains))
 		}
 		aggMiddlewares = append(aggMiddlewares, corsMiddleware, mcpRecover, mcpLogger)
 

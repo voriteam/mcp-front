@@ -6,14 +6,22 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/stainless-api/mcp-front/internal/crypto"
+	"github.com/stainless-api/mcp-front/internal/emailutil"
 	jsonwriter "github.com/stainless-api/mcp-front/internal/json"
 	"github.com/stainless-api/mcp-front/internal/log"
 )
 
 const userContextKey contextKey = "user_email"
+const authTokenContextKey contextKey = "auth_token"
+
+func GetAuthTokenFromContext(ctx context.Context) (string, bool) {
+	token, ok := ctx.Value(authTokenContextKey).(string)
+	return token, ok
+}
 
 func GetUserFromContext(ctx context.Context) (string, bool) {
 	email, ok := ctx.Value(userContextKey).(string)
@@ -50,7 +58,7 @@ func GenerateJWTSecret(providedSecret string) ([]byte, error) {
 	return secret, nil
 }
 
-func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, acceptIssuerAudience bool) func(http.Handler) http.Handler {
+func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, acceptIssuerAudience bool, gcpValidator *GCPAccessTokenValidator, allowedDomains []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -77,27 +85,49 @@ func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, 
 
 			token := parts[1]
 
+			var userEmail string
 			claims, err := authServer.ValidateAccessToken(token)
-			if err != nil {
+			if err == nil {
+				if err := ValidateAudienceForService(r.URL.Path, claims.Audience, issuer, acceptIssuerAudience); err != nil {
+					log.LogErrorWithFields("oauth", "Audience validation failed", map[string]any{
+						"path":     r.URL.Path,
+						"audience": claims.Audience,
+						"error":    err.Error(),
+					})
+					jsonwriter.WriteUnauthorizedRFC9728(w, "Token audience does not match requested service", metadataURI)
+					return
+				}
+				userEmail = claims.Identity.Email
+			} else if gcpValidator != nil {
+				gcpEmail, gcpErr := gcpValidator.Validate(ctx, token)
+				if gcpErr != nil {
+					jsonwriter.WriteUnauthorizedRFC9728(w, "Invalid or expired token", metadataURI)
+					return
+				}
+				userEmail = gcpEmail
+				ctx = context.WithValue(ctx, authTokenContextKey, token)
+
+				if onBehalf := r.Header.Get("X-On-Behalf-Of"); onBehalf != "" {
+					domain := emailutil.ExtractDomain(onBehalf)
+					if domain == "" || (len(allowedDomains) > 0 && !slices.Contains(allowedDomains, domain)) {
+						jsonwriter.WriteForbidden(w, "Impersonation target not in allowed domains")
+						return
+					}
+					log.LogInfoWithFields("oauth", "GCP service account impersonating user", map[string]any{
+						"service_account": gcpEmail,
+						"on_behalf_of":    onBehalf,
+					})
+					userEmail = onBehalf
+				}
+			} else {
 				jsonwriter.WriteUnauthorizedRFC9728(w, "Invalid or expired token", metadataURI)
 				return
 			}
 
-			if err := ValidateAudienceForService(r.URL.Path, claims.Audience, issuer, acceptIssuerAudience); err != nil {
-				log.LogErrorWithFields("oauth", "Audience validation failed", map[string]any{
-					"path":     r.URL.Path,
-					"audience": claims.Audience,
-					"error":    err.Error(),
-				})
-				jsonwriter.WriteUnauthorizedRFC9728(w, "Token audience does not match requested service", metadataURI)
-				return
-			}
-
-			userEmail := claims.Identity.Email
 			if userEmail != "" {
 				ctx = context.WithValue(ctx, userContextKey, userEmail)
-				r = r.WithContext(ctx)
 			}
+			r = r.WithContext(ctx)
 
 			next.ServeHTTP(w, r)
 		})
