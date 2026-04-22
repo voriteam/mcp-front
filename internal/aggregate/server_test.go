@@ -13,6 +13,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 // mockTransport implements client.MCPClientInterface for testing.
@@ -986,4 +987,70 @@ func TestMaxConnsPerUserZeroUnlimited(t *testing.T) {
 		_, err := srv.getOrCreateConn(context.Background(), "alice@test.com", name)
 		require.NoError(t, err, "connection to %s should succeed with unlimited pool", name)
 	}
+}
+
+type staticTokenSource struct{ token string }
+
+func (s staticTokenSource) Token() (*oauth2.Token, error) {
+	return &oauth2.Token{AccessToken: s.token, TokenType: "Bearer"}, nil
+}
+
+func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"mintlify": {
+			TransportType: config.MCPClientTypeStreamable,
+			URL:           "http://localhost/mintlify",
+			Headers:       map[string]string{"X-Existing": "keep"},
+		},
+		"plain": {
+			TransportType: config.MCPClientTypeStreamable,
+			URL:           "http://localhost/plain",
+		},
+	}
+
+	var (
+		mu      sync.Mutex
+		seen    = make(map[string]map[string]string)
+	)
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		mu.Lock()
+		headers := make(map[string]string, len(conf.Headers))
+		for k, v := range conf.Headers {
+			headers[k] = v
+		}
+		for name, bc := range backendConfigs {
+			if conf.URL == bc.URL {
+				seen[name] = headers
+			}
+		}
+		mu.Unlock()
+		return &mockTransport{tools: []mcp.Tool{{Name: "tool"}}}, nil
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeStreamable,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		TokenSources:    map[string]oauth2.TokenSource{"mintlify": staticTokenSource{"secret-access-token"}},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	_, err := srv.getOrCreateConn(context.Background(), "alice@test.com", "mintlify")
+	require.NoError(t, err)
+	_, err = srv.getOrCreateConn(context.Background(), "alice@test.com", "plain")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Bearer secret-access-token", seen["mintlify"]["Authorization"])
+	assert.Equal(t, "keep", seen["mintlify"]["X-Existing"])
+	assert.NotContains(t, seen["plain"], "Authorization", "backends without a token source get no Authorization header")
+
+	// Original backend config map must not be mutated.
+	assert.NotContains(t, backendConfigs["mintlify"].Headers, "Authorization")
 }
