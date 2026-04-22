@@ -17,6 +17,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/servicecontext"
+	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -66,6 +67,7 @@ type Server struct {
 	delimiter           string
 	streamlineResponses bool
 	getUserToken        UserTokenFunc
+	tokenSources        map[string]oauth2.TokenSource
 	createTransport     client.TransportCreator
 	baseURL             string
 
@@ -94,6 +96,7 @@ type ServerConfig struct {
 	Delimiter           string
 	StreamlineResponses bool
 	GetUserToken        UserTokenFunc
+	TokenSources        map[string]oauth2.TokenSource
 	CreateTransport     client.TransportCreator
 	BaseURL             string
 }
@@ -111,6 +114,7 @@ func NewServer(cfg ServerConfig) *Server {
 		delimiter:           delimiter,
 		streamlineResponses: cfg.StreamlineResponses,
 		getUserToken:        cfg.GetUserToken,
+		tokenSources:        cfg.TokenSources,
 		createTransport:     cfg.CreateTransport,
 		baseURL:             cfg.BaseURL,
 		conns:               make(map[connKey]*conn),
@@ -514,6 +518,14 @@ func (s *Server) createConn(ctx context.Context, userEmail, backendName string) 
 		} else if token != "" {
 			effectiveConfig = backendConfig.ApplyUserToken(token)
 		}
+	}
+
+	if ts, ok := s.tokenSources[backendName]; ok {
+		token, err := ts.Token()
+		if err != nil {
+			return nil, fmt.Errorf("fetching token for %s: %w", backendName, err)
+		}
+		effectiveConfig = effectiveConfig.WithBearerToken(token.AccessToken)
 	}
 
 	transport, err := s.createTransport(effectiveConfig)

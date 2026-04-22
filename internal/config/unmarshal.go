@@ -511,6 +511,22 @@ func (p *ProxyConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// WithBearerToken returns a copy of the config with an Authorization: Bearer
+// header injected. Used by the aggregate to apply GCP and client-credentials
+// tokens to outbound backend requests.
+func (c *MCPClientConfig) WithBearerToken(token string) *MCPClientConfig {
+	if token == "" {
+		return c
+	}
+	result := *c
+	result.Headers = make(map[string]string, len(c.Headers)+1)
+	for k, v := range c.Headers {
+		result.Headers[k] = v
+	}
+	result.Headers["Authorization"] = "Bearer " + token
+	return &result
+}
+
 // ApplyUserToken creates a copy of the config with user tokens substituted
 func (c *MCPClientConfig) ApplyUserToken(userToken string) *MCPClientConfig {
 	if userToken == "" || !c.RequiresUserToken {

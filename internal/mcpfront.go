@@ -370,6 +370,11 @@ func buildHTTPHandler(
 	sseServers := make(map[string]*mcpserver.SSEServer)
 	var aggregates []*aggregate.Server
 
+	backendTokenSources, err := buildGCPTokenSources(context.Background(), cfg.MCPServers)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	for serverName, serverConfig := range cfg.MCPServers {
 		if serverConfig.IsAggregate() {
 			continue
@@ -455,6 +460,7 @@ func buildHTTPHandler(
 			Delimiter:           serverConfig.Delimiter,
 			StreamlineResponses: serverConfig.StreamlineResponses,
 			GetUserToken:        userTokenService.GetUserToken,
+			TokenSources:        backendTokenSources,
 			CreateTransport:     client.DefaultTransportCreator,
 			BaseURL:             baseURL,
 		})
@@ -605,16 +611,23 @@ func buildClientCredentialsSources(servers map[string]*config.MCPClientConfig) m
 	return sources
 }
 
-func newGCPTokenSource(ctx context.Context, servers map[string]*config.MCPClientConfig) (oauth2.TokenSource, error) {
-	for _, cfg := range servers {
-		if cfg.GCPAuth {
+func buildGCPTokenSources(ctx context.Context, servers map[string]*config.MCPClientConfig) (map[string]oauth2.TokenSource, error) {
+	sources := make(map[string]oauth2.TokenSource)
+	var shared oauth2.TokenSource
+	for name, cfg := range servers {
+		if !cfg.GCPAuth {
+			continue
+		}
+		if shared == nil {
 			ts, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
 			if err != nil {
 				return nil, fmt.Errorf("failed to create GCP default token source: %w", err)
 			}
+			shared = ts
 			log.LogInfoWithFields("gcp_auth", "GCP token source initialized from application default credentials", nil)
-			return ts, nil
 		}
+		sources[name] = shared
 	}
-	return nil, nil
+	return sources, nil
 }
+
