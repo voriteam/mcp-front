@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stretchr/testify/assert"
@@ -993,6 +994,56 @@ type staticTokenSource struct{ token string }
 
 func (s staticTokenSource) Token() (*oauth2.Token, error) {
 	return &oauth2.Token{AccessToken: s.token, TokenType: "Bearer"}, nil
+}
+
+type fakeSessionWithTools struct {
+	id    string
+	mu    sync.Mutex
+	tools map[string]mcpserver.ServerTool
+}
+
+func (f *fakeSessionWithTools) Initialize()      {}
+func (f *fakeSessionWithTools) Initialized() bool { return true }
+func (f *fakeSessionWithTools) NotificationChannel() chan<- mcp.JSONRPCNotification {
+	return make(chan<- mcp.JSONRPCNotification, 1)
+}
+func (f *fakeSessionWithTools) SessionID() string { return f.id }
+func (f *fakeSessionWithTools) GetSessionTools() map[string]mcpserver.ServerTool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]mcpserver.ServerTool, len(f.tools))
+	for k, v := range f.tools {
+		out[k] = v
+	}
+	return out
+}
+func (f *fakeSessionWithTools) SetSessionTools(tools map[string]mcpserver.ServerTool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tools = make(map[string]mcpserver.ServerTool, len(tools))
+	for k, v := range tools {
+		f.tools[k] = v
+	}
+}
+
+func TestEnsureSessionToolsRehydratesAfterRestart(t *testing.T) {
+	backends := map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	}
+	srv := newTestServer(t, backends)
+
+	// Simulate an ephemeral session created for a request that carries a
+	// stale session ID (pod restart scenario — session is unregistered
+	// and GetSessionTools returns empty).
+	stale := &fakeSessionWithTools{id: "mcp-session-stale"}
+	ctx := srv.mcpServer.WithContext(context.Background(), stale)
+
+	srv.populateToolsFromContext(ctx)
+
+	tools := stale.GetSessionTools()
+	require.NotEmpty(t, tools, "tools should be repopulated for stale session")
+	_, ok := tools["postgres"+srv.delimiter+"query"]
+	assert.True(t, ok, "expected namespaced tool to be present after rehydration")
 }
 
 func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
