@@ -34,6 +34,7 @@
       "servers": [
         "postgres",
         "bigquery",
+        "cube",
         "datadog",
         "ditto-read-only",
         "sentry-read-only",
@@ -56,6 +57,7 @@
       "servers": [
         "postgres",
         "bigquery",
+        "cube",
         "datadog",
         "ditto-read-only",
         "sentry-read-only",
@@ -221,6 +223,16 @@
       "transportType": "streamable-http",
       "url": "http://localhost:8002/mcp",
       "options": { "timeout": "30s" },
+      "requiresUserToken": false
+    },
+    "cube": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:8003/mcp",
+      "options": { "timeout": "30s" },
+      "hmacJWT": {
+        "secret": { "$env": "CUBE_SIGNING_SECRET" },
+        "claims": { "internal": true }
+      },
       "requiresUserToken": false
     }
   }
