@@ -624,6 +624,25 @@ func buildGCPTokenSources(ctx context.Context, servers map[string]*config.MCPCli
 	return sources, nil
 }
 
+func buildHMACJWTSources(servers map[string]*config.MCPClientConfig) (map[string]oauth2.TokenSource, error) {
+	sources := make(map[string]oauth2.TokenSource)
+	for name, cfg := range servers {
+		if cfg.HMACJWTAuth == nil {
+			continue
+		}
+		src, err := crypto.NewHMACJWTSource(cfg.HMACJWTAuth)
+		if err != nil {
+			return nil, fmt.Errorf("building hmacJWT source for %s: %w", name, err)
+		}
+		sources[name] = src
+		log.LogInfoWithFields("hmac_jwt", "Token source initialized", map[string]any{
+			"service": name,
+			"ttl":     cfg.HMACJWTAuth.TTL.String(),
+		})
+	}
+	return sources, nil
+}
+
 func buildBackendTokenSources(ctx context.Context, servers map[string]*config.MCPClientConfig) (map[string]oauth2.TokenSource, error) {
 	sources := make(map[string]oauth2.TokenSource)
 	gcp, err := buildGCPTokenSources(ctx, servers)
@@ -634,6 +653,13 @@ func buildBackendTokenSources(ctx context.Context, servers map[string]*config.MC
 		sources[k] = v
 	}
 	for k, v := range buildClientCredentialsSources(servers) {
+		sources[k] = v
+	}
+	hmac, err := buildHMACJWTSources(servers)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range hmac {
 		sources[k] = v
 	}
 	return sources, nil

@@ -31,6 +31,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		UserAuthentication *UserAuthentication        `json:"userAuthentication,omitempty"`
 		ServiceAuths       []ServiceAuth              `json:"serviceAuths,omitempty"`
 		ClientCredentials  *ClientCredentialsConfig   `json:"clientCredentials,omitempty"`
+		HMACJWTAuth        *HMACJWTAuthConfig         `json:"hmacJWT,omitempty"`
 		InlineConfig       json.RawMessage            `json:"inline,omitempty"`
 		Servers             []string                  `json:"servers,omitempty"`
 		Discovery           json.RawMessage           `json:"discovery,omitempty"`
@@ -165,6 +166,38 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 			cc.ClientSecret = Secret(parsed.value)
 		}
 		c.ClientCredentials = cc
+	}
+
+	// Parse HMAC JWT auth if present
+	if raw.HMACJWTAuth != nil {
+		hj := raw.HMACJWTAuth
+		if hj.SecretRaw == nil {
+			return fmt.Errorf("hmacJWT.secret is required")
+		}
+		parsed, err := ParseConfigValue(hj.SecretRaw)
+		if err != nil {
+			return fmt.Errorf("parsing hmacJWT.secret: %w", err)
+		}
+		hj.Secret = Secret(parsed.value)
+
+		if hj.Algorithm == "" {
+			hj.Algorithm = "HS256"
+		}
+		if hj.Algorithm != "HS256" {
+			return fmt.Errorf("hmacJWT.algorithm %q not supported (only HS256)", hj.Algorithm)
+		}
+
+		if hj.TTLRaw != "" {
+			d, err := time.ParseDuration(hj.TTLRaw)
+			if err != nil {
+				return fmt.Errorf("parsing hmacJWT.ttl: %w", err)
+			}
+			hj.TTL = d
+		}
+		if hj.TTL <= 0 {
+			hj.TTL = time.Hour
+		}
+		c.HMACJWTAuth = hj
 	}
 
 	return nil

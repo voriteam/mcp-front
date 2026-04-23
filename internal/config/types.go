@@ -211,6 +211,11 @@ type MCPClientConfig struct {
 	// mcp-front exchanges client ID/secret for an access token and refreshes it automatically.
 	ClientCredentials *ClientCredentialsConfig `json:"clientCredentials,omitempty"`
 
+	// HMACJWTAuth mints a short-lived HMAC-signed JWT locally and attaches it
+	// to outbound backend requests as a Bearer token. Used for backends that
+	// accept statically-signed service tokens (e.g. Cube's internal JWT).
+	HMACJWTAuth *HMACJWTAuthConfig `json:"hmacJWT,omitempty"`
+
 	// Inline MCP server configuration
 	InlineConfig json.RawMessage `json:"inline,omitempty"`
 
@@ -230,6 +235,22 @@ type ClientCredentialsConfig struct {
 
 	ClientIDRaw     json.RawMessage `json:"clientId"`
 	ClientSecretRaw json.RawMessage `json:"clientSecret"`
+}
+
+// HMACJWTAuthConfig configures locally-minted, HMAC-signed JWTs for
+// authenticating outbound requests to a backend.
+//
+// Only HS256 is supported today. Claims is a JSON object merged into the
+// token payload alongside the `exp` claim that mcp-front adds automatically.
+// TTL defaults to one hour.
+type HMACJWTAuthConfig struct {
+	Secret    Secret         `json:"-"`
+	Algorithm string         `json:"algorithm,omitempty"`
+	Claims    map[string]any `json:"claims,omitempty"`
+	TTL       time.Duration  `json:"-"`
+
+	SecretRaw json.RawMessage `json:"secret"`
+	TTLRaw    string          `json:"ttl,omitempty"`
 }
 
 // IsStdio returns true if this is a stdio-based MCP server
