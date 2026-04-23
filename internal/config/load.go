@@ -355,8 +355,6 @@ func validateMCPServer(name string, server *MCPClientConfig) error {
 		if server.Command != "" || server.URL != "" {
 			return fmt.Errorf("server %s with inline transport cannot have command or url", name)
 		}
-	case MCPClientTypeCube:
-		// Cube servers are configured via env (CUBE_API_URL, CUBE_SIGNING_SECRET).
 	default:
 		return fmt.Errorf("server %s has invalid transportType: %s", name, server.TransportType)
 	}

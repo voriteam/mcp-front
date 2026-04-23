@@ -222,13 +222,6 @@
       "url": "http://localhost:8002/mcp",
       "options": { "timeout": "30s" },
       "requiresUserToken": false
-    },
-    "cube": {
-      "transportType": "cube",
-      "env": {
-        "CUBE_API_URL": { "$env": "CUBE_API_URL" },
-        "CUBE_SIGNING_SECRET": { "$env": "CUBE_SIGNING_SECRET" }
-      }
     }
   }
 }

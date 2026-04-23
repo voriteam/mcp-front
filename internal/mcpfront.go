@@ -18,7 +18,6 @@ import (
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/crypto"
-	"github.com/stainless-api/mcp-front/internal/cube"
 	"github.com/stainless-api/mcp-front/internal/httputil"
 	"github.com/stainless-api/mcp-front/internal/idp"
 	"github.com/stainless-api/mcp-front/internal/inline"
@@ -391,13 +390,7 @@ func buildHTTPHandler(
 		var mcpSrv *mcpserver.MCPServer
 		var sseServer *mcpserver.SSEServer
 
-		if serverConfig.TransportType == config.MCPClientTypeCube {
-			cubeServer := cube.NewServer(serverConfig.Env["CUBE_API_URL"], serverConfig.Env["CUBE_SIGNING_SECRET"])
-			handler = inline.NewHandler(serverName, cubeServer)
-			log.LogInfoWithFields("server", "Created Cube MCP server", map[string]any{
-				"name": serverName,
-			})
-		} else if serverConfig.TransportType == config.MCPClientTypeInline {
+		if serverConfig.TransportType == config.MCPClientTypeInline {
 			handler, err = buildInlineHandler(serverName, serverConfig)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to create inline handler for %s: %w", serverName, err)

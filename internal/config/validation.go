@@ -324,12 +324,10 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 					Message: "inline configuration is required for inline transport",
 				})
 			}
-		case "cube":
-			// Cube servers are validated via env vars at runtime
 		default:
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    fmt.Sprintf("mcpServers.%s.transportType", name),
-				Message: fmt.Sprintf("invalid transportType '%s' - supported types: stdio, sse, streamable-http, inline, cube", transportType),
+				Message: fmt.Sprintf("invalid transportType '%s' - supported types: stdio, sse, streamable-http, inline", transportType),
 			})
 		}
 
