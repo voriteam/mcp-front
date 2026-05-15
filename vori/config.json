@@ -247,8 +247,8 @@
       "requiresUserToken": true,
       "userAuthentication": {
         "type": "manual",
-        "displayName": "Materialize App Password",
-        "instructions": "Generate an app password in Materialize Console, then base64-encode '<email>:<app-password>' (e.g. `printf 'me@vori.com:mzp_xxx' | base64`) and paste the resulting string here.",
+        "displayName": "Materialize MCP Token",
+        "instructions": "In the Materialize Console, go to Connect, open the MCP Server tab, and click 'Generate personal MCP token'. Paste the generated token here.",
         "helpUrl": "https://materialize.com/docs/integrations/mcp-server/mcp-developer/"
       }
     }
