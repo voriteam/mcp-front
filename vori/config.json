@@ -48,6 +48,8 @@
         "notion",
         "subcog",
         "materialize"
+        "subcog",
+        "materialize"
       ]
     },
     "gateway-streamable": {
