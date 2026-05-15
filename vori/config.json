@@ -239,7 +239,7 @@
     },
     "materialize": {
       "transportType": "streamable-http",
-      "url": "https://8qe42m4wnvazwizovlbybgxk0.lb.us-east-1.aws.materialize.cloud/api/mcp/agent",
+      "url": "https://8qe42m4wnvazwizovlbybgxk0.lb.us-east-1.aws.materialize.cloud/api/mcp/developer",
       "options": { "timeout": "30s" },
       "headers": {
         "Authorization": { "$userToken": "Basic {{token}}" }
