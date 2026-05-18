@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -110,9 +113,16 @@ func DefaultTransportCreator(conf *config.MCPClientConfig) (MCPClientInterface, 
 			if len(conf.Headers) > 0 {
 				options = append(options, transport.WithHTTPHeaders(conf.Headers))
 			}
+			// mcp-go always serializes an empty "params":{} object on requests
+			// and notifications. Strict MCP servers (e.g. Materialize) reject
+			// it with HTTP 422; an empty params is equivalent to an absent one
+			// per JSON-RPC 2.0, so a transport that strips it is safe for every
+			// backend and keeps mcp-front compatible with strict servers.
+			httpClient := &http.Client{Transport: stripEmptyParamsTransport{base: http.DefaultTransport}}
 			if conf.Timeout > 0 {
-				options = append(options, transport.WithHTTPTimeout(conf.Timeout))
+				httpClient.Timeout = conf.Timeout
 			}
+			options = append(options, transport.WithHTTPBasicClient(httpClient))
 			mcpClient, err := client.NewStreamableHttpClient(conf.URL, options...)
 			if err != nil {
 				return nil, err
@@ -132,6 +142,62 @@ func DefaultTransportCreator(conf *config.MCPClientConfig) (MCPClientInterface, 
 	}
 
 	return nil, errors.New("invalid client type: must have either command or url")
+}
+
+// stripEmptyParamsTransport is an http.RoundTripper that removes an empty
+// "params":{} (or null) value from outgoing JSON-RPC request bodies. mcp-go
+// always serializes that empty object, but JSON-RPC 2.0 treats empty params as
+// identical to absent params, and strict MCP servers (e.g. Materialize) reject
+// the empty object with HTTP 422. Stripping it is safe for every server.
+type stripEmptyParamsTransport struct {
+	base http.RoundTripper
+}
+
+func (t stripEmptyParamsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req.Body == nil || req.Method != http.MethodPost {
+		return base.RoundTrip(req)
+	}
+
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	body = stripEmptyJSONRPCParams(body)
+
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.ContentLength = int64(len(body))
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return base.RoundTrip(clone)
+}
+
+// stripEmptyJSONRPCParams removes a top-level "params" key from a JSON-RPC
+// message body when its value is an empty object or null. Bodies that are not
+// a JSON object, or whose params carries content, are returned unchanged.
+func stripEmptyJSONRPCParams(body []byte) []byte {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return body
+	}
+	params, ok := fields["params"]
+	if !ok {
+		return body
+	}
+	switch string(bytes.TrimSpace(params)) {
+	case "{}", "null":
+		delete(fields, "params")
+		if out, err := json.Marshal(fields); err == nil {
+			return out
+		}
+	}
+	return body
 }
 
 // startPingTask runs a goroutine that pings the MCP server every 30 seconds.

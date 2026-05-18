@@ -46,7 +46,8 @@
         "linear",
         "gke",
         "notion",
-        "subcog"
+        "subcog",
+        "materialize"
       ]
     },
     "gateway-streamable": {
@@ -69,7 +70,8 @@
         "linear",
         "gke",
         "notion",
-        "subcog"
+        "subcog",
+        "materialize"
       ]
     },
     "postgres": {
@@ -234,6 +236,21 @@
         "claims": { "internal": true }
       },
       "requiresUserToken": false
+    },
+    "materialize": {
+      "transportType": "streamable-http",
+      "url": "https://8qe42m4wnvazwizovlbybgxk0.lb.us-east-1.aws.materialize.cloud/api/mcp/developer",
+      "options": { "timeout": "30s" },
+      "headers": {
+        "Authorization": { "$userToken": "Basic {{token}}" }
+      },
+      "requiresUserToken": true,
+      "userAuthentication": {
+        "type": "manual",
+        "displayName": "Materialize MCP Token",
+        "instructions": "In the Materialize Console, go to Connect, open the MCP Server tab, and click 'Generate personal MCP token'. Paste the generated token here.",
+        "helpUrl": "https://materialize.com/docs/integrations/mcp-server/mcp-developer/"
+      }
     }
   }
 }
