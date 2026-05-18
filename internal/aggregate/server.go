@@ -46,7 +46,7 @@ type conn struct {
 	lastAccessed atomic.Pointer[time.Time]
 }
 
-// cachedTools holds discovered tool schemas. Global, not per-user.
+// cachedTools holds discovered tool schemas, valid until expires.
 type cachedTools struct {
 	tools   map[string][]mcp.Tool // backendName -> filtered tools
 	expires time.Time
@@ -63,6 +63,8 @@ type mcpTransport interface {
 type Server struct {
 	name                string
 	backends            map[string]*config.MCPClientConfig
+	sharedBackends      map[string]*config.MCPClientConfig
+	userBackends        map[string]*config.MCPClientConfig
 	discovery           *config.DiscoveryConfig
 	delimiter           string
 	streamlineResponses bool
@@ -72,7 +74,8 @@ type Server struct {
 	baseURL             string
 
 	cacheMu        sync.RWMutex
-	cache          *cachedTools
+	sharedCache    *cachedTools            // tools from backends needing no user token
+	userCache      map[string]*cachedTools // token-gated tools, keyed by userEmail
 	discoveryGroup singleflight.Group
 
 	connMu    sync.RWMutex
@@ -107,9 +110,24 @@ func NewServer(cfg ServerConfig) *Server {
 		delimiter = config.DefaultAggregateDelimiter
 	}
 
+	// Partition backends: those needing no user token have identical tools for
+	// every user and are cached globally; token-gated backends are discovered
+	// and cached per-user.
+	sharedBackends := make(map[string]*config.MCPClientConfig)
+	userBackends := make(map[string]*config.MCPClientConfig)
+	for name, conf := range cfg.Backends {
+		if conf.RequiresUserToken {
+			userBackends[name] = conf
+		} else {
+			sharedBackends[name] = conf
+		}
+	}
+
 	s := &Server{
 		name:                cfg.Name,
 		backends:            cfg.Backends,
+		sharedBackends:      sharedBackends,
+		userBackends:        userBackends,
 		discovery:           cfg.Discovery,
 		delimiter:           delimiter,
 		streamlineResponses: cfg.StreamlineResponses,
@@ -117,6 +135,7 @@ func NewServer(cfg ServerConfig) *Server {
 		tokenSources:        cfg.TokenSources,
 		createTransport:     cfg.CreateTransport,
 		baseURL:             cfg.BaseURL,
+		userCache:           make(map[string]*cachedTools),
 		conns:               make(map[connKey]*conn),
 		stopCleanup:         make(chan struct{}),
 	}
@@ -291,27 +310,46 @@ func (s *Server) populateToolsFromContext(ctx context.Context) {
 	}
 }
 
-// getTools returns cached tool schemas or triggers fresh discovery.
-// Uses singleflight to prevent concurrent discoveries (cache stampede).
-//
-// The singleflight key is global ("discover"), not per-user: tool schemas are
-// the same for all users of a given backend, so the cache is intentionally shared.
-// The first caller to trigger discovery authenticates backend connections with their
-// credentials. Actual tool calls use per-user connections via getOrCreateConn.
+// getTools returns the tool set for a user: globally-shared backends plus the
+// user's token-gated backends, merged. Shared backends are discovered once and
+// cached for everyone; token-gated backends are discovered and cached per-user.
 func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+	shared, err := s.getSharedTools(ctx, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.getUserTools(ctx, userEmail)
+	if err != nil {
+		return nil, err
+	}
+
+	// Shared and token-gated backend names are disjoint, so the union is
+	// collision-free.
+	merged := make(map[string][]mcp.Tool, len(shared)+len(user))
+	maps.Copy(merged, shared)
+	maps.Copy(merged, user)
+	return merged, nil
+}
+
+// getSharedTools returns tools for backends that need no user token. Their
+// schemas are identical for every user, so the result is cached globally.
+// userEmail is used only to open connections during discovery (connections are
+// pooled per-user); a run where every shared backend fails is an error, since
+// it means shared infrastructure is down.
+func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
 	s.cacheMu.RLock()
-	if s.cache != nil && time.Now().Before(s.cache.expires) {
-		tools := s.cache.tools
+	if s.sharedCache != nil && time.Now().Before(s.sharedCache.expires) {
+		tools := s.sharedCache.tools
 		s.cacheMu.RUnlock()
 		return tools, nil
 	}
 	s.cacheMu.RUnlock()
 
-	v, err, _ := s.discoveryGroup.Do("discover", func() (any, error) {
-		// Double-check inside singleflight
+	v, err, _ := s.discoveryGroup.Do("discover:shared", func() (any, error) {
+		// Double-check inside singleflight.
 		s.cacheMu.RLock()
-		if s.cache != nil && time.Now().Before(s.cache.expires) {
-			tools := s.cache.tools
+		if s.sharedCache != nil && time.Now().Before(s.sharedCache.expires) {
+			tools := s.sharedCache.tools
 			s.cacheMu.RUnlock()
 			return tools, nil
 		}
@@ -320,9 +358,20 @@ func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]m
 		// Detach from the caller's context: singleflight shares this result
 		// with all concurrent callers. If the first caller's context is
 		// cancelled (e.g., SSE disconnect), discovery would fail for everyone.
-		// discoverAllTools applies its own timeout from DiscoveryConfig.
+		// discoverBackends applies its own timeout from DiscoveryConfig.
 		discoveryCtx := context.WithoutCancel(ctx)
-		return s.discoverAllTools(discoveryCtx, userEmail)
+		tools, err := s.discoverBackends(discoveryCtx, userEmail, s.sharedBackends, true)
+		if err != nil {
+			return nil, err
+		}
+
+		s.cacheMu.Lock()
+		s.sharedCache = &cachedTools{
+			tools:   tools,
+			expires: time.Now().Add(s.discovery.CacheTTL),
+		}
+		s.cacheMu.Unlock()
+		return tools, nil
 	})
 
 	if err != nil {
@@ -331,8 +380,91 @@ func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]m
 	return v.(map[string][]mcp.Tool), nil
 }
 
-// discoverAllTools fans out to all backends in parallel.
-func (s *Server) discoverAllTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+// getUserTools returns tools for the token-gated backends the user has a token
+// for. The result is cached per-user. A user with no configured tokens gets an
+// empty set — that is expected, not an error.
+func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+	if len(s.userBackends) == 0 {
+		return map[string][]mcp.Tool{}, nil
+	}
+
+	s.cacheMu.RLock()
+	if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
+		tools := cached.tools
+		s.cacheMu.RUnlock()
+		return tools, nil
+	}
+	s.cacheMu.RUnlock()
+
+	v, err, _ := s.discoveryGroup.Do("discover:user:"+userEmail, func() (any, error) {
+		// Double-check inside singleflight.
+		s.cacheMu.RLock()
+		if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
+			tools := cached.tools
+			s.cacheMu.RUnlock()
+			return tools, nil
+		}
+		s.cacheMu.RUnlock()
+
+		discoveryCtx := context.WithoutCancel(ctx)
+		// Discover only the backends the user has a token for, so discovery
+		// does not attempt — and log warnings for — doomed connections.
+		backends := s.backendsWithUserToken(discoveryCtx, userEmail)
+		tools, err := s.discoverBackends(discoveryCtx, userEmail, backends, false)
+		if err != nil {
+			return nil, err
+		}
+
+		s.cacheMu.Lock()
+		s.userCache[userEmail] = &cachedTools{
+			tools:   tools,
+			expires: time.Now().Add(s.discovery.CacheTTL),
+		}
+		s.cacheMu.Unlock()
+		return tools, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return v.(map[string][]mcp.Tool), nil
+}
+
+// backendsWithUserToken returns the subset of token-gated backends for which
+// the user currently has a token. Backends without one are omitted so they are
+// not discovered (and do not surface tools the user could not call anyway).
+func (s *Server) backendsWithUserToken(ctx context.Context, userEmail string) map[string]*config.MCPClientConfig {
+	available := make(map[string]*config.MCPClientConfig)
+	if userEmail == "" || s.getUserToken == nil {
+		return available
+	}
+
+	for name, conf := range s.userBackends {
+		token, err := s.getUserToken(ctx, userEmail, name, conf)
+		if err != nil {
+			log.LogWarnWithFields("aggregate", "Failed to check user token", map[string]any{
+				"server":  s.name,
+				"backend": name,
+				"user":    userEmail,
+				"error":   err.Error(),
+			})
+			continue
+		}
+		if token != "" {
+			available[name] = conf
+		}
+	}
+	return available
+}
+
+// discoverBackends fans out tool discovery across the given backends in
+// parallel. When errorIfAllFail is set, a run where every backend fails returns
+// an error; otherwise the partial (possibly empty) result is returned.
+func (s *Server) discoverBackends(ctx context.Context, userEmail string, backends map[string]*config.MCPClientConfig, errorIfAllFail bool) (map[string][]mcp.Tool, error) {
+	if len(backends) == 0 {
+		return map[string][]mcp.Tool{}, nil
+	}
+
 	discoveryCtx, cancel := context.WithTimeout(ctx, s.discovery.Timeout)
 	defer cancel()
 
@@ -342,19 +474,19 @@ func (s *Server) discoverAllTools(ctx context.Context, userEmail string) (map[st
 		err         error
 	}
 
-	ch := make(chan result, len(s.backends))
+	ch := make(chan result, len(backends))
 
-	for name, conf := range s.backends {
+	for name, conf := range backends {
 		go func(name string, conf *config.MCPClientConfig) {
 			tools, err := s.discoverBackendTools(discoveryCtx, userEmail, name, conf)
 			ch <- result{backendName: name, tools: tools, err: err}
 		}(name, conf)
 	}
 
-	allTools := make(map[string][]mcp.Tool)
+	allTools := make(map[string][]mcp.Tool, len(backends))
 	var errors []string
 
-	for range s.backends {
+	for range backends {
 		r := <-ch
 		if r.err != nil {
 			log.LogWarnWithFields("aggregate", "Backend discovery failed", map[string]any{
@@ -373,16 +505,9 @@ func (s *Server) discoverAllTools(ctx context.Context, userEmail string) (map[st
 		totalTools += len(tools)
 	}
 
-	if totalTools == 0 && len(errors) > 0 {
+	if errorIfAllFail && totalTools == 0 && len(errors) > 0 {
 		return nil, fmt.Errorf("all backends failed discovery: %s", strings.Join(errors, "; "))
 	}
-
-	s.cacheMu.Lock()
-	s.cache = &cachedTools{
-		tools:   allTools,
-		expires: time.Now().Add(s.discovery.CacheTTL),
-	}
-	s.cacheMu.Unlock()
 
 	log.LogInfoWithFields("aggregate", "Tool discovery completed", map[string]any{
 		"server":    s.name,
@@ -626,6 +751,7 @@ func (s *Server) cleanupLoop() {
 			return
 		case <-ticker.C:
 			s.cleanupIdleConns()
+			s.cleanupExpiredCache()
 		}
 	}
 }
@@ -655,6 +781,21 @@ func (s *Server) cleanupIdleConns() {
 		c.cancel()
 		c.client.Close()
 	}
+}
+
+// cleanupExpiredCache drops expired per-user tool caches so the map does not
+// grow unbounded as users come and go. The shared cache is a single entry and
+// is simply overwritten on the next discovery, so it needs no pruning.
+func (s *Server) cleanupExpiredCache() {
+	now := time.Now()
+
+	s.cacheMu.Lock()
+	for user, cached := range s.userCache {
+		if now.After(cached.expires) {
+			delete(s.userCache, user)
+		}
+	}
+	s.cacheMu.Unlock()
 }
 
 // toolFilterFunc builds a filter predicate from a backend's config.

@@ -268,6 +268,75 @@ func TestDiscoverToolsCaching(t *testing.T) {
 	assert.Equal(t, int32(1), callCount.Load())
 }
 
+// TestPerUserTokenBackendIsolation verifies that a backend requiring a user
+// token is discovered per-user: a user without a token never sees it, a user
+// with one does, and neither user's discovery leaks into the other's tool set.
+func TestPerUserTokenBackendIsolation(t *testing.T) {
+	sharedMock := newMockTransport([]mcp.Tool{{Name: "query"}})
+	tokenMock := newMockTransport([]mcp.Tool{{Name: "catalog"}})
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"postgres": {
+			TransportType: config.MCPClientTypeSSE,
+			URL:           "http://localhost/postgres",
+		},
+		"materialize": {
+			TransportType:     config.MCPClientTypeSSE,
+			URL:               "http://localhost/materialize",
+			RequiresUserToken: true,
+		},
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		switch conf.URL {
+		case "http://localhost/postgres":
+			return sharedMock, nil
+		case "http://localhost/materialize":
+			return tokenMock, nil
+		}
+		return nil, fmt.Errorf("unknown backend")
+	}
+
+	// Only alice has a materialize token.
+	getUserToken := func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+		if userEmail == "alice@test.com" && serviceName == "materialize" {
+			return "alice-token", nil
+		}
+		return "", nil
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:            "test-aggregate",
+		TransportType:   config.MCPClientTypeSSE,
+		Backends:        backendConfigs,
+		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken:    getUserToken,
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	// Bob (no materialize token) discovers first: shared backend visible,
+	// token-gated backend not.
+	bobTools, err := srv.getTools(context.Background(), "bob@test.com")
+	require.NoError(t, err)
+	assert.Len(t, bobTools["postgres"], 1, "bob should see the shared backend")
+	assert.NotContains(t, bobTools, "materialize", "bob has no token, must not see materialize")
+
+	// Alice discovers next: bob's tokenless discovery must not have cached an
+	// absence of materialize for everyone — alice still sees it.
+	aliceTools, err := srv.getTools(context.Background(), "alice@test.com")
+	require.NoError(t, err)
+	assert.Len(t, aliceTools["postgres"], 1, "alice should see the shared backend")
+	assert.Len(t, aliceTools["materialize"], 1, "alice has a token, must see materialize")
+
+	// Bob again: alice's token-gated tools must not leak into bob's set.
+	bobTools, err = srv.getTools(context.Background(), "bob@test.com")
+	require.NoError(t, err)
+	assert.NotContains(t, bobTools, "materialize", "alice's token-gated tools must not leak to bob")
+}
+
 func TestDiscoverToolsTimeout(t *testing.T) {
 	backends := map[string]*mockTransport{
 		"fast": {tools: []mcp.Tool{{Name: "fast_tool"}}},
