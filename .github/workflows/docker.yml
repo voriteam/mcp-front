@@ -6,68 +6,66 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
+concurrency:
+  group: build-docker-image-${{ github.sha }}
+
 env:
-  REGISTRY: docker.io
-  IMAGE_NAME: mcp-front
+  image: us-docker.pkg.dev/vori-1bdf0/services/mcp-front
+  service_account: github@vori-1bdf0.iam.gserviceaccount.com
+  workload_identity_provider: projects/605676851019/locations/global/workloadIdentityPools/vori/providers/vori-github
 
 jobs:
   build:
+    name: Build image
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
-      packages: write
+      id-token: write
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      # Authenticate to GCP via workload identity — keyless, no static creds.
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ env.workload_identity_provider }}
+          service_account: ${{ env.service_account }}
+          access_token_lifetime: 3600s
 
-    - name: Log in to Docker Hub
-      if: github.event_name != 'pull_request'
-      uses: docker/login-action@v3
-      with:
-        username: ${{ vars.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: us-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
 
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/dgellow/${{ env.IMAGE_NAME }}
-        tags: |
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=sha,prefix=main-,enable={{is_default_branch}}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        platforms: linux/amd64
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-    
-    - name: Extract metadata for docker-client variant
-      id: meta-docker
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/dgellow/${{ env.IMAGE_NAME }}
-        tags: |
-          type=raw,value=docker-client-latest,enable={{is_default_branch}}
-          type=sha,prefix=docker-client-,enable={{is_default_branch}}
-    
-    - name: Build and push Docker client image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./Dockerfile.docker-client
-        platforms: linux/amd64
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta-docker.outputs.tags }}
-        labels: ${{ steps.meta-docker.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.image }}
+          # The full 40-char commit SHA tag is what ArgoCD Image Updater
+          # matches (regex ^[0-9a-f]{40}$, newest-build strategy).
+          tags: |
+            type=sha,prefix=,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: BUILD_VERSION=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
