@@ -11,8 +11,6 @@ concurrency:
 
 env:
   image: us-docker.pkg.dev/vori-1bdf0/services/mcp-front
-  service_account: github@vori-1bdf0.iam.gserviceaccount.com
-  workload_identity_provider: projects/605676851019/locations/global/workloadIdentityPools/vori/providers/vori-github
 
 jobs:
   build:
@@ -21,28 +19,20 @@ jobs:
 
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Authenticate to GCP via workload identity — keyless, no static creds.
-      - name: Authenticate to GCP
-        id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          token_format: access_token
-          workload_identity_provider: ${{ env.workload_identity_provider }}
-          service_account: ${{ env.service_account }}
-          access_token_lifetime: 3600s
-
+      # Authenticate to the Vori Artifact Registry with a stored service
+      # account key (GCP_SA_KEY secret), via the _json_key docker login —
+      # the same stored-secret pattern the workflow already used for Docker Hub.
       - name: Log in to Artifact Registry
         uses: docker/login-action@v3
         with:
           registry: us-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
+          username: _json_key
+          password: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
