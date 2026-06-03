@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
@@ -1071,7 +1072,7 @@ type fakeSessionWithTools struct {
 	tools map[string]mcpserver.ServerTool
 }
 
-func (f *fakeSessionWithTools) Initialize()      {}
+func (f *fakeSessionWithTools) Initialize()       {}
 func (f *fakeSessionWithTools) Initialized() bool { return true }
 func (f *fakeSessionWithTools) NotificationChannel() chan<- mcp.JSONRPCNotification {
 	return make(chan<- mcp.JSONRPCNotification, 1)
@@ -1129,8 +1130,8 @@ func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
 	}
 
 	var (
-		mu      sync.Mutex
-		seen    = make(map[string]map[string]string)
+		mu   sync.Mutex
+		seen = make(map[string]map[string]string)
 	)
 	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
 		mu.Lock()
@@ -1173,4 +1174,136 @@ func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
 
 	// Original backend config map must not be mutated.
 	assert.NotContains(t, backendConfigs["mintlify"].Headers, "Authorization")
+}
+
+// TestRetryOnSessionInvalidation verifies that when a backend rejects a pooled
+// connection's expired session, the aggregate transparently re-initializes a
+// fresh connection and retries the tool call instead of surfacing the error.
+func TestRetryOnSessionInvalidation(t *testing.T) {
+	// Both forms mcp-go can surface: an HTTP 404 mapped to ErrSessionTerminated,
+	// and a 4xx whose body carries the reason (e.g. Datadog's "Invalid session ID").
+	cases := map[string]error{
+		"terminated_404":     transport.ErrSessionTerminated,
+		"invalid_session_id": fmt.Errorf("request failed with status 400: Invalid session ID"),
+	}
+
+	for name, sessionErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			var factoryCalls atomic.Int32
+			var callCount atomic.Int32
+
+			backendConfigs := map[string]*config.MCPClientConfig{
+				"datadog": {TransportType: config.MCPClientTypeStreamable, URL: "http://localhost/datadog"},
+			}
+
+			factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+				factoryCalls.Add(1)
+				return &mockTransport{
+					tools: []mcp.Tool{{Name: "search"}},
+					callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+						if callCount.Add(1) == 1 {
+							return nil, sessionErr
+						}
+						return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+					},
+				}, nil
+			}
+
+			srv := NewServer(ServerConfig{
+				Name:          "test-aggregate",
+				TransportType: config.MCPClientTypeSSE,
+				Backends:      backendConfigs,
+				Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+				GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+					return "", nil
+				},
+				CreateTransport: factory,
+				BaseURL:         "http://localhost:8080",
+			})
+			srv.Start()
+			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+			handler := srv.makeToolHandler("user@test.com", "datadog")
+			result, err := handler(context.Background(), mcp.CallToolRequest{
+				Params: mcp.CallToolParams{Name: "datadog.search"},
+			})
+			require.NoError(t, err, "session error should be recovered transparently")
+			require.NotNil(t, result)
+			assert.False(t, result.IsError)
+			assert.Equal(t, int32(2), callCount.Load(), "CallTool should have been retried exactly once")
+			assert.Equal(t, int32(2), factoryCalls.Load(), "retry should re-initialize a fresh connection")
+
+			// A healthy connection should remain pooled after the successful retry.
+			srv.connMu.RLock()
+			_, exists := srv.conns[connKey{userEmail: "user@test.com", backendName: "datadog"}]
+			srv.connMu.RUnlock()
+			assert.True(t, exists, "healthy connection should stay pooled after retry")
+		})
+	}
+}
+
+// TestNoRetryOnNonSessionError verifies that a non-session transport error is
+// not retried: the connection is evicted and the error is returned once.
+func TestNoRetryOnNonSessionError(t *testing.T) {
+	var callCount atomic.Int32
+	mock := &mockTransport{
+		tools: []mcp.Tool{{Name: "search"}},
+		callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			callCount.Add(1)
+			return nil, fmt.Errorf("connection reset")
+		},
+	}
+	srv := newTestServer(t, map[string]*mockTransport{"datadog": mock})
+
+	handler := srv.makeToolHandler("user@test.com", "datadog")
+	_, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "datadog.search"},
+	})
+	require.Error(t, err)
+	assert.Equal(t, int32(1), callCount.Load(), "non-session error must not be retried")
+
+	srv.connMu.RLock()
+	_, exists := srv.conns[connKey{userEmail: "user@test.com", backendName: "datadog"}]
+	srv.connMu.RUnlock()
+	assert.False(t, exists, "broken connection should have been evicted")
+}
+
+// TestRetryOnSessionInvalidationDuringDiscovery verifies the retry also covers
+// the tool-discovery (ListTools) path, and that a retry does not accumulate
+// duplicate tools onto the partial result from the failed first attempt.
+func TestRetryOnSessionInvalidationDuringDiscovery(t *testing.T) {
+	var factoryCalls atomic.Int32
+	var listCount atomic.Int32
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"datadog": {TransportType: config.MCPClientTypeStreamable, URL: "http://localhost/datadog"},
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		factoryCalls.Add(1)
+		mock := &mockTransport{tools: []mcp.Tool{{Name: "search"}}}
+		if listCount.Add(1) == 1 {
+			mock.listToolsErr = transport.ErrSessionTerminated
+		}
+		return mock, nil
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err, "session error during discovery should be recovered")
+	assert.Len(t, tools["datadog"], 1, "retry must not duplicate tools from the failed attempt")
+	assert.Equal(t, int32(2), factoryCalls.Load(), "retry should re-initialize a fresh connection")
 }

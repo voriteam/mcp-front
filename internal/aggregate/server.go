@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
@@ -520,24 +522,27 @@ func (s *Server) discoverBackends(ctx context.Context, userEmail string, backend
 
 // discoverBackendTools connects to a backend, lists its tools, and applies filtering.
 func (s *Server) discoverBackendTools(ctx context.Context, userEmail, backendName string, conf *config.MCPClientConfig) ([]mcp.Tool, error) {
-	c, err := s.getOrCreateConn(ctx, userEmail, backendName)
+	var tools []mcp.Tool
+	err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
+		// Reset so a retry against a fresh connection does not accumulate onto
+		// tools collected during the failed first attempt.
+		tools = nil
+		req := mcp.ListToolsRequest{}
+		for {
+			resp, err := c.client.ListTools(ctx, req)
+			if err != nil {
+				return fmt.Errorf("listing tools: %w", err)
+			}
+			tools = append(tools, resp.Tools...)
+			if resp.NextCursor == "" {
+				break
+			}
+			req.Params.Cursor = resp.NextCursor
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	var tools []mcp.Tool
-	req := mcp.ListToolsRequest{}
-	for {
-		resp, err := c.client.ListTools(ctx, req)
-		if err != nil {
-			s.evictConn(connKey{userEmail: userEmail, backendName: backendName}, c)
-			return nil, fmt.Errorf("listing tools: %w", err)
-		}
-		tools = append(tools, resp.Tools...)
-		if resp.NextCursor == "" {
-			break
-		}
-		req.Params.Cursor = resp.NextCursor
 	}
 
 	filter := toolFilterFunc(conf)
@@ -557,26 +562,97 @@ func (s *Server) makeToolHandler(userEmail, backendName string) mcpserver.ToolHa
 		if !ok {
 			return nil, fmt.Errorf("invalid namespaced tool name: %s", request.Params.Name)
 		}
+		request.Params.Name = originalName
 
-		c, err := s.getOrCreateConn(ctx, userEmail, backendName)
+		var result *mcp.CallToolResult
+		err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
+			var callErr error
+			result, callErr = c.client.CallTool(ctx, request)
+			return callErr
+		})
 		if err != nil {
 			return nil, fmt.Errorf("backend %s: %w", backendName, err)
 		}
-
-		now := time.Now()
-		c.lastAccessed.Store(&now)
-
-		request.Params.Name = originalName
-		result, err := c.client.CallTool(ctx, request)
-		if err != nil {
-			// An error return means transport failure (broken pipe, connection
-			// reset, etc). MCP-level tool errors are returned in the result
-			// with IsError set, not via the error return. Evict the broken
-			// connection so the next call creates a fresh one.
-			s.evictConn(connKey{userEmail: userEmail, backendName: backendName}, c)
-		}
-		return result, err
+		return result, nil
 	}
+}
+
+// withConnRetry runs fn against the pooled connection for (userEmail, backendName).
+//
+// A backend reached over streamable-http issues an Mcp-Session-Id at Initialize
+// that the pooled connection reuses on every call. When the backend expires that
+// session server-side before we evict the idle connection, the next call is
+// rejected (e.g. Datadog returns "Invalid session ID"). mcp-go surfaces this as
+// an error and does not re-initialize on its own — it expects the caller to.
+//
+// So on any error fn is evicted (the connection is unusable either way), and if
+// the error looks like session invalidation, fn is retried once against a
+// freshly-initialized connection, which mints a new session. This keeps the
+// failure invisible to the client instead of proxying it through. A non-session
+// error is returned after the single eviction, matching the previous behavior.
+func (s *Server) withConnRetry(ctx context.Context, userEmail, backendName string, fn func(context.Context, *conn) error) error {
+	key := connKey{userEmail: userEmail, backendName: backendName}
+
+	c, err := s.getOrCreateConn(ctx, userEmail, backendName)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	c.lastAccessed.Store(&now)
+
+	err = fn(ctx, c)
+	if err == nil {
+		return nil
+	}
+
+	// MCP-level tool errors are returned in the result with IsError set, not via
+	// the error return, so an error here is a transport/protocol failure: the
+	// connection is broken or its session was rejected. Evict it either way.
+	s.evictConn(key, c)
+	if !isSessionError(err) {
+		return err
+	}
+
+	log.LogWarnWithFields("aggregate", "Backend session invalidated; retrying with a fresh connection", map[string]any{
+		"server":  s.name,
+		"backend": backendName,
+		"user":    userEmail,
+		"error":   err.Error(),
+	})
+
+	c, err = s.getOrCreateConn(ctx, userEmail, backendName)
+	if err != nil {
+		return err
+	}
+	now = time.Now()
+	c.lastAccessed.Store(&now)
+
+	if err := fn(ctx, c); err != nil {
+		s.evictConn(key, c)
+		log.LogErrorWithFields("aggregate", "Backend call failed after session retry", map[string]any{
+			"server":  s.name,
+			"backend": backendName,
+			"user":    userEmail,
+			"error":   err.Error(),
+		})
+		return err
+	}
+	return nil
+}
+
+// isSessionError reports whether err indicates the backend no longer recognizes
+// the session id held by the pooled connection. mcp-go returns
+// transport.ErrSessionTerminated for an HTTP 404, but a backend may instead
+// reject a stale session with another 4xx whose body carries the reason (e.g.
+// Datadog's "Invalid session ID"), so the textual check covers that case too.
+func isSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrSessionTerminated) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "session")
 }
 
 func (s *Server) getOrCreateConn(ctx context.Context, userEmail, backendName string) (*conn, error) {
