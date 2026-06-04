@@ -13,6 +13,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/emailutil"
 	jsonwriter "github.com/stainless-api/mcp-front/internal/json"
 	"github.com/stainless-api/mcp-front/internal/log"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 )
 
 const userContextKey contextKey = "user_email"
@@ -126,6 +127,7 @@ func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, 
 
 			if userEmail != "" {
 				ctx = context.WithValue(ctx, userContextKey, userEmail)
+				reqlog.SetUser(ctx, userEmail)
 			}
 			r = r.WithContext(ctx)
 

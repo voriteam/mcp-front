@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 )
 
 var currentLevel atomic.Value // stores slog.Level
@@ -42,13 +44,22 @@ func parseLevel(s string) (slog.Level, error) {
 	}
 }
 
-// updateHandler recreates the handler with the current log level
+// updateHandler recreates the slog default handler with the current log level.
+// It chains the stderr handler with the OTel slog bridge. The bridge is a no-op
+// until an OTel log provider is registered via go.opentelemetry.io/otel/log/global.
 func updateHandler() {
 	level := currentLevel.Load().(slog.Level)
 
-	var handler slog.Handler
+	var stdoutHandler slog.Handler
+	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.LevelKey && a.Value.Any().(slog.Level) == LevelTrace {
+			return slog.Attr{Key: slog.LevelKey, Value: slog.StringValue("TRACE")}
+		}
+		return a
+	}
+
 	if strings.ToUpper(os.Getenv("LOG_FORMAT")) == "JSON" {
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		stdoutHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: level,
 			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 				if a.Key == slog.TimeKey {
@@ -57,17 +68,11 @@ func updateHandler() {
 						Value: slog.StringValue(a.Value.Time().UTC().Format(time.RFC3339Nano)),
 					}
 				}
-				if a.Key == slog.LevelKey && a.Value.Any().(slog.Level) == LevelTrace {
-					return slog.Attr{
-						Key:   slog.LevelKey,
-						Value: slog.StringValue("TRACE"),
-					}
-				}
-				return a
+				return replaceAttr(groups, a)
 			},
 		})
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		stdoutHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: level,
 			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 				if a.Key == slog.TimeKey {
@@ -76,18 +81,57 @@ func updateHandler() {
 						Value: slog.StringValue(a.Value.Time().Format("2006-01-02 15:04:05.000-07:00")),
 					}
 				}
-				if a.Key == slog.LevelKey && a.Value.Any().(slog.Level) == LevelTrace {
-					return slog.Attr{
-						Key:   slog.LevelKey,
-						Value: slog.StringValue("TRACE"),
-					}
-				}
-				return a
+				return replaceAttr(groups, a)
 			},
 		})
 	}
 
-	slog.SetDefault(slog.New(handler))
+	otelBridge := otelslog.NewHandler("mcp-front", otelslog.WithVersion("1.0"))
+
+	slog.SetDefault(slog.New(&multiHandler{
+		level:    level,
+		handlers: []slog.Handler{stdoutHandler, otelBridge},
+	}))
+}
+
+// multiHandler fans out slog records to multiple handlers.
+type multiHandler struct {
+	level    slog.Level
+	handlers []slog.Handler
+}
+
+func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, r.Level) {
+			_ = h.Handle(ctx, r)
+		}
+	}
+	return nil
+}
+
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	handlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		handlers[i] = h.WithAttrs(attrs)
+	}
+	return &multiHandler{level: m.level, handlers: handlers}
+}
+
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	handlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		handlers[i] = h.WithGroup(name)
+	}
+	return &multiHandler{level: m.level, handlers: handlers}
 }
 
 // SetLogLevel atomically updates the log level at runtime
