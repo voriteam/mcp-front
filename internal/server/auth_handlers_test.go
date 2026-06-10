@@ -423,6 +423,7 @@ func TestAuthorizeHandler_RedirectURIErrorPath(t *testing.T) {
 		sessionEncryptor,
 		map[string]*config.MCPClientConfig{},
 		serviceOAuthClient,
+		nil,
 	)
 
 	registeredURI := "https://legit.example/cb"

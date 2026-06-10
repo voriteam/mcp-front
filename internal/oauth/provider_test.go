@@ -168,7 +168,7 @@ func TestNewValidateTokenMiddleware_RejectsServiceAuthDomain(t *testing.T) {
 			req := httptest.NewRequest("GET", "/postgres/sse", nil)
 			req.Header.Set("Authorization", "Bearer "+mintToken(tc.email))
 			rr := httptest.NewRecorder()
-			NewValidateTokenMiddleware(authServer, issuer, false)(handler).ServeHTTP(rr, req)
+			NewValidateTokenMiddleware(authServer, issuer, false, nil, nil)(handler).ServeHTTP(rr, req)
 
 			assert.Equal(t, http.StatusOK, rr.Code, "trier always passes through")
 			if tc.wantContext {
