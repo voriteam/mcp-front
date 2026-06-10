@@ -771,7 +771,7 @@ func TestCORSHeaders(t *testing.T) {
 	expectedHeaders := map[string]string{
 		"Access-Control-Allow-Origin":  "https://claude.ai",
 		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-		"Access-Control-Allow-Headers": "Content-Type, Authorization, Cache-Control, mcp-protocol-version",
+		"Access-Control-Allow-Headers": "Content-Type, Authorization, Cache-Control, mcp-protocol-version, Mcp-Session-Id",
 	}
 
 	for header, expected := range expectedHeaders {
