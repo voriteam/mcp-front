@@ -565,10 +565,7 @@ func (h *AuthHandlers) TokenHandler(w http.ResponseWriter, r *http.Request) {
 			scopes = strings.Fields(scopeStr)
 		}
 
-		var audience []string
-		for _, resource := range strings.Fields(r.FormValue("resource")) {
-			audience = append(audience, resource)
-		}
+		audience := strings.Fields(r.FormValue("resource"))
 
 		log.LogInfoWithFields("oauth", "Token exchange: issuing tokens for GCP service account", map[string]any{
 			"email":     gcpEmail,
