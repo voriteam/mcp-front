@@ -234,7 +234,7 @@ func TestServer_HandleToolCall_HTTP_GET(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"results": [{"title": "Test Article"}]}`))
+		_, _ = w.Write([]byte(`{"results": [{"title": "Test Article"}]}`))
 	}))
 	defer ts.Close()
 
@@ -272,7 +272,7 @@ func TestServer_HandleToolCall_HTTP_GET(t *testing.T) {
 func TestServer_HandleToolCall_HTMLFetch(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><body>
+		_, _ = w.Write([]byte(`<html><body>
 			<nav>Nav bar</nav>
 			<main id="main-content">
 				<h1>Help Article</h1>

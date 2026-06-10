@@ -57,7 +57,7 @@ func main() {
 		BaseURL:         "http://localhost:0",
 	})
 	agg.Start()
-	defer agg.Shutdown(context.Background())
+	defer func() { _ = agg.Shutdown(context.Background()) }()
 
 	// Upstream's aggregate uses streamable-http when ServerConfig.TransportType is streamable-http.
 	// But we removed that field. To force streamable-http, we call the internal wiring manually.
