@@ -15,6 +15,12 @@
       },
       "allowedDomains": ["vori.com"],
       "allowedOrigins": ["https://claude.ai"],
+      "allowedRedirectUriHosts": [
+        "https://claude.ai",
+        "https://claude.com",
+        "http://localhost",
+        "http://127.0.0.1"
+      ],
       "tokenTtl": "4h",
       "storage": "firestore",
       "gcpProject": { "$env": "GOOGLE_CLOUD_PROJECT" },
