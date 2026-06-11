@@ -559,6 +559,10 @@ func (s *Server) makeToolHandler(userEmail, backendName string) mcpserver.ToolHa
 			return nil, fmt.Errorf("invalid namespaced tool name: %s", request.Params.Name)
 		}
 		request.Params.Name = originalName
+		// Drop the inbound client's HTTP headers that mcp-go stamped onto the
+		// request; the backend client would otherwise send them verbatim,
+		// leaking Accept-Encoding/auth headers to the backend.
+		request.Header = nil
 
 		var result *mcp.CallToolResult
 		err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
