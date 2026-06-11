@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -118,7 +120,7 @@ func DefaultTransportCreator(conf *config.MCPClientConfig) (MCPClientInterface, 
 			// it with HTTP 422; an empty params is equivalent to an absent one
 			// per JSON-RPC 2.0, so a transport that strips it is safe for every
 			// backend and keeps mcp-front compatible with strict servers.
-			httpClient := &http.Client{Transport: stripEmptyParamsTransport{base: http.DefaultTransport}}
+			httpClient := &http.Client{Transport: gzipGuardTransport{base: stripEmptyParamsTransport{base: http.DefaultTransport}}}
 			if conf.Timeout > 0 {
 				httpClient.Timeout = conf.Timeout
 			}
@@ -198,6 +200,133 @@ func stripEmptyJSONRPCParams(body []byte) []byte {
 		}
 	}
 	return body
+}
+
+// gzipGuardTransport is an http.RoundTripper that guarantees gzip bytes never
+// reach the JSON decoder in mcp-go's streamable HTTP client. Some backends
+// (gke, datadog) intermittently deliver bodies that are still gzip-compressed
+// when decoded — either Go's transparent decompression was skipped or the
+// backend double-encoded; the trigger is unknown. If a response still carries
+// Content-Encoding: gzip, or an application/json body starts with the gzip
+// magic bytes, the body is wrapped in a gzip reader (repeatedly, for
+// double-encoded bodies) and a WARN is logged with the response details so
+// production occurrences identify the true cause. SSE responses pass through
+// untouched.
+type gzipGuardTransport struct {
+	base http.RoundTripper
+}
+
+// maxGzipDepth bounds nested decompression of double-encoded bodies.
+const maxGzipDepth = 5
+
+func (t gzipGuardTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.HasPrefix(contentType, "text/event-stream") {
+		return resp, nil
+	}
+
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	headerGzip := strings.EqualFold(contentEncoding, "gzip")
+	sniffJSON := strings.Contains(contentType, "application/json")
+	if !headerGzip && !sniffJSON {
+		return resp, nil
+	}
+
+	br := bufio.NewReader(resp.Body)
+	body := &gzipGuardBody{r: br, closers: []io.Closer{resp.Body}}
+	magic := hasGzipMagic(br)
+
+	trigger := ""
+	if headerGzip {
+		trigger = "header"
+	} else if magic {
+		trigger = "magic-bytes"
+	}
+	if trigger == "" {
+		resp.Body = body
+		return resp, nil
+	}
+
+	fields := map[string]any{
+		"host":            req.URL.Host,
+		"proto":           resp.Proto,
+		"contentEncoding": contentEncoding,
+		"contentType":     resp.Header.Get("Content-Type"),
+		"contentLength":   resp.Header.Get("Content-Length"),
+		"trigger":         trigger,
+	}
+
+	if !magic {
+		log.LogWarnWithFields("client", "Response claims gzip encoding but body lacks gzip magic bytes, passing through", fields)
+		resp.Body = body
+		return resp, nil
+	}
+
+	depth := 0
+	for depth < maxGzipDepth && hasGzipMagic(br) {
+		gz, gzErr := gzip.NewReader(br)
+		if gzErr != nil {
+			fields["error"] = gzErr.Error()
+			fields["depth"] = depth
+			log.LogWarnWithFields("client", "Failed to decompress gzip response body", fields)
+			break
+		}
+		body.closers = append(body.closers, gz)
+		br = bufio.NewReader(gz)
+		depth++
+	}
+	body.r = br
+
+	if depth == 0 {
+		resp.Body = body
+		return resp, nil
+	}
+
+	fields["depth"] = depth
+	log.LogWarnWithFields("client", "Decompressed gzip response body that would have reached the JSON decoder", fields)
+
+	resp.Body = body
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	resp.Uncompressed = true
+	return resp, nil
+}
+
+func hasGzipMagic(br *bufio.Reader) bool {
+	b, err := br.Peek(2)
+	return err == nil && b[0] == 0x1f && b[1] == 0x8b
+}
+
+// gzipGuardBody chains the buffered/decompressed reader with every closer in
+// the decompression stack. Close releases gzip readers innermost-first, then
+// the original body, so the HTTP connection can be reused.
+type gzipGuardBody struct {
+	r       io.Reader
+	closers []io.Closer
+}
+
+func (b *gzipGuardBody) Read(p []byte) (int, error) {
+	return b.r.Read(p)
+}
+
+func (b *gzipGuardBody) Close() error {
+	var firstErr error
+	for i := len(b.closers) - 1; i >= 0; i-- {
+		if err := b.closers[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // startPingTask runs a goroutine that pings the MCP server every 30 seconds.
