@@ -258,6 +258,9 @@ func (t gzipGuardTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 	fields := map[string]any{
 		"host":            req.URL.Host,
+		"method":          req.Method,
+		"acceptEncoding":  req.Header.Get("Accept-Encoding"),
+		"status":          resp.StatusCode,
 		"proto":           resp.Proto,
 		"contentEncoding": contentEncoding,
 		"contentType":     resp.Header.Get("Content-Type"),
