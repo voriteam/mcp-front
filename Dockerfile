@@ -38,9 +38,6 @@ WORKDIR /app
 # Copy the binary from builder stage
 COPY --from=builder /app/mcp-front .
 
-# Copy Vori config
-COPY vori/config.json ./config.json
-
 # Change ownership
 RUN chown -R mcp:mcp /app
 
