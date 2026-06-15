@@ -157,6 +157,12 @@ type gzipGuardTransport struct {
 // maxGzipDepth bounds nested decompression of double-encoded bodies.
 const maxGzipDepth = 5
 
+// gzipPeekBufferSize is the bufio.Reader buffer used to sniff the two-byte
+// gzip magic header. This RoundTripper wraps every streamable response, so the
+// default 4KB buffer would be allocated per response; 16 bytes is bufio's
+// minimum and large body reads bypass the buffer, so throughput is unaffected.
+const gzipPeekBufferSize = 16
+
 func (t gzipGuardTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	base := t.base
 	if base == nil {
@@ -179,7 +185,7 @@ func (t gzipGuardTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		return resp, nil
 	}
 
-	br := bufio.NewReader(resp.Body)
+	br := bufio.NewReaderSize(resp.Body, gzipPeekBufferSize)
 	body := &gzipGuardBody{r: br, closers: []io.Closer{resp.Body}}
 	magic := hasGzipMagic(br)
 
@@ -222,7 +228,7 @@ func (t gzipGuardTransport) RoundTrip(req *http.Request) (*http.Response, error)
 			break
 		}
 		body.closers = append(body.closers, gz)
-		br = bufio.NewReader(gz)
+		br = bufio.NewReaderSize(gz, gzipPeekBufferSize)
 		depth++
 	}
 	body.r = br
