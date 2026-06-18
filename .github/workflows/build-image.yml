@@ -22,7 +22,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Checkout
@@ -37,8 +36,7 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           token_format: access_token
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_CREDENTIALS_PROD }}
           access_token_lifetime: 3600s
 
       - name: Login to Artifact Registry
@@ -77,7 +75,6 @@ jobs:
     needs: build
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Download digests
@@ -95,8 +92,7 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           token_format: access_token
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_CREDENTIALS_PROD }}
           access_token_lifetime: 3600s
 
       - name: Login to Artifact Registry
