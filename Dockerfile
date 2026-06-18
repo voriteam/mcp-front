@@ -51,5 +51,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Run the application
-CMD ["./mcp-front", "-config", "config.json"]
+# Run the application. The config is mounted at runtime (a ConfigMap in prod);
+# k8s overrides these args, so this default only applies to a bare `docker run`.
+CMD ["./mcp-front", "-config", "/config/config.json"]
