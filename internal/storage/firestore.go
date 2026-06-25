@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	sessionsCollection   = "mcp_front_sessions"
-	grantsCollection     = "mcp_front_grants"
-	serviceRegCollection = "mcp_front_service_registrations"
+	sessionsCollection       = "mcp_front_sessions"
+	grantsCollection         = "mcp_front_grants"
+	serviceRegCollection     = "mcp_front_service_registrations"
+	identityTokensCollection = "mcp_front_identity_tokens"
 )
 
 type FirestoreStorage struct {
@@ -558,6 +559,75 @@ func (s *FirestoreStorage) RevokeSession(ctx context.Context, sessionID string) 
 	_, err := s.client.Collection(sessionsCollection).Doc(sessionID).Delete(ctx)
 	if err != nil && status.Code(err) != codes.NotFound {
 		return err
+	}
+	return nil
+}
+
+func (s *FirestoreStorage) RevokeUserSessions(ctx context.Context, userEmail string) error {
+	iter := s.client.Collection(sessionsCollection).Where("user_email", "==", userEmail).Documents(ctx)
+	defer iter.Stop()
+
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to iterate sessions: %w", err)
+		}
+		if _, err := doc.Ref.Delete(ctx); err != nil && status.Code(err) != codes.NotFound {
+			return fmt.Errorf("failed to delete session %s: %w", doc.Ref.ID, err)
+		}
+	}
+	return nil
+}
+
+type IdentityTokenDoc struct {
+	UserEmail    string    `firestore:"user_email"`
+	RefreshToken string    `firestore:"refresh_token"` // encrypted
+	UpdatedAt    time.Time `firestore:"updated_at"`
+}
+
+func (s *FirestoreStorage) SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error {
+	encrypted, err := s.encryptor.Encrypt(refreshToken)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt identity token: %w", err)
+	}
+	doc := IdentityTokenDoc{
+		UserEmail:    userEmail,
+		RefreshToken: encrypted,
+		UpdatedAt:    time.Now(),
+	}
+	_, err = s.client.Collection(identityTokensCollection).Doc(userEmail).Set(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("failed to store identity token in Firestore: %w", err)
+	}
+	return nil
+}
+
+func (s *FirestoreStorage) GetIdentityToken(ctx context.Context, userEmail string) (string, error) {
+	doc, err := s.client.Collection(identityTokensCollection).Doc(userEmail).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return "", ErrIdentityTokenNotFound
+		}
+		return "", fmt.Errorf("failed to get identity token from Firestore: %w", err)
+	}
+	var tokenDoc IdentityTokenDoc
+	if err := doc.DataTo(&tokenDoc); err != nil {
+		return "", fmt.Errorf("failed to unmarshal identity token: %w", err)
+	}
+	decrypted, err := s.encryptor.Decrypt(tokenDoc.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt identity token: %w", err)
+	}
+	return decrypted, nil
+}
+
+func (s *FirestoreStorage) DeleteIdentityToken(ctx context.Context, userEmail string) error {
+	_, err := s.client.Collection(identityTokensCollection).Doc(userEmail).Delete(ctx)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("failed to delete identity token from Firestore: %w", err)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/inline"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/revocation"
 	"github.com/stainless-api/mcp-front/internal/server"
 	"github.com/stainless-api/mcp-front/internal/storage"
 	"golang.org/x/oauth2"
@@ -259,7 +261,7 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		log.LogWarn("Development mode enabled - OAuth security checks relaxed (state parameter entropy: %d)", minEntropy)
 	}
 
-	authServer, err := oauth.NewAuthorizationServer(oauth.AuthorizationServerConfig{
+	authServerCfg := oauth.AuthorizationServerConfig{
 		JWTSecret:            jwtSecret,
 		Issuer:               oauthAuth.Issuer,
 		AccessTokenTTL:       oauthAuth.TokenTTL,
@@ -267,7 +269,16 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		MinStateEntropy:      minEntropy,
 		RefreshTokenScopes:   oauthAuth.RefreshTokenScopes,
 		RequireResourceParam: !oauthAuth.DangerouslyAcceptIssuerAudience,
-	})
+	}
+	if rev := oauthAuth.WorkspaceRevocation; rev != nil && rev.Enabled {
+		if refresher, ok := idpProvider.(revocation.IdentityRefresher); ok {
+			authServerCfg.RevocationChecker = revocation.NewVerifier(store, refresher)
+			log.LogInfoWithFields("mcpfront", "Account revocation enabled (identity refresh probe)", nil)
+		} else {
+			log.LogWarn("workspaceRevocation enabled but identity provider %q cannot refresh tokens; revocation disabled", idpProvider.Type())
+		}
+	}
+	authServer, err := oauth.NewAuthorizationServer(authServerCfg)
 	if err != nil {
 		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to create authorization server: %w", err)
 	}
@@ -662,18 +673,12 @@ func buildBackendTokenSources(ctx context.Context, servers map[string]*config.MC
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range gcp {
-		sources[k] = v
-	}
-	for k, v := range buildClientCredentialsSources(servers) {
-		sources[k] = v
-	}
+	maps.Copy(sources, gcp)
+	maps.Copy(sources, buildClientCredentialsSources(servers))
 	hmac, err := buildHMACJWTSources(servers)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range hmac {
-		sources[k] = v
-	}
+	maps.Copy(sources, hmac)
 	return sources, nil
 }

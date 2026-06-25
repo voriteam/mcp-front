@@ -22,6 +22,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/servicecontext"
 	"github.com/stainless-api/mcp-front/internal/session"
 	"github.com/stainless-api/mcp-front/internal/storage"
+	"golang.org/x/oauth2"
 )
 
 type AuthHandlers struct {
@@ -350,10 +351,29 @@ func (h *AuthHandlers) IDPCallbackHandler(w http.ResponseWriter, r *http.Request
 
 	log.Logf("User authenticated: %s", identity.Email)
 
+	h.persistIdentityToken(ctx, identity.Email, token)
+
 	if isBrowserFlow {
 		h.handleBrowserCallback(w, r, identity, returnURL)
 	} else {
 		h.handleOAuthClientCallback(ctx, w, r, authorizeParams, identity)
+	}
+}
+
+// persistIdentityToken stores the IdP refresh token so the account verifier can
+// later detect when the user's account is disabled. No-op unless account
+// revocation is enabled and the IdP returned a refresh token. Failures are logged
+// but never block login.
+func (h *AuthHandlers) persistIdentityToken(ctx context.Context, email string, token *oauth2.Token) {
+	rev := h.authConfig.WorkspaceRevocation
+	if rev == nil || !rev.Enabled || token == nil || token.RefreshToken == "" {
+		return
+	}
+	if err := h.storage.SetIdentityToken(ctx, email, token.RefreshToken); err != nil {
+		log.LogErrorWithFields("oauth", "Failed to persist identity token for revocation checks", map[string]any{
+			"email": email,
+			"error": err.Error(),
+		})
 	}
 }
 
@@ -514,7 +534,7 @@ func (h *AuthHandlers) TokenHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		pair, err = h.authServer.RefreshTokens(refreshToken, client, &oauth.RefreshRequest{
+		pair, err = h.authServer.RefreshTokens(r.Context(), refreshToken, client, &oauth.RefreshRequest{
 			ClientSecret: r.FormValue("client_secret"),
 		})
 		if err != nil {

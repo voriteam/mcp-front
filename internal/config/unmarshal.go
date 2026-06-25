@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -16,27 +17,27 @@ import (
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	// Use a raw type to avoid recursion
 	type rawConfig struct {
-		Type               ServerType                 `json:"type,omitempty"`
-		TransportType      MCPClientType              `json:"transportType,omitempty"`
-		Command            json.RawMessage            `json:"command,omitempty"`
-		Args               []json.RawMessage          `json:"args,omitempty"`
-		Env                map[string]json.RawMessage `json:"env,omitempty"`
-		URL                json.RawMessage            `json:"url,omitempty"`
-		Headers            map[string]json.RawMessage `json:"headers,omitempty"`
-		Timeout            string                     `json:"timeout,omitempty"`
-		Options            *Options                   `json:"options,omitempty"`
-		RequiresUserToken  bool                       `json:"requiresUserToken,omitempty"`
-		ForwardAuthToken   bool                       `json:"forwardAuthToken,omitempty"`
-		GCPAuth            bool                       `json:"gcpAuth,omitempty"`
-		UserAuthentication *UserAuthentication        `json:"userAuthentication,omitempty"`
-		ServiceAuths       []ServiceAuth              `json:"serviceAuths,omitempty"`
-		ClientCredentials  *ClientCredentialsConfig   `json:"clientCredentials,omitempty"`
-		HMACJWTAuth        *HMACJWTAuthConfig         `json:"hmacJWT,omitempty"`
-		InlineConfig       json.RawMessage            `json:"inline,omitempty"`
-		Servers             []string                  `json:"servers,omitempty"`
-		Discovery           json.RawMessage           `json:"discovery,omitempty"`
-		Delimiter           string                    `json:"delimiter,omitempty"`
-		StreamlineResponses bool                      `json:"streamlineResponses,omitempty"`
+		Type                ServerType                 `json:"type,omitempty"`
+		TransportType       MCPClientType              `json:"transportType,omitempty"`
+		Command             json.RawMessage            `json:"command,omitempty"`
+		Args                []json.RawMessage          `json:"args,omitempty"`
+		Env                 map[string]json.RawMessage `json:"env,omitempty"`
+		URL                 json.RawMessage            `json:"url,omitempty"`
+		Headers             map[string]json.RawMessage `json:"headers,omitempty"`
+		Timeout             string                     `json:"timeout,omitempty"`
+		Options             *Options                   `json:"options,omitempty"`
+		RequiresUserToken   bool                       `json:"requiresUserToken,omitempty"`
+		ForwardAuthToken    bool                       `json:"forwardAuthToken,omitempty"`
+		GCPAuth             bool                       `json:"gcpAuth,omitempty"`
+		UserAuthentication  *UserAuthentication        `json:"userAuthentication,omitempty"`
+		ServiceAuths        []ServiceAuth              `json:"serviceAuths,omitempty"`
+		ClientCredentials   *ClientCredentialsConfig   `json:"clientCredentials,omitempty"`
+		HMACJWTAuth         *HMACJWTAuthConfig         `json:"hmacJWT,omitempty"`
+		InlineConfig        json.RawMessage            `json:"inline,omitempty"`
+		Servers             []string                   `json:"servers,omitempty"`
+		Discovery           json.RawMessage            `json:"discovery,omitempty"`
+		Delimiter           string                     `json:"delimiter,omitempty"`
+		StreamlineResponses bool                       `json:"streamlineResponses,omitempty"`
 	}
 
 	var raw rawConfig
@@ -269,6 +270,16 @@ func parseDiscoveryConfig(data json.RawMessage) (*DiscoveryConfig, error) {
 	return disc, nil
 }
 
+func parseWorkspaceRevocation(data json.RawMessage) (*WorkspaceRevocationConfig, error) {
+	var raw struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing workspaceRevocation: %w", err)
+	}
+	return &WorkspaceRevocationConfig{Enabled: raw.Enabled}, nil
+}
+
 // UnmarshalJSON implements custom unmarshaling for OAuthAuthConfig
 func (o *OAuthAuthConfig) UnmarshalJSON(data []byte) error {
 	// Use a raw type to parse references
@@ -290,6 +301,7 @@ func (o *OAuthAuthConfig) UnmarshalJSON(data []byte) error {
 		JWTSecret                       json.RawMessage `json:"jwtSecret"`
 		EncryptionKey                   json.RawMessage `json:"encryptionKey,omitempty"`
 		DangerouslyAcceptIssuerAudience bool            `json:"dangerouslyAcceptIssuerAudience,omitempty"`
+		WorkspaceRevocation             json.RawMessage `json:"workspaceRevocation,omitempty"`
 	}
 
 	var raw rawOAuth
@@ -337,6 +349,14 @@ func (o *OAuthAuthConfig) UnmarshalJSON(data []byte) error {
 		o.RefreshTokenTTL = refreshTokenTTL
 	} else {
 		o.RefreshTokenTTL = 30 * 24 * time.Hour // Default: 30 days
+	}
+
+	if raw.WorkspaceRevocation != nil {
+		rev, err := parseWorkspaceRevocation(raw.WorkspaceRevocation)
+		if err != nil {
+			return err
+		}
+		o.WorkspaceRevocation = rev
 	}
 
 	// Parse string fields
@@ -575,9 +595,7 @@ func (c *MCPClientConfig) WithBearerToken(token string) *MCPClientConfig {
 	}
 	result := *c
 	result.Headers = make(map[string]string, len(c.Headers)+1)
-	for k, v := range c.Headers {
-		result.Headers[k] = v
-	}
+	maps.Copy(result.Headers, c.Headers)
 	result.Headers["Authorization"] = "Bearer " + token
 	return &result
 }

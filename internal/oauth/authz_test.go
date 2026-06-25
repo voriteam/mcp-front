@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"net/http"
@@ -207,7 +208,7 @@ func TestAuthorizationServer_FullFlow(t *testing.T) {
 	assert.Equal(t, []string{"https://mcp.example.com/postgres"}, claims.Audience)
 	assert.Equal(t, []string{"read", "write"}, claims.Scopes)
 
-	refreshPair, err := s.RefreshTokens(pair.RefreshToken, client, &RefreshRequest{})
+	refreshPair, err := s.RefreshTokens(context.Background(), pair.RefreshToken, client, &RefreshRequest{})
 	require.NoError(t, err)
 	assert.NotEmpty(t, refreshPair.AccessToken)
 	assert.NotEqual(t, pair.AccessToken, refreshPair.AccessToken)
@@ -346,14 +347,14 @@ func TestAuthorizationServer_RefreshTokens_Errors(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("invalid refresh token", func(t *testing.T) {
-		_, err := s.RefreshTokens("garbage-token", client, &RefreshRequest{})
+		_, err := s.RefreshTokens(context.Background(), "garbage-token", client, &RefreshRequest{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid_grant")
 	})
 
 	t.Run("wrong client", func(t *testing.T) {
 		wrongClient := &testClient{id: "other-client", public: true}
-		_, err := s.RefreshTokens(pair.RefreshToken, wrongClient, &RefreshRequest{})
+		_, err := s.RefreshTokens(context.Background(), pair.RefreshToken, wrongClient, &RefreshRequest{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "different client")
 	})
@@ -363,7 +364,7 @@ func TestAuthorizationServer_RefreshTokens_Errors(t *testing.T) {
 			JWTSecret: []byte(strings.Repeat("x", 32)),
 			Issuer:    "https://other.example.com",
 		})
-		_, err := otherServer.RefreshTokens(pair.RefreshToken, client, &RefreshRequest{})
+		_, err := otherServer.RefreshTokens(context.Background(), pair.RefreshToken, client, &RefreshRequest{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid_grant")
 	})
@@ -399,20 +400,20 @@ func TestAuthorizationServer_ConfidentialClientRefresh(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("valid secret", func(t *testing.T) {
-		refreshed, err := s.RefreshTokens(pair.RefreshToken, client, &RefreshRequest{ClientSecret: secret})
+		refreshed, err := s.RefreshTokens(context.Background(), pair.RefreshToken, client, &RefreshRequest{ClientSecret: secret})
 		require.NoError(t, err)
 		assert.NotEmpty(t, refreshed.AccessToken)
 		assert.NotEqual(t, pair.AccessToken, refreshed.AccessToken)
 	})
 
 	t.Run("wrong secret", func(t *testing.T) {
-		_, err := s.RefreshTokens(pair.RefreshToken, client, &RefreshRequest{ClientSecret: "wrong"})
+		_, err := s.RefreshTokens(context.Background(), pair.RefreshToken, client, &RefreshRequest{ClientSecret: "wrong"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid_client")
 	})
 
 	t.Run("missing secret", func(t *testing.T) {
-		_, err := s.RefreshTokens(pair.RefreshToken, client, &RefreshRequest{})
+		_, err := s.RefreshTokens(context.Background(), pair.RefreshToken, client, &RefreshRequest{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid_client")
 	})
@@ -525,5 +526,48 @@ func TestAuthorizationServer_MinStateEntropy(t *testing.T) {
 		params, err := s.ValidateAuthorizeRequest(r, client, redirectURI)
 		require.NoError(t, err)
 		assert.Equal(t, "long-enough-state-value", params.State)
+	})
+}
+
+type fakeRevocationChecker struct {
+	revoked map[string]bool
+}
+
+func (f *fakeRevocationChecker) IsUserRevoked(_ context.Context, email string) (bool, error) {
+	return f.revoked[email], nil
+}
+
+func TestAuthorizationServer_RefreshTokens_Revocation(t *testing.T) {
+	rev := &fakeRevocationChecker{revoked: map[string]bool{"blocked@example.com": true}}
+	s, err := NewAuthorizationServer(AuthorizationServerConfig{
+		JWTSecret:         []byte(strings.Repeat("s", 32)),
+		Issuer:            "https://mcp.example.com",
+		AccessTokenTTL:    time.Hour,
+		RefreshTokenTTL:   30 * 24 * time.Hour,
+		RevocationChecker: rev,
+	})
+	require.NoError(t, err)
+	client := newPublicClient()
+
+	mkRefresh := func(email string) string {
+		pair, err := s.issueTokenPair(idp.Identity{Email: email}, client.GetID(), []string{"read"}, []string{"https://mcp.example.com"})
+		require.NoError(t, err)
+		require.NotEmpty(t, pair.RefreshToken)
+		return pair.RefreshToken
+	}
+
+	t.Run("blocks revoked user", func(t *testing.T) {
+		_, err := s.RefreshTokens(context.Background(), mkRefresh("blocked@example.com"), client, &RefreshRequest{})
+		require.Error(t, err)
+		var oauthErr *OAuthError
+		require.ErrorAs(t, err, &oauthErr)
+		assert.Equal(t, ErrInvalidGrant, oauthErr.Code)
+		assert.Contains(t, oauthErr.Description, "revoked")
+	})
+
+	t.Run("allows active user", func(t *testing.T) {
+		pair, err := s.RefreshTokens(context.Background(), mkRefresh("ok@example.com"), client, &RefreshRequest{})
+		require.NoError(t, err)
+		assert.NotEmpty(t, pair.AccessToken)
 	})
 }

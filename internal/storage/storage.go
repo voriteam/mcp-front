@@ -9,6 +9,7 @@ import (
 )
 
 var ErrUserTokenNotFound = errors.New("user token not found")
+var ErrIdentityTokenNotFound = errors.New("identity token not found")
 var ErrClientNotFound = errors.New("client not found")
 var ErrGrantNotFound = errors.New("grant not found")
 var ErrServiceRegistrationNotFound = errors.New("service registration not found")
@@ -55,12 +56,21 @@ type ServiceRegistration struct {
 	ClientID     string    `json:"client_id"`
 	ClientSecret string    `json:"client_secret,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 type ServiceRegistrationStore interface {
 	GetServiceRegistration(ctx context.Context, serviceName string) (*ServiceRegistration, error)
 	SetServiceRegistration(ctx context.Context, serviceName string, reg *ServiceRegistration) error
+}
+
+// IdentityTokenStore persists the identity provider's refresh token for each
+// user, captured at login. The account verifier replays it against the IdP to
+// detect when a user's account is no longer active (e.g. suspended or deleted).
+type IdentityTokenStore interface {
+	SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error
+	GetIdentityToken(ctx context.Context, userEmail string) (string, error)
+	DeleteIdentityToken(ctx context.Context, userEmail string) error
 }
 
 type Storage interface {
@@ -79,7 +89,14 @@ type Storage interface {
 	// Service registration (for dynamic client registration with upstream services)
 	ServiceRegistrationStore
 
+	// Identity provider refresh tokens (for disabled-account enforcement)
+	IdentityTokenStore
+
 	// Session tracking
 	TrackSession(ctx context.Context, session ActiveSession) error
 	RevokeSession(ctx context.Context, sessionID string) error
+
+	// RevokeUserSessions removes all sessions for a user (used when purging a
+	// revoked account).
+	RevokeUserSessions(ctx context.Context, userEmail string) error
 }

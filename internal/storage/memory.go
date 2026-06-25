@@ -15,25 +15,28 @@ import (
 var _ Storage = (*MemoryStorage)(nil)
 
 type MemoryStorage struct {
-	clients         map[string]*Client
-	clientsMutex    sync.RWMutex
-	grants          map[string]*oauth.Grant
-	grantsMutex     sync.Mutex
-	userTokens      map[string]*StoredToken
-	userTokensMutex sync.RWMutex
-	sessions        map[string]*ActiveSession
-	sessionsMutex   sync.RWMutex
-	serviceRegs     map[string]*ServiceRegistration
-	serviceRegsMu   sync.RWMutex
+	clients          map[string]*Client
+	clientsMutex     sync.RWMutex
+	grants           map[string]*oauth.Grant
+	grantsMutex      sync.Mutex
+	userTokens       map[string]*StoredToken
+	userTokensMutex  sync.RWMutex
+	sessions         map[string]*ActiveSession
+	sessionsMutex    sync.RWMutex
+	serviceRegs      map[string]*ServiceRegistration
+	serviceRegsMu    sync.RWMutex
+	identityTokens   map[string]string
+	identityTokensMu sync.RWMutex
 }
 
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
-		clients:     make(map[string]*Client),
-		grants:      make(map[string]*oauth.Grant),
-		userTokens:  make(map[string]*StoredToken),
-		sessions:    make(map[string]*ActiveSession),
-		serviceRegs: make(map[string]*ServiceRegistration),
+		clients:        make(map[string]*Client),
+		grants:         make(map[string]*oauth.Grant),
+		userTokens:     make(map[string]*StoredToken),
+		sessions:       make(map[string]*ActiveSession),
+		serviceRegs:    make(map[string]*ServiceRegistration),
+		identityTokens: make(map[string]string),
 	}
 }
 
@@ -192,6 +195,45 @@ func (s *MemoryStorage) RevokeSession(ctx context.Context, sessionID string) err
 	defer s.sessionsMutex.Unlock()
 
 	delete(s.sessions, sessionID)
+	return nil
+}
+
+func (s *MemoryStorage) RevokeUserSessions(ctx context.Context, userEmail string) error {
+	s.sessionsMutex.Lock()
+	defer s.sessionsMutex.Unlock()
+
+	for id, session := range s.sessions {
+		if session.UserEmail == userEmail {
+			delete(s.sessions, id)
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStorage) SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error {
+	s.identityTokensMu.Lock()
+	defer s.identityTokensMu.Unlock()
+
+	s.identityTokens[userEmail] = refreshToken
+	return nil
+}
+
+func (s *MemoryStorage) GetIdentityToken(ctx context.Context, userEmail string) (string, error) {
+	s.identityTokensMu.RLock()
+	defer s.identityTokensMu.RUnlock()
+
+	token, ok := s.identityTokens[userEmail]
+	if !ok {
+		return "", ErrIdentityTokenNotFound
+	}
+	return token, nil
+}
+
+func (s *MemoryStorage) DeleteIdentityToken(ctx context.Context, userEmail string) error {
+	s.identityTokensMu.Lock()
+	defer s.identityTokensMu.Unlock()
+
+	delete(s.identityTokens, userEmail)
 	return nil
 }
 

@@ -196,6 +196,26 @@ When `storage` is `"firestore"`:
 
 When `true`, allows tokens with just the base issuer as audience to access any service. This is a workaround for MCP clients that don't implement RFC 8707 resource indicators, but it defeats per-service token isolation. Default: `false`. Only enable if you understand the security implications.
 
+### `auth.workspaceRevocation`
+
+Google only. When a user's account is suspended or deleted, the tokens MCP Front already issued stay valid until they expire, and any cached upstream service tokens linger. With `workspaceRevocation` enabled, MCP Front cuts that short by re-verifying the user against the identity provider whenever their token is refreshed.
+
+```json
+{
+  "auth": {
+    "workspaceRevocation": {
+      "enabled": true
+    }
+  }
+}
+```
+
+At login MCP Front stores the user's IdP refresh token (encrypted at rest). When a client later refreshes its MCP Front token, MCP Front first replays that stored token against Google. Google rejects it (`invalid_grant`) once the account is suspended, deleted, or its consent is revoked — at which point MCP Front denies the refresh, deletes the user's stored upstream service tokens, and revokes their sessions. This keys off the user's own authentication, so it needs no directory access, admin role, or service-account impersonation.
+
+Enforcement is eventual by design: an access token already issued keeps working until it expires within `tokenTtl`, while new ones can no longer be minted. The policy is "deny unless positively verified active" — a refresh with no stored token to check is denied, forcing a re-login (which Google gates), so a session predating this feature re-verifies once on its next refresh. Only transient errors reaching Google fail open, so a brief provider outage cannot lock everyone out.
+
+`enabled` turns it on (default: `false`). It requires `idp.provider` `"google"` (the only provider that currently supports the refresh probe) and, for the stored tokens to survive restarts, `storage` `"firestore"`. There is no other configuration and nothing to provision outside MCP Front.
+
 ## MCP server configuration
 
 Each server needs at least a `transportType`. See [Server Types](/mcp-front/server-types/) for transport-specific documentation.

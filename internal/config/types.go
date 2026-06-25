@@ -335,6 +335,18 @@ type OAuthAuthConfig struct {
 	// properly implement RFC 8707 resource indicators, but it defeats per-service token
 	// isolation. Only enable this if you understand the security implications.
 	DangerouslyAcceptIssuerAudience bool `json:"dangerouslyAcceptIssuerAudience,omitempty"`
+	// WorkspaceRevocation configures the background job that revokes access for
+	// disabled Google Workspace accounts.
+	WorkspaceRevocation *WorkspaceRevocationConfig `json:"workspaceRevocation,omitempty"`
+}
+
+// WorkspaceRevocationConfig configures account-revocation enforcement: at token
+// refresh, mcp-front replays the user's stored identity-provider refresh token and
+// revokes access if the provider rejects it (account suspended/deleted). Requires
+// a provider that can refresh tokens (Google).
+type WorkspaceRevocationConfig struct {
+	// Enabled turns revocation on. Default is off.
+	Enabled bool `json:"enabled"`
 }
 
 // ProxyConfig represents the proxy configuration with resolved values
