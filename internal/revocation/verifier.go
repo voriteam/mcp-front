@@ -4,9 +4,10 @@
 // At login mcp-front stores the user's IdP refresh token. When an mcp-front token
 // is refreshed, the Verifier replays that stored token against the IdP: the
 // provider rejects it once the account is suspended, deleted, or its consent is
-// revoked. On rejection the user's stored upstream tokens, sessions, and identity
-// token are purged and the refresh is denied. This keys off the user's own
-// authentication, so it needs no directory access or admin privileges.
+// revoked. On rejection the user's stored upstream tokens and sessions are purged
+// and the refresh is denied; the dead identity token is kept so every later
+// refresh stays denied until a genuine re-login replaces it. This keys off the
+// user's own authentication, so it needs no directory access or admin privileges.
 //
 // Enforcement is eventual: an access token already issued remains valid until it
 // expires within its TTL; the Verifier blocks the minting of new ones.
@@ -48,19 +49,24 @@ func NewVerifier(store Store, refresher IdentityRefresher) *Verifier {
 	return &Verifier{store: store, refresher: refresher}
 }
 
-// IsUserRevoked replays the user's stored IdP refresh token. A definitive
-// "invalid_grant" rejection means the account is gone — the user is purged and
-// reported revoked. Missing tokens and transient errors fail open (the user is
-// allowed), so an IdP outage cannot lock everyone out.
+// IsUserRevoked replays the user's stored IdP refresh token. The policy is "deny
+// unless positively verified active": a definitive "invalid_grant" rejection
+// revokes and purges the user, and a missing stored token denies the refresh
+// (forcing re-authentication, which Google gates). Only transient errors reaching
+// the provider or storage fail open, so a brief outage cannot lock everyone out.
 func (v *Verifier) IsUserRevoked(ctx context.Context, userEmail string) (bool, error) {
 	refreshToken, err := v.store.GetIdentityToken(ctx, userEmail)
+	if errors.Is(err, storage.ErrIdentityTokenNotFound) {
+		log.LogInfoWithFields("revocation", "No stored identity token; denying refresh to force re-authentication", map[string]any{
+			"email": userEmail,
+		})
+		return true, nil
+	}
 	if err != nil {
-		if !errors.Is(err, storage.ErrIdentityTokenNotFound) {
-			log.LogWarnWithFields("revocation", "Could not load identity token; allowing refresh", map[string]any{
-				"email": userEmail,
-				"error": err.Error(),
-			})
-		}
+		log.LogWarnWithFields("revocation", "Could not load identity token; allowing refresh", map[string]any{
+			"email": userEmail,
+			"error": err.Error(),
+		})
 		return false, nil
 	}
 
@@ -92,8 +98,14 @@ func (v *Verifier) IsUserRevoked(ctx context.Context, userEmail string) (bool, e
 	return false, nil
 }
 
-// purge removes everything tied to a revoked user: stored upstream service
-// tokens, sessions, and the identity token itself.
+// purge removes a revoked user's stored upstream service tokens and sessions.
+//
+// It deliberately leaves the identity token in place: that token is what failed
+// the probe, so keeping it makes the lockout durable — every subsequent refresh
+// re-detects the dead token and is denied. Deleting it would drop the user into
+// the "no stored token" fail-open path and let them refresh again. A genuine
+// re-login (only possible for a re-enabled account) overwrites the dead token
+// with a fresh one and restores access.
 func (v *Verifier) purge(ctx context.Context, userEmail string) {
 	services, err := v.store.ListUserServices(ctx, userEmail)
 	if err != nil {
@@ -113,12 +125,6 @@ func (v *Verifier) purge(ctx context.Context, userEmail string) {
 	}
 	if err := v.store.RevokeUserSessions(ctx, userEmail); err != nil {
 		log.LogErrorWithFields("revocation", "Failed to revoke sessions", map[string]any{
-			"email": userEmail,
-			"error": err.Error(),
-		})
-	}
-	if err := v.store.DeleteIdentityToken(ctx, userEmail); err != nil {
-		log.LogErrorWithFields("revocation", "Failed to delete identity token", map[string]any{
 			"email": userEmail,
 			"error": err.Error(),
 		})

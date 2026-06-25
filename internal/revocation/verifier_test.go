@@ -76,16 +76,19 @@ func invalidGrantErr() error {
 	}
 }
 
-func TestVerifier_NoStoredToken_AllowsAndDoesNotPurge(t *testing.T) {
+func TestVerifier_NoStoredToken_DeniesWithoutPurge(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	store.tokens["u@x.com"] = []string{"linear"}
 	v := NewVerifier(store, &fakeRefresher{token: &oauth2.Token{}})
 
+	// No stored identity token: cannot positively verify the account, so deny the
+	// refresh (forcing re-auth) — but don't purge, since we have no evidence the
+	// account is gone.
 	revoked, err := v.IsUserRevoked(ctx, "u@x.com")
 	require.NoError(t, err)
-	assert.False(t, revoked)
-	assert.Equal(t, []string{"linear"}, store.tokens["u@x.com"], "must not purge when status unknown")
+	assert.True(t, revoked)
+	assert.Equal(t, []string{"linear"}, store.tokens["u@x.com"], "must not purge on missing token")
 }
 
 func TestVerifier_InvalidGrant_RevokesAndPurges(t *testing.T) {
@@ -102,7 +105,7 @@ func TestVerifier_InvalidGrant_RevokesAndPurges(t *testing.T) {
 	assert.Empty(t, store.tokens["u@x.com"], "upstream tokens purged")
 	assert.False(t, store.sessions["u@x.com"], "sessions revoked")
 	_, ok := store.identity["u@x.com"]
-	assert.False(t, ok, "identity token deleted")
+	assert.True(t, ok, "dead identity token kept so the lockout stays durable")
 }
 
 func TestVerifier_TransientError_AllowsAndKeepsState(t *testing.T) {
