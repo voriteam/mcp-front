@@ -32,8 +32,8 @@ func TestStreamlineDescription(t *testing.T) {
 			expected: "Tool description.\n\nMiddle text.",
 		},
 		{
-			name:     "truncates long description at sentence boundary",
-			input:    "This is a tool that does many things. It supports complex queries with boolean operators. It also handles pagination and filtering. " + "Additional details that push it well beyond the maximum allowed description length for streamlined responses in the gateway multiplexer endpoint. More text here to ensure truncation happens correctly at a sentence boundary.",
+			name:  "truncates long description at sentence boundary",
+			input: "This is a tool that does many things. It supports complex queries with boolean operators. It also handles pagination and filtering. " + "Additional details that push it well beyond the maximum allowed description length for streamlined responses in the gateway multiplexer endpoint. More text here to ensure truncation happens correctly at a sentence boundary.",
 			expected: "This is a tool that does many things. It supports complex queries with boolean operators. It also handles pagination and filtering. Additional details that push it well beyond the maximum allowed description length for streamlined responses in the gateway multiplexer endpoint.",
 		},
 	}

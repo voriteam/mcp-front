@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"sync"
 	"time"
 
@@ -43,7 +42,9 @@ func NewHMACJWTSource(cfg *config.HMACJWTAuthConfig) (*HMACJWTSource, error) {
 		return nil, fmt.Errorf("hmacJWT.ttl must be positive, got %s", cfg.TTL)
 	}
 	claims := make(map[string]any, len(cfg.Claims))
-	maps.Copy(claims, cfg.Claims)
+	for k, v := range cfg.Claims {
+		claims[k] = v
+	}
 	return &HMACJWTSource{
 		secret: []byte(cfg.Secret),
 		claims: claims,
@@ -63,7 +64,9 @@ func (s *HMACJWTSource) Token() (*oauth2.Token, error) {
 
 	exp := time.Now().Add(s.ttl)
 	payload := make(map[string]any, len(s.claims)+1)
-	maps.Copy(payload, s.claims)
+	for k, v := range s.claims {
+		payload[k] = v
+	}
 	payload["exp"] = exp.Unix()
 
 	payloadJSON, err := json.Marshal(payload)

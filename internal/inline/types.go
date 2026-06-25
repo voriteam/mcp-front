@@ -16,12 +16,12 @@ type ToolConfig struct {
 	Name        string                     `json:"name"`
 	Description string                     `json:"description"`
 	InputSchema json.RawMessage            `json:"inputSchema"`
-	Command     string                     `json:"command"`             // Command to run (e.g., "docker", "gcloud", etc.)
-	Args        []json.RawMessage          `json:"args,omitempty"`      // Arguments with {"$env": "..."} support
-	Env         map[string]json.RawMessage `json:"env,omitempty"`       // Environment variables with {"$env": "..."} support
-	HTTP        *HTTPConfig                `json:"http,omitempty"`      // HTTP request config
-	HTMLFetch   *HTMLFetchConfig           `json:"htmlFetch,omitempty"` // HTML fetch and extract config
-	Timeout     string                     `json:"timeout,omitempty"`   // Timeout for execution (e.g. "30s")
+	Command     string                     `json:"command"`              // Command to run (e.g., "docker", "gcloud", etc.)
+	Args        []json.RawMessage          `json:"args,omitempty"`       // Arguments with {"$env": "..."} support
+	Env         map[string]json.RawMessage `json:"env,omitempty"`        // Environment variables with {"$env": "..."} support
+	HTTP        *HTTPConfig                `json:"http,omitempty"`       // HTTP request config
+	HTMLFetch   *HTMLFetchConfig           `json:"htmlFetch,omitempty"`  // HTML fetch and extract config
+	Timeout     string                     `json:"timeout,omitempty"`    // Timeout for execution (e.g. "30s")
 }
 
 // HTTPConfig defines an HTTP request to make when a tool is called.

@@ -2,7 +2,6 @@ package inline
 
 import (
 	"io"
-	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -40,7 +39,12 @@ func findElement(n *html.Node, selector string) *html.Node {
 		case strings.HasPrefix(selector, "#"):
 			return getAttr(n, "id") == selector[1:]
 		case strings.HasPrefix(selector, "."):
-			return slices.Contains(strings.Fields(getAttr(n, "class")), selector[1:])
+			for _, cls := range strings.Fields(getAttr(n, "class")) {
+				if cls == selector[1:] {
+					return true
+				}
+			}
+			return false
 		default:
 			return n.Data == selector
 		}
