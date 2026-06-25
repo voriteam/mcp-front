@@ -105,6 +105,8 @@ See the **[Quickstart](https://stainless-api.github.io/mcp-front/quickstart/)** 
 
 mcp-front uses OAuth 2.0 with PKCE for public clients, domain and organization-based access control, per-user session isolation for stdio servers, per-service audience claims ([RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707)) to prevent token reuse across services, and AES-256-GCM encryption for sensitive data at rest.
 
+For Google Workspace, optional account-revocation reconciliation cuts off access when a user is suspended or deleted — it blocks token refresh and purges their stored service tokens and sessions. See `auth.workspaceRevocation` in the [configuration reference](docs-site/src/content/docs/configuration.md).
+
 **Security boundary**: mcp-front handles authentication. MCP servers handle authorization and input validation. Only use MCP servers you trust with your data.
 
 ## License

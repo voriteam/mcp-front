@@ -196,6 +196,35 @@ When `storage` is `"firestore"`:
 
 When `true`, allows tokens with just the base issuer as audience to access any service. This is a workaround for MCP clients that don't implement RFC 8707 resource indicators, but it defeats per-service token isolation. Default: `false`. Only enable if you understand the security implications.
 
+### `auth.workspaceRevocation`
+
+Google Workspace only. When a user's account is suspended or deleted, the tokens MCP Front already issued stay valid until they expire, and any cached upstream service tokens linger. With `workspaceRevocation` enabled, a background reconciler periodically checks the directory status of every user who has active state in MCP Front and revokes access for any account that is no longer active.
+
+```json
+{
+  "auth": {
+    "workspaceRevocation": {
+      "enabled": true,
+      "interval": "1h",
+      "adminEmail": { "$env": "WORKSPACE_REVOCATION_ADMIN_EMAIL" },
+      "impersonateServiceAccount": "mcp-front@your-project.iam.gserviceaccount.com"
+    }
+  }
+}
+```
+
+Enforcement is eventual by design. The reconciler blocks the revoked user from minting new access tokens (refresh is refused), deletes their stored upstream service tokens, and revokes their sessions; any access token already in their hands simply expires within `tokenTtl`. There is no per-request directory lookup on the hot path. The revocation set mirrors current account status, so re-enabling an account in Workspace restores it on the next pass.
+
+`enabled` turns the reconciler on (default: `false`). `interval` is the time between passes as a Go duration string (default: `"1h"`). `adminEmail` is the Workspace admin the service account impersonates for directory reads (the domain-wide-delegation subject) — supply it via `{"$env": "VAR"}` rather than hardcoding an address. `impersonateServiceAccount` is the service account used for keyless domain-wide delegation.
+
+This feature reads account status through the Google Admin SDK Directory API, which requires setup outside MCP Front:
+
+- Enable the Admin SDK API on the project.
+- Grant the service account the Service Account Token Creator role on itself so it can mint a delegated token without a key file.
+- In the Workspace Admin console, authorize the service account's OAuth client ID for the `https://www.googleapis.com/auth/admin.directory.user.readonly` scope (Security → Access and data control → API controls → Domain-wide Delegation). The client ID is the service account's numeric ID, not its email.
+
+If delegation is misconfigured the reconciler logs the lookup error and skips the user rather than revoking, so a setup mistake fails safe.
+
 ## MCP server configuration
 
 Each server needs at least a `transportType`. See [Server Types](/mcp-front/server-types/) for transport-specific documentation.
