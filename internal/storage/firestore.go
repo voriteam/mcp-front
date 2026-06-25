@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	sessionsCollection   = "mcp_front_sessions"
-	grantsCollection     = "mcp_front_grants"
-	serviceRegCollection = "mcp_front_service_registrations"
+	sessionsCollection     = "mcp_front_sessions"
+	grantsCollection       = "mcp_front_grants"
+	serviceRegCollection   = "mcp_front_service_registrations"
+	revokedUsersCollection = "mcp_front_revoked_users"
 )
 
 type FirestoreStorage struct {
@@ -560,6 +561,122 @@ func (s *FirestoreStorage) RevokeSession(ctx context.Context, sessionID string) 
 		return err
 	}
 	return nil
+}
+
+func (s *FirestoreStorage) RevokeUserSessions(ctx context.Context, userEmail string) error {
+	iter := s.client.Collection(sessionsCollection).Where("user_email", "==", userEmail).Documents(ctx)
+	defer iter.Stop()
+
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to iterate sessions: %w", err)
+		}
+		if _, err := doc.Ref.Delete(ctx); err != nil && status.Code(err) != codes.NotFound {
+			return fmt.Errorf("failed to delete session %s: %w", doc.Ref.ID, err)
+		}
+	}
+	return nil
+}
+
+func (s *FirestoreStorage) ListUsersWithTokens(ctx context.Context) ([]string, error) {
+	return s.distinctUserEmails(ctx, s.tokenCollection)
+}
+
+func (s *FirestoreStorage) ListUsersWithSessions(ctx context.Context) ([]string, error) {
+	return s.distinctUserEmails(ctx, sessionsCollection)
+}
+
+// distinctUserEmails returns the deduplicated set of user_email values across a
+// collection. It projects only the user_email field to avoid decrypting token
+// payloads.
+func (s *FirestoreStorage) distinctUserEmails(ctx context.Context, collection string) ([]string, error) {
+	iter := s.client.Collection(collection).Select("user_email").Documents(ctx)
+	defer iter.Stop()
+
+	seen := make(map[string]struct{})
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate %s: %w", collection, err)
+		}
+
+		email, ok := doc.Data()["user_email"].(string)
+		if ok && email != "" {
+			seen[email] = struct{}{}
+		}
+	}
+
+	if len(seen) == 0 {
+		return nil, nil
+	}
+	emails := make([]string, 0, len(seen))
+	for email := range seen {
+		emails = append(emails, email)
+	}
+	return emails, nil
+}
+
+type RevokedUserDoc struct {
+	UserEmail string    `firestore:"user_email"`
+	Reason    string    `firestore:"reason,omitempty"`
+	RevokedAt time.Time `firestore:"revoked_at"`
+}
+
+func (s *FirestoreStorage) AddRevokedUser(ctx context.Context, userEmail, reason string) error {
+	doc := RevokedUserDoc{
+		UserEmail: userEmail,
+		Reason:    reason,
+		RevokedAt: time.Now(),
+	}
+	_, err := s.client.Collection(revokedUsersCollection).Doc(userEmail).Set(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("failed to store revoked user in Firestore: %w", err)
+	}
+	return nil
+}
+
+func (s *FirestoreStorage) RemoveRevokedUser(ctx context.Context, userEmail string) error {
+	_, err := s.client.Collection(revokedUsersCollection).Doc(userEmail).Delete(ctx)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("failed to delete revoked user from Firestore: %w", err)
+	}
+	return nil
+}
+
+func (s *FirestoreStorage) IsUserRevoked(ctx context.Context, userEmail string) (bool, error) {
+	_, err := s.client.Collection(revokedUsersCollection).Doc(userEmail).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to look up revoked user in Firestore: %w", err)
+	}
+	return true, nil
+}
+
+func (s *FirestoreStorage) ListRevokedUsers(ctx context.Context) ([]string, error) {
+	iter := s.client.Collection(revokedUsersCollection).Documents(ctx)
+	defer iter.Stop()
+
+	var emails []string
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate revoked users: %w", err)
+		}
+		emails = append(emails, doc.Ref.ID)
+	}
+	return emails, nil
 }
 
 type ServiceRegistrationDoc struct {

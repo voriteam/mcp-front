@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -9,18 +10,28 @@ import (
 
 	"github.com/stainless-api/mcp-front/internal/crypto"
 	"github.com/stainless-api/mcp-front/internal/idp"
+	"github.com/stainless-api/mcp-front/internal/log"
 )
 
+// RevocationChecker reports whether a user's access has been revoked (e.g. their
+// Google Workspace account was suspended). It is consulted at refresh time so a
+// revoked user cannot mint new access tokens; existing access tokens still expire
+// naturally within their TTL.
+type RevocationChecker interface {
+	IsUserRevoked(ctx context.Context, userEmail string) (bool, error)
+}
+
 type AuthorizationServer struct {
-	accessTokenSigner  crypto.TokenSigner
-	refreshTokenSigner crypto.TokenSigner
-	codeLifespan       time.Duration
-	accessTokenTTL     time.Duration
-	refreshTokenTTL    time.Duration
+	accessTokenSigner    crypto.TokenSigner
+	refreshTokenSigner   crypto.TokenSigner
+	codeLifespan         time.Duration
+	accessTokenTTL       time.Duration
+	refreshTokenTTL      time.Duration
 	issuer               string
 	minStateEntropy      int
 	refreshTokenScopes   []string
 	requireResourceParam bool
+	revocationChecker    RevocationChecker
 }
 
 type AuthorizationServerConfig struct {
@@ -32,6 +43,8 @@ type AuthorizationServerConfig struct {
 	MinStateEntropy      int
 	RefreshTokenScopes   []string
 	RequireResourceParam bool
+	// RevocationChecker, when set, blocks refresh-token grants for revoked users.
+	RevocationChecker RevocationChecker
 }
 
 func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer, error) {
@@ -50,15 +63,16 @@ func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer
 	}
 
 	return &AuthorizationServer{
-		accessTokenSigner:  crypto.NewTokenSigner(cfg.JWTSecret, cfg.AccessTokenTTL),
-		refreshTokenSigner: crypto.NewTokenSigner(cfg.JWTSecret, cfg.RefreshTokenTTL),
-		codeLifespan:       cfg.CodeLifespan,
-		accessTokenTTL:     cfg.AccessTokenTTL,
-		refreshTokenTTL:    cfg.RefreshTokenTTL,
+		accessTokenSigner:    crypto.NewTokenSigner(cfg.JWTSecret, cfg.AccessTokenTTL),
+		refreshTokenSigner:   crypto.NewTokenSigner(cfg.JWTSecret, cfg.RefreshTokenTTL),
+		codeLifespan:         cfg.CodeLifespan,
+		accessTokenTTL:       cfg.AccessTokenTTL,
+		refreshTokenTTL:      cfg.RefreshTokenTTL,
 		issuer:               cfg.Issuer,
 		minStateEntropy:      cfg.MinStateEntropy,
 		refreshTokenScopes:   cfg.RefreshTokenScopes,
 		requireResourceParam: cfg.RequireResourceParam,
+		revocationChecker:    cfg.RevocationChecker,
 	}, nil
 }
 
@@ -187,7 +201,7 @@ type RefreshRequest struct {
 	ClientSecret string
 }
 
-func (s *AuthorizationServer) RefreshTokens(refreshToken string, client Client, req *RefreshRequest) (*TokenPair, error) {
+func (s *AuthorizationServer) RefreshTokens(ctx context.Context, refreshToken string, client Client, req *RefreshRequest) (*TokenPair, error) {
 	if !client.IsPublic() {
 		if err := ValidateClientSecret(req.ClientSecret, client); err != nil {
 			return nil, NewOAuthError(ErrInvalidClient, err.Error())
@@ -201,6 +215,23 @@ func (s *AuthorizationServer) RefreshTokens(refreshToken string, client Client, 
 
 	if claims.ClientID != client.GetID() {
 		return nil, NewOAuthError(ErrInvalidGrant, "refresh token was issued to a different client")
+	}
+
+	if s.revocationChecker != nil {
+		revoked, err := s.revocationChecker.IsUserRevoked(ctx, claims.Identity.Email)
+		if err != nil {
+			log.LogErrorWithFields("oauth", "Revocation check failed during refresh", map[string]any{
+				"email": claims.Identity.Email,
+				"error": err.Error(),
+			})
+			return nil, NewOAuthError(ErrServerError, "failed to verify account status")
+		}
+		if revoked {
+			log.LogInfoWithFields("oauth", "Refused refresh for revoked user", map[string]any{
+				"email": claims.Identity.Email,
+			})
+			return nil, NewOAuthError(ErrInvalidGrant, "account revoked")
+		}
 	}
 
 	return s.issueTokenPair(claims.Identity, claims.ClientID, claims.Scopes, claims.Audience)

@@ -25,15 +25,18 @@ type MemoryStorage struct {
 	sessionsMutex   sync.RWMutex
 	serviceRegs     map[string]*ServiceRegistration
 	serviceRegsMu   sync.RWMutex
+	revokedUsers    map[string]struct{}
+	revokedUsersMu  sync.RWMutex
 }
 
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
-		clients:     make(map[string]*Client),
-		grants:      make(map[string]*oauth.Grant),
-		userTokens:  make(map[string]*StoredToken),
-		sessions:    make(map[string]*ActiveSession),
-		serviceRegs: make(map[string]*ServiceRegistration),
+		clients:      make(map[string]*Client),
+		grants:       make(map[string]*oauth.Grant),
+		userTokens:   make(map[string]*StoredToken),
+		sessions:     make(map[string]*ActiveSession),
+		serviceRegs:  make(map[string]*ServiceRegistration),
+		revokedUsers: make(map[string]struct{}),
 	}
 }
 
@@ -193,6 +196,84 @@ func (s *MemoryStorage) RevokeSession(ctx context.Context, sessionID string) err
 
 	delete(s.sessions, sessionID)
 	return nil
+}
+
+func (s *MemoryStorage) RevokeUserSessions(ctx context.Context, userEmail string) error {
+	s.sessionsMutex.Lock()
+	defer s.sessionsMutex.Unlock()
+
+	for id, session := range s.sessions {
+		if session.UserEmail == userEmail {
+			delete(s.sessions, id)
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStorage) ListUsersWithTokens(ctx context.Context) ([]string, error) {
+	s.userTokensMutex.RLock()
+	defer s.userTokensMutex.RUnlock()
+
+	seen := make(map[string]struct{})
+	for key := range s.userTokens {
+		if email, _, ok := strings.Cut(key, ":"); ok {
+			seen[email] = struct{}{}
+		}
+	}
+	return keysOf(seen), nil
+}
+
+func (s *MemoryStorage) ListUsersWithSessions(ctx context.Context) ([]string, error) {
+	s.sessionsMutex.RLock()
+	defer s.sessionsMutex.RUnlock()
+
+	seen := make(map[string]struct{})
+	for _, session := range s.sessions {
+		seen[session.UserEmail] = struct{}{}
+	}
+	return keysOf(seen), nil
+}
+
+func (s *MemoryStorage) AddRevokedUser(ctx context.Context, userEmail, reason string) error {
+	s.revokedUsersMu.Lock()
+	defer s.revokedUsersMu.Unlock()
+
+	s.revokedUsers[userEmail] = struct{}{}
+	return nil
+}
+
+func (s *MemoryStorage) RemoveRevokedUser(ctx context.Context, userEmail string) error {
+	s.revokedUsersMu.Lock()
+	defer s.revokedUsersMu.Unlock()
+
+	delete(s.revokedUsers, userEmail)
+	return nil
+}
+
+func (s *MemoryStorage) IsUserRevoked(ctx context.Context, userEmail string) (bool, error) {
+	s.revokedUsersMu.RLock()
+	defer s.revokedUsersMu.RUnlock()
+
+	_, revoked := s.revokedUsers[userEmail]
+	return revoked, nil
+}
+
+func (s *MemoryStorage) ListRevokedUsers(ctx context.Context) ([]string, error) {
+	s.revokedUsersMu.RLock()
+	defer s.revokedUsersMu.RUnlock()
+
+	return keysOf(s.revokedUsers), nil
+}
+
+func keysOf(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func (s *MemoryStorage) GetServiceRegistration(_ context.Context, serviceName string) (*ServiceRegistration, error) {

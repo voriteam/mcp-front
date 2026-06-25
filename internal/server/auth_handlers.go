@@ -514,7 +514,7 @@ func (h *AuthHandlers) TokenHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		pair, err = h.authServer.RefreshTokens(refreshToken, client, &oauth.RefreshRequest{
+		pair, err = h.authServer.RefreshTokens(r.Context(), refreshToken, client, &oauth.RefreshRequest{
 			ClientSecret: r.FormValue("client_secret"),
 		})
 		if err != nil {

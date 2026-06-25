@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/inline"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/revocation"
 	"github.com/stainless-api/mcp-front/internal/server"
 	"github.com/stainless-api/mcp-front/internal/storage"
 	"golang.org/x/oauth2"
@@ -36,6 +38,7 @@ type MCPFront struct {
 	sessionManager *client.StdioSessionManager
 	aggregates     []*aggregate.Server
 	storage        storage.Storage
+	revocation     *revocation.Reconciler
 }
 
 func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*MCPFront, error) {
@@ -115,13 +118,42 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 
 	httpServer := server.NewHTTPServer(mux, cfg.Proxy.Addr)
 
+	reconciler, err := setupRevocation(ctx, cfg, store)
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup workspace revocation: %w", err)
+	}
+	if reconciler != nil {
+		reconciler.Start()
+	}
+
 	return &MCPFront{
 		config:         cfg,
 		httpServer:     httpServer,
 		sessionManager: sessionManager,
 		aggregates:     aggregates,
 		storage:        store,
+		revocation:     reconciler,
 	}, nil
+}
+
+// setupRevocation builds the Workspace revocation reconciler when enabled,
+// returning nil when the feature is off.
+func setupRevocation(ctx context.Context, cfg config.Config, store storage.Storage) (*revocation.Reconciler, error) {
+	oauthAuth := cfg.Proxy.Auth
+	if oauthAuth == nil || oauthAuth.WorkspaceRevocation == nil || !oauthAuth.WorkspaceRevocation.Enabled {
+		return nil, nil
+	}
+	rev := oauthAuth.WorkspaceRevocation
+
+	directory, err := revocation.NewDirectoryClient(ctx, revocation.DirectoryConfig{
+		AdminEmail:                rev.AdminEmail,
+		ImpersonateServiceAccount: rev.ImpersonateServiceAccount,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create directory client: %w", err)
+	}
+
+	return revocation.New(store, directory, rev.Interval, oauthAuth.AllowedDomains), nil
 }
 
 func (m *MCPFront) Run() error {
@@ -187,6 +219,10 @@ func (m *MCPFront) Run() error {
 
 	if m.sessionManager != nil {
 		m.sessionManager.Shutdown()
+	}
+
+	if m.revocation != nil {
+		m.revocation.Stop()
 	}
 
 	log.LogInfoWithFields("mcpfront", "Application shutdown complete", map[string]any{
@@ -259,7 +295,7 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		log.LogWarn("Development mode enabled - OAuth security checks relaxed (state parameter entropy: %d)", minEntropy)
 	}
 
-	authServer, err := oauth.NewAuthorizationServer(oauth.AuthorizationServerConfig{
+	authServerCfg := oauth.AuthorizationServerConfig{
 		JWTSecret:            jwtSecret,
 		Issuer:               oauthAuth.Issuer,
 		AccessTokenTTL:       oauthAuth.TokenTTL,
@@ -267,7 +303,11 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		MinStateEntropy:      minEntropy,
 		RefreshTokenScopes:   oauthAuth.RefreshTokenScopes,
 		RequireResourceParam: !oauthAuth.DangerouslyAcceptIssuerAudience,
-	})
+	}
+	if rev := oauthAuth.WorkspaceRevocation; rev != nil && rev.Enabled {
+		authServerCfg.RevocationChecker = store
+	}
+	authServer, err := oauth.NewAuthorizationServer(authServerCfg)
 	if err != nil {
 		return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("failed to create authorization server: %w", err)
 	}
@@ -662,18 +702,12 @@ func buildBackendTokenSources(ctx context.Context, servers map[string]*config.MC
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range gcp {
-		sources[k] = v
-	}
-	for k, v := range buildClientCredentialsSources(servers) {
-		sources[k] = v
-	}
+	maps.Copy(sources, gcp)
+	maps.Copy(sources, buildClientCredentialsSources(servers))
 	hmac, err := buildHMACJWTSources(servers)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range hmac {
-		sources[k] = v
-	}
+	maps.Copy(sources, hmac)
 	return sources, nil
 }

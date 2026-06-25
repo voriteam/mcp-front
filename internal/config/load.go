@@ -317,6 +317,17 @@ func validateOAuthConfig(oauth *OAuthAuthConfig) error {
 	if oauth.RefreshTokenTTL <= 0 {
 		return fmt.Errorf("refreshTokenTtl must be positive")
 	}
+	if rev := oauth.WorkspaceRevocation; rev != nil && rev.Enabled {
+		if rev.AdminEmail == "" {
+			return fmt.Errorf("workspaceRevocation.adminEmail is required when workspaceRevocation.enabled is true")
+		}
+		if rev.Interval < 0 {
+			return fmt.Errorf("workspaceRevocation.interval must not be negative")
+		}
+		if oauth.Storage != "firestore" {
+			log.LogWarn("workspaceRevocation is enabled with non-firestore storage; the revocation set is not persisted across restarts")
+		}
+	}
 	return nil
 }
 

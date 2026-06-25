@@ -335,6 +335,25 @@ type OAuthAuthConfig struct {
 	// properly implement RFC 8707 resource indicators, but it defeats per-service token
 	// isolation. Only enable this if you understand the security implications.
 	DangerouslyAcceptIssuerAudience bool `json:"dangerouslyAcceptIssuerAudience,omitempty"`
+	// WorkspaceRevocation configures the background job that revokes access for
+	// disabled Google Workspace accounts.
+	WorkspaceRevocation *WorkspaceRevocationConfig `json:"workspaceRevocation,omitempty"`
+}
+
+// WorkspaceRevocationConfig configures the background reconciler that polls the
+// Google Workspace Directory API for suspended/deleted accounts and revokes their
+// mcp-front access (blocks refresh, purges stored tokens and sessions).
+type WorkspaceRevocationConfig struct {
+	// Enabled turns the reconciler on. Default is off.
+	Enabled bool `json:"enabled"`
+	// Interval between reconciliation passes. Defaults to 1 hour when unset.
+	Interval time.Duration `json:"interval,omitempty"`
+	// AdminEmail is the Workspace admin user impersonated for Directory API access
+	// (the domain-wide delegation subject). Required when enabled.
+	AdminEmail string `json:"adminEmail"`
+	// ImpersonateServiceAccount is the service account to impersonate for keyless
+	// domain-wide delegation. Optional.
+	ImpersonateServiceAccount string `json:"impersonateServiceAccount,omitempty"`
 }
 
 // ProxyConfig represents the proxy configuration with resolved values
