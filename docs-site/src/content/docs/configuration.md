@@ -198,32 +198,23 @@ When `true`, allows tokens with just the base issuer as audience to access any s
 
 ### `auth.workspaceRevocation`
 
-Google Workspace only. When a user's account is suspended or deleted, the tokens MCP Front already issued stay valid until they expire, and any cached upstream service tokens linger. With `workspaceRevocation` enabled, a background reconciler periodically checks the directory status of every user who has active state in MCP Front and revokes access for any account that is no longer active.
+Google only. When a user's account is suspended or deleted, the tokens MCP Front already issued stay valid until they expire, and any cached upstream service tokens linger. With `workspaceRevocation` enabled, MCP Front cuts that short by re-verifying the user against the identity provider whenever their token is refreshed.
 
 ```json
 {
   "auth": {
     "workspaceRevocation": {
-      "enabled": true,
-      "interval": "1h",
-      "adminEmail": { "$env": "WORKSPACE_REVOCATION_ADMIN_EMAIL" },
-      "impersonateServiceAccount": "mcp-front@your-project.iam.gserviceaccount.com"
+      "enabled": true
     }
   }
 }
 ```
 
-Enforcement is eventual by design. The reconciler blocks the revoked user from minting new access tokens (refresh is refused), deletes their stored upstream service tokens, and revokes their sessions; any access token already in their hands simply expires within `tokenTtl`. There is no per-request directory lookup on the hot path. The revocation set mirrors current account status, so re-enabling an account in Workspace restores it on the next pass.
+At login MCP Front stores the user's IdP refresh token (encrypted at rest). When a client later refreshes its MCP Front token, MCP Front first replays that stored token against Google. Google rejects it (`invalid_grant`) once the account is suspended, deleted, or its consent is revoked — at which point MCP Front denies the refresh, deletes the user's stored upstream service tokens, and revokes their sessions. This keys off the user's own authentication, so it needs no directory access, admin role, or service-account impersonation.
 
-`enabled` turns the reconciler on (default: `false`). `interval` is the time between passes as a Go duration string (default: `"1h"`). `adminEmail` is the Workspace admin the service account impersonates for directory reads (the domain-wide-delegation subject) — supply it via `{"$env": "VAR"}` rather than hardcoding an address. `impersonateServiceAccount` is the service account used for keyless domain-wide delegation.
+Enforcement is eventual by design: an access token already issued keeps working until it expires within `tokenTtl`, while new ones can no longer be minted. Missing or transient cases fail open — if there is no stored token (e.g. a session predating this feature) or the provider is briefly unreachable, the refresh is allowed, so an outage cannot lock everyone out.
 
-This feature reads account status through the Google Admin SDK Directory API, which requires setup outside MCP Front:
-
-- Enable the Admin SDK API on the project.
-- Grant the service account the Service Account Token Creator role on itself so it can mint a delegated token without a key file.
-- In the Workspace Admin console, authorize the service account's OAuth client ID for the `https://www.googleapis.com/auth/admin.directory.user.readonly` scope (Security → Access and data control → API controls → Domain-wide Delegation). The client ID is the service account's numeric ID, not its email.
-
-If delegation is misconfigured the reconciler logs the lookup error and skips the user rather than revoking, so a setup mistake fails safe.
+`enabled` turns it on (default: `false`). It requires `idp.provider` `"google"` (the only provider that currently supports the refresh probe) and, for the stored tokens to survive restarts, `storage` `"firestore"`. There is no other configuration and nothing to provision outside MCP Front.
 
 ## MCP server configuration
 

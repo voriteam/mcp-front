@@ -9,6 +9,7 @@ import (
 )
 
 var ErrUserTokenNotFound = errors.New("user token not found")
+var ErrIdentityTokenNotFound = errors.New("identity token not found")
 var ErrClientNotFound = errors.New("client not found")
 var ErrGrantNotFound = errors.New("grant not found")
 var ErrServiceRegistrationNotFound = errors.New("service registration not found")
@@ -63,15 +64,13 @@ type ServiceRegistrationStore interface {
 	SetServiceRegistration(ctx context.Context, serviceName string, reg *ServiceRegistration) error
 }
 
-// RevocationStore persists the set of user emails whose access has been revoked
-// (e.g. their Google Workspace account was suspended or deleted). The set is a
-// mirror of "currently disabled" — entries are added when an account is found
-// disabled and removed when it is re-enabled.
-type RevocationStore interface {
-	AddRevokedUser(ctx context.Context, userEmail, reason string) error
-	RemoveRevokedUser(ctx context.Context, userEmail string) error
-	IsUserRevoked(ctx context.Context, userEmail string) (bool, error)
-	ListRevokedUsers(ctx context.Context) ([]string, error)
+// IdentityTokenStore persists the identity provider's refresh token for each
+// user, captured at login. The account verifier replays it against the IdP to
+// detect when a user's account is no longer active (e.g. suspended or deleted).
+type IdentityTokenStore interface {
+	SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error
+	GetIdentityToken(ctx context.Context, userEmail string) (string, error)
+	DeleteIdentityToken(ctx context.Context, userEmail string) error
 }
 
 type Storage interface {
@@ -90,15 +89,14 @@ type Storage interface {
 	// Service registration (for dynamic client registration with upstream services)
 	ServiceRegistrationStore
 
-	// Revocation set (for disabled-account enforcement)
-	RevocationStore
+	// Identity provider refresh tokens (for disabled-account enforcement)
+	IdentityTokenStore
 
 	// Session tracking
 	TrackSession(ctx context.Context, session ActiveSession) error
 	RevokeSession(ctx context.Context, sessionID string) error
 
-	// Reconciliation helpers (used by the revocation background job)
-	ListUsersWithTokens(ctx context.Context) ([]string, error)
-	ListUsersWithSessions(ctx context.Context) ([]string, error)
+	// RevokeUserSessions removes all sessions for a user (used when purging a
+	// revoked account).
 	RevokeUserSessions(ctx context.Context, userEmail string) error
 }

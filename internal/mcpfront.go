@@ -38,7 +38,6 @@ type MCPFront struct {
 	sessionManager *client.StdioSessionManager
 	aggregates     []*aggregate.Server
 	storage        storage.Storage
-	revocation     *revocation.Reconciler
 }
 
 func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*MCPFront, error) {
@@ -118,42 +117,13 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 
 	httpServer := server.NewHTTPServer(mux, cfg.Proxy.Addr)
 
-	reconciler, err := setupRevocation(ctx, cfg, store)
-	if err != nil {
-		return nil, fmt.Errorf("failed to setup workspace revocation: %w", err)
-	}
-	if reconciler != nil {
-		reconciler.Start()
-	}
-
 	return &MCPFront{
 		config:         cfg,
 		httpServer:     httpServer,
 		sessionManager: sessionManager,
 		aggregates:     aggregates,
 		storage:        store,
-		revocation:     reconciler,
 	}, nil
-}
-
-// setupRevocation builds the Workspace revocation reconciler when enabled,
-// returning nil when the feature is off.
-func setupRevocation(ctx context.Context, cfg config.Config, store storage.Storage) (*revocation.Reconciler, error) {
-	oauthAuth := cfg.Proxy.Auth
-	if oauthAuth == nil || oauthAuth.WorkspaceRevocation == nil || !oauthAuth.WorkspaceRevocation.Enabled {
-		return nil, nil
-	}
-	rev := oauthAuth.WorkspaceRevocation
-
-	directory, err := revocation.NewDirectoryClient(ctx, revocation.DirectoryConfig{
-		AdminEmail:                rev.AdminEmail,
-		ImpersonateServiceAccount: rev.ImpersonateServiceAccount,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create directory client: %w", err)
-	}
-
-	return revocation.New(store, directory, rev.Interval, oauthAuth.AllowedDomains), nil
 }
 
 func (m *MCPFront) Run() error {
@@ -219,10 +189,6 @@ func (m *MCPFront) Run() error {
 
 	if m.sessionManager != nil {
 		m.sessionManager.Shutdown()
-	}
-
-	if m.revocation != nil {
-		m.revocation.Stop()
 	}
 
 	log.LogInfoWithFields("mcpfront", "Application shutdown complete", map[string]any{
@@ -305,7 +271,12 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		RequireResourceParam: !oauthAuth.DangerouslyAcceptIssuerAudience,
 	}
 	if rev := oauthAuth.WorkspaceRevocation; rev != nil && rev.Enabled {
-		authServerCfg.RevocationChecker = store
+		if refresher, ok := idpProvider.(revocation.IdentityRefresher); ok {
+			authServerCfg.RevocationChecker = revocation.NewVerifier(store, refresher)
+			log.LogInfoWithFields("mcpfront", "Account revocation enabled (identity refresh probe)", nil)
+		} else {
+			log.LogWarn("workspaceRevocation enabled but identity provider %q cannot refresh tokens; revocation disabled", idpProvider.Type())
+		}
 	}
 	authServer, err := oauth.NewAuthorizationServer(authServerCfg)
 	if err != nil {

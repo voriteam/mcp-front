@@ -318,14 +318,11 @@ func validateOAuthConfig(oauth *OAuthAuthConfig) error {
 		return fmt.Errorf("refreshTokenTtl must be positive")
 	}
 	if rev := oauth.WorkspaceRevocation; rev != nil && rev.Enabled {
-		if rev.AdminEmail == "" {
-			return fmt.Errorf("workspaceRevocation.adminEmail is required when workspaceRevocation.enabled is true")
-		}
-		if rev.Interval < 0 {
-			return fmt.Errorf("workspaceRevocation.interval must not be negative")
+		if oauth.IDP.Provider != "google" {
+			return fmt.Errorf("workspaceRevocation requires idp.provider \"google\", got %q", oauth.IDP.Provider)
 		}
 		if oauth.Storage != "firestore" {
-			log.LogWarn("workspaceRevocation is enabled with non-firestore storage; the revocation set is not persisted across restarts")
+			log.LogWarn("workspaceRevocation is enabled with non-firestore storage; stored identity tokens are lost on restart, disabling checks until users re-authenticate")
 		}
 	}
 	return nil

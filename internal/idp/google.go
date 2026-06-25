@@ -77,6 +77,15 @@ func (p *GoogleProvider) ExchangeCode(ctx context.Context, code string) (*oauth2
 	return p.config.Exchange(ctx, code)
 }
 
+// RefreshToken exchanges a stored refresh token for a fresh token. Google rejects
+// the exchange (oauth2 "invalid_grant") once the underlying account is suspended,
+// deleted, or has had its consent revoked, which the account verifier uses to
+// detect that a user should lose access. A non-empty refresh token in the result
+// supersedes the stored one when Google rotates it.
+func (p *GoogleProvider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
+}
+
 // UserInfo fetches user identity from Google's userinfo endpoint.
 func (p *GoogleProvider) UserInfo(ctx context.Context, token *oauth2.Token) (*Identity, error) {
 	client := p.config.Client(ctx, token)

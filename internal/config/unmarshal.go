@@ -272,48 +272,12 @@ func parseDiscoveryConfig(data json.RawMessage) (*DiscoveryConfig, error) {
 
 func parseWorkspaceRevocation(data json.RawMessage) (*WorkspaceRevocationConfig, error) {
 	var raw struct {
-		Enabled                   bool            `json:"enabled"`
-		Interval                  string          `json:"interval"`
-		AdminEmail                json.RawMessage `json:"adminEmail"`
-		ImpersonateServiceAccount json.RawMessage `json:"impersonateServiceAccount"`
+		Enabled bool `json:"enabled"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing workspaceRevocation: %w", err)
 	}
-
-	rev := &WorkspaceRevocationConfig{Enabled: raw.Enabled}
-
-	if raw.Interval != "" {
-		d, err := time.ParseDuration(raw.Interval)
-		if err != nil {
-			return nil, fmt.Errorf("parsing workspaceRevocation.interval: %w", err)
-		}
-		rev.Interval = d
-	}
-
-	if raw.AdminEmail != nil {
-		parsed, err := ParseConfigValue(raw.AdminEmail)
-		if err != nil {
-			return nil, fmt.Errorf("parsing workspaceRevocation.adminEmail: %w", err)
-		}
-		if parsed.needsUserToken {
-			return nil, fmt.Errorf("workspaceRevocation.adminEmail cannot be a user token reference")
-		}
-		rev.AdminEmail = parsed.value
-	}
-
-	if raw.ImpersonateServiceAccount != nil {
-		parsed, err := ParseConfigValue(raw.ImpersonateServiceAccount)
-		if err != nil {
-			return nil, fmt.Errorf("parsing workspaceRevocation.impersonateServiceAccount: %w", err)
-		}
-		if parsed.needsUserToken {
-			return nil, fmt.Errorf("workspaceRevocation.impersonateServiceAccount cannot be a user token reference")
-		}
-		rev.ImpersonateServiceAccount = parsed.value
-	}
-
-	return rev, nil
+	return &WorkspaceRevocationConfig{Enabled: raw.Enabled}, nil
 }
 
 // UnmarshalJSON implements custom unmarshaling for OAuthAuthConfig

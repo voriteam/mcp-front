@@ -3,6 +3,7 @@ package aggregate
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -1108,18 +1109,14 @@ func (f *fakeSessionWithTools) GetSessionTools() map[string]mcpserver.ServerTool
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make(map[string]mcpserver.ServerTool, len(f.tools))
-	for k, v := range f.tools {
-		out[k] = v
-	}
+	maps.Copy(out, f.tools)
 	return out
 }
 func (f *fakeSessionWithTools) SetSessionTools(tools map[string]mcpserver.ServerTool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tools = make(map[string]mcpserver.ServerTool, len(tools))
-	for k, v := range tools {
-		f.tools[k] = v
-	}
+	maps.Copy(f.tools, tools)
 }
 
 func TestEnsureSessionToolsRehydratesAfterRestart(t *testing.T) {
@@ -1162,9 +1159,7 @@ func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
 	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
 		mu.Lock()
 		headers := make(map[string]string, len(conf.Headers))
-		for k, v := range conf.Headers {
-			headers[k] = v
-		}
+		maps.Copy(headers, conf.Headers)
 		for name, bc := range backendConfigs {
 			if conf.URL == bc.URL {
 				seen[name] = headers

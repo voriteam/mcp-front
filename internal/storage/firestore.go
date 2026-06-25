@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	sessionsCollection     = "mcp_front_sessions"
-	grantsCollection       = "mcp_front_grants"
-	serviceRegCollection   = "mcp_front_service_registrations"
-	revokedUsersCollection = "mcp_front_revoked_users"
+	sessionsCollection       = "mcp_front_sessions"
+	grantsCollection         = "mcp_front_grants"
+	serviceRegCollection     = "mcp_front_service_registrations"
+	identityTokensCollection = "mcp_front_identity_tokens"
 )
 
 type FirestoreStorage struct {
@@ -582,101 +582,54 @@ func (s *FirestoreStorage) RevokeUserSessions(ctx context.Context, userEmail str
 	return nil
 }
 
-func (s *FirestoreStorage) ListUsersWithTokens(ctx context.Context) ([]string, error) {
-	return s.distinctUserEmails(ctx, s.tokenCollection)
+type IdentityTokenDoc struct {
+	UserEmail    string    `firestore:"user_email"`
+	RefreshToken string    `firestore:"refresh_token"` // encrypted
+	UpdatedAt    time.Time `firestore:"updated_at"`
 }
 
-func (s *FirestoreStorage) ListUsersWithSessions(ctx context.Context) ([]string, error) {
-	return s.distinctUserEmails(ctx, sessionsCollection)
-}
-
-// distinctUserEmails returns the deduplicated set of user_email values across a
-// collection. It projects only the user_email field to avoid decrypting token
-// payloads.
-func (s *FirestoreStorage) distinctUserEmails(ctx context.Context, collection string) ([]string, error) {
-	iter := s.client.Collection(collection).Select("user_email").Documents(ctx)
-	defer iter.Stop()
-
-	seen := make(map[string]struct{})
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to iterate %s: %w", collection, err)
-		}
-
-		email, ok := doc.Data()["user_email"].(string)
-		if ok && email != "" {
-			seen[email] = struct{}{}
-		}
-	}
-
-	if len(seen) == 0 {
-		return nil, nil
-	}
-	emails := make([]string, 0, len(seen))
-	for email := range seen {
-		emails = append(emails, email)
-	}
-	return emails, nil
-}
-
-type RevokedUserDoc struct {
-	UserEmail string    `firestore:"user_email"`
-	Reason    string    `firestore:"reason,omitempty"`
-	RevokedAt time.Time `firestore:"revoked_at"`
-}
-
-func (s *FirestoreStorage) AddRevokedUser(ctx context.Context, userEmail, reason string) error {
-	doc := RevokedUserDoc{
-		UserEmail: userEmail,
-		Reason:    reason,
-		RevokedAt: time.Now(),
-	}
-	_, err := s.client.Collection(revokedUsersCollection).Doc(userEmail).Set(ctx, doc)
+func (s *FirestoreStorage) SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error {
+	encrypted, err := s.encryptor.Encrypt(refreshToken)
 	if err != nil {
-		return fmt.Errorf("failed to store revoked user in Firestore: %w", err)
+		return fmt.Errorf("failed to encrypt identity token: %w", err)
+	}
+	doc := IdentityTokenDoc{
+		UserEmail:    userEmail,
+		RefreshToken: encrypted,
+		UpdatedAt:    time.Now(),
+	}
+	_, err = s.client.Collection(identityTokensCollection).Doc(userEmail).Set(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("failed to store identity token in Firestore: %w", err)
 	}
 	return nil
 }
 
-func (s *FirestoreStorage) RemoveRevokedUser(ctx context.Context, userEmail string) error {
-	_, err := s.client.Collection(revokedUsersCollection).Doc(userEmail).Delete(ctx)
-	if err != nil && status.Code(err) != codes.NotFound {
-		return fmt.Errorf("failed to delete revoked user from Firestore: %w", err)
-	}
-	return nil
-}
-
-func (s *FirestoreStorage) IsUserRevoked(ctx context.Context, userEmail string) (bool, error) {
-	_, err := s.client.Collection(revokedUsersCollection).Doc(userEmail).Get(ctx)
+func (s *FirestoreStorage) GetIdentityToken(ctx context.Context, userEmail string) (string, error) {
+	doc, err := s.client.Collection(identityTokensCollection).Doc(userEmail).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
-			return false, nil
+			return "", ErrIdentityTokenNotFound
 		}
-		return false, fmt.Errorf("failed to look up revoked user in Firestore: %w", err)
+		return "", fmt.Errorf("failed to get identity token from Firestore: %w", err)
 	}
-	return true, nil
+	var tokenDoc IdentityTokenDoc
+	if err := doc.DataTo(&tokenDoc); err != nil {
+		return "", fmt.Errorf("failed to unmarshal identity token: %w", err)
+	}
+	decrypted, err := s.encryptor.Decrypt(tokenDoc.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt identity token: %w", err)
+	}
+	return decrypted, nil
 }
 
-func (s *FirestoreStorage) ListRevokedUsers(ctx context.Context) ([]string, error) {
-	iter := s.client.Collection(revokedUsersCollection).Documents(ctx)
-	defer iter.Stop()
-
-	var emails []string
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to iterate revoked users: %w", err)
-		}
-		emails = append(emails, doc.Ref.ID)
+func (s *FirestoreStorage) DeleteIdentityToken(ctx context.Context, userEmail string) error {
+	_, err := s.client.Collection(identityTokensCollection).Doc(userEmail).Delete(ctx)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("failed to delete identity token from Firestore: %w", err)
 	}
-	return emails, nil
+	return nil
 }
 
 type ServiceRegistrationDoc struct {

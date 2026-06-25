@@ -340,20 +340,13 @@ type OAuthAuthConfig struct {
 	WorkspaceRevocation *WorkspaceRevocationConfig `json:"workspaceRevocation,omitempty"`
 }
 
-// WorkspaceRevocationConfig configures the background reconciler that polls the
-// Google Workspace Directory API for suspended/deleted accounts and revokes their
-// mcp-front access (blocks refresh, purges stored tokens and sessions).
+// WorkspaceRevocationConfig configures account-revocation enforcement: at token
+// refresh, mcp-front replays the user's stored identity-provider refresh token and
+// revokes access if the provider rejects it (account suspended/deleted). Requires
+// a provider that can refresh tokens (Google).
 type WorkspaceRevocationConfig struct {
-	// Enabled turns the reconciler on. Default is off.
+	// Enabled turns revocation on. Default is off.
 	Enabled bool `json:"enabled"`
-	// Interval between reconciliation passes. Defaults to 1 hour when unset.
-	Interval time.Duration `json:"interval,omitempty"`
-	// AdminEmail is the Workspace admin user impersonated for Directory API access
-	// (the domain-wide delegation subject). Required when enabled.
-	AdminEmail string `json:"adminEmail"`
-	// ImpersonateServiceAccount is the service account to impersonate for keyless
-	// domain-wide delegation. Optional.
-	ImpersonateServiceAccount string `json:"impersonateServiceAccount,omitempty"`
 }
 
 // ProxyConfig represents the proxy configuration with resolved values

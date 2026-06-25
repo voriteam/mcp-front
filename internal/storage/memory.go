@@ -15,28 +15,28 @@ import (
 var _ Storage = (*MemoryStorage)(nil)
 
 type MemoryStorage struct {
-	clients         map[string]*Client
-	clientsMutex    sync.RWMutex
-	grants          map[string]*oauth.Grant
-	grantsMutex     sync.Mutex
-	userTokens      map[string]*StoredToken
-	userTokensMutex sync.RWMutex
-	sessions        map[string]*ActiveSession
-	sessionsMutex   sync.RWMutex
-	serviceRegs     map[string]*ServiceRegistration
-	serviceRegsMu   sync.RWMutex
-	revokedUsers    map[string]struct{}
-	revokedUsersMu  sync.RWMutex
+	clients          map[string]*Client
+	clientsMutex     sync.RWMutex
+	grants           map[string]*oauth.Grant
+	grantsMutex      sync.Mutex
+	userTokens       map[string]*StoredToken
+	userTokensMutex  sync.RWMutex
+	sessions         map[string]*ActiveSession
+	sessionsMutex    sync.RWMutex
+	serviceRegs      map[string]*ServiceRegistration
+	serviceRegsMu    sync.RWMutex
+	identityTokens   map[string]string
+	identityTokensMu sync.RWMutex
 }
 
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
-		clients:      make(map[string]*Client),
-		grants:       make(map[string]*oauth.Grant),
-		userTokens:   make(map[string]*StoredToken),
-		sessions:     make(map[string]*ActiveSession),
-		serviceRegs:  make(map[string]*ServiceRegistration),
-		revokedUsers: make(map[string]struct{}),
+		clients:        make(map[string]*Client),
+		grants:         make(map[string]*oauth.Grant),
+		userTokens:     make(map[string]*StoredToken),
+		sessions:       make(map[string]*ActiveSession),
+		serviceRegs:    make(map[string]*ServiceRegistration),
+		identityTokens: make(map[string]string),
 	}
 }
 
@@ -210,70 +210,31 @@ func (s *MemoryStorage) RevokeUserSessions(ctx context.Context, userEmail string
 	return nil
 }
 
-func (s *MemoryStorage) ListUsersWithTokens(ctx context.Context) ([]string, error) {
-	s.userTokensMutex.RLock()
-	defer s.userTokensMutex.RUnlock()
+func (s *MemoryStorage) SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error {
+	s.identityTokensMu.Lock()
+	defer s.identityTokensMu.Unlock()
 
-	seen := make(map[string]struct{})
-	for key := range s.userTokens {
-		if email, _, ok := strings.Cut(key, ":"); ok {
-			seen[email] = struct{}{}
-		}
-	}
-	return keysOf(seen), nil
-}
-
-func (s *MemoryStorage) ListUsersWithSessions(ctx context.Context) ([]string, error) {
-	s.sessionsMutex.RLock()
-	defer s.sessionsMutex.RUnlock()
-
-	seen := make(map[string]struct{})
-	for _, session := range s.sessions {
-		seen[session.UserEmail] = struct{}{}
-	}
-	return keysOf(seen), nil
-}
-
-func (s *MemoryStorage) AddRevokedUser(ctx context.Context, userEmail, reason string) error {
-	s.revokedUsersMu.Lock()
-	defer s.revokedUsersMu.Unlock()
-
-	s.revokedUsers[userEmail] = struct{}{}
+	s.identityTokens[userEmail] = refreshToken
 	return nil
 }
 
-func (s *MemoryStorage) RemoveRevokedUser(ctx context.Context, userEmail string) error {
-	s.revokedUsersMu.Lock()
-	defer s.revokedUsersMu.Unlock()
+func (s *MemoryStorage) GetIdentityToken(ctx context.Context, userEmail string) (string, error) {
+	s.identityTokensMu.RLock()
+	defer s.identityTokensMu.RUnlock()
 
-	delete(s.revokedUsers, userEmail)
+	token, ok := s.identityTokens[userEmail]
+	if !ok {
+		return "", ErrIdentityTokenNotFound
+	}
+	return token, nil
+}
+
+func (s *MemoryStorage) DeleteIdentityToken(ctx context.Context, userEmail string) error {
+	s.identityTokensMu.Lock()
+	defer s.identityTokensMu.Unlock()
+
+	delete(s.identityTokens, userEmail)
 	return nil
-}
-
-func (s *MemoryStorage) IsUserRevoked(ctx context.Context, userEmail string) (bool, error) {
-	s.revokedUsersMu.RLock()
-	defer s.revokedUsersMu.RUnlock()
-
-	_, revoked := s.revokedUsers[userEmail]
-	return revoked, nil
-}
-
-func (s *MemoryStorage) ListRevokedUsers(ctx context.Context) ([]string, error) {
-	s.revokedUsersMu.RLock()
-	defer s.revokedUsersMu.RUnlock()
-
-	return keysOf(s.revokedUsers), nil
-}
-
-func keysOf(m map[string]struct{}) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
 }
 
 func (s *MemoryStorage) GetServiceRegistration(_ context.Context, serviceName string) (*ServiceRegistration, error) {
