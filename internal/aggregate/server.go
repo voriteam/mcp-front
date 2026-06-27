@@ -27,7 +27,7 @@ const (
 	connCleanupInterval = 1 * time.Minute
 
 	// sessionIdleTTL bounds how long a streamable-http session's per-session
-	// transport state (notably its hundreds-of-tools map) is retained after the
+	// transport state (notably its per-session tool map) is retained after the
 	// session's last request before mcp-go's sweeper reaps it. It comfortably
 	// exceeds a live client's inter-request idle gap so active sessions are not
 	// churned, while keeping retained sessions proportional to recent activity
@@ -175,10 +175,10 @@ func NewServer(cfg ServerConfig) *Server {
 			mcpserver.WithSessionIdManager(&mcpserver.StatelessGeneratingSessionIdManager{}),
 			// Reap idle sessions' per-session state. Clients mint a fresh session
 			// on every `initialize` and rarely send DELETE, so without a TTL the
-			// per-session tool maps (hundreds of tools each) accumulate without
-			// bound and the process leaks memory to its limit. Swept sessions are
-			// rebuilt lazily from cached discovery on their next request (see the
-			// before-tool hooks above), so reaping idle ones is safe.
+			// per-session tool maps accumulate without bound and the process
+			// leaks memory to its limit. Swept sessions are rebuilt lazily from
+			// cached discovery on their next request (see the before-tool hooks
+			// above), so reaping idle ones is safe.
 			mcpserver.WithSessionIdleTTL(sessionIdleTTL),
 		)
 		s.transport = streamable
