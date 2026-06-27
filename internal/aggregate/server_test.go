@@ -851,6 +851,148 @@ func TestEvictConnOnCallToolFailure(t *testing.T) {
 	assert.False(t, exists, "broken connection should have been evicted")
 }
 
+// countingTokenSource is a fake oauth2.TokenSource that records how many times
+// a token was minted, standing in for a client-credentials source.
+type countingTokenSource struct{ calls atomic.Int32 }
+
+func (c *countingTokenSource) Token() (*oauth2.Token, error) {
+	c.calls.Add(1)
+	return &oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}, nil
+}
+
+// TestRetryOnAuthErrorRemintsToken simulates a client-credentials backend whose
+// pooled connection carries an expired bearer: the first discovery returns a 401,
+// and the fix must recreate the connection (re-minting the token) and retry
+// instead of evicting the backend out of the aggregated tool list.
+func TestRetryOnAuthErrorRemintsToken(t *testing.T) {
+	var factoryCalls atomic.Int32
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"help-docs": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/help-docs"},
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		n := factoryCalls.Add(1)
+		mock := &mockTransport{tools: []mcp.Tool{{Name: "search"}}}
+		if n == 1 {
+			mock.listToolsErr = transport.ErrAuthorizationRequired
+		}
+		return mock, nil
+	}
+
+	tokens := &countingTokenSource{}
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		TokenSources:    map[string]oauth2.TokenSource{"help-docs": tokens},
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	assert.Len(t, tools["help-docs"], 1, "backend should stay available after the auth-error retry")
+	assert.Equal(t, int32(2), factoryCalls.Load(), "connection should be recreated exactly once")
+	assert.GreaterOrEqual(t, tokens.calls.Load(), int32(2), "a fresh token should be minted for the new connection")
+}
+
+// TestRetryOnAuthErrorToolCall covers the same recovery on the tool-call path.
+func TestRetryOnAuthErrorToolCall(t *testing.T) {
+	var factoryCalls atomic.Int32
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"help-docs": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/help-docs"},
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		n := factoryCalls.Add(1)
+		mock := &mockTransport{tools: []mcp.Tool{{Name: "search"}}}
+		if n == 1 {
+			mock.callToolFn = func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, transport.ErrAuthorizationRequired
+			}
+		}
+		return mock, nil
+	}
+
+	tokens := &countingTokenSource{}
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		TokenSources:    map[string]oauth2.TokenSource{"help-docs": tokens},
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	handler := srv.makeToolHandler("user@test.com", "help-docs")
+	result, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "help-docs.search"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(2), factoryCalls.Load(), "connection should be recreated exactly once")
+
+	srv.connMu.RLock()
+	_, exists := srv.conns[connKey{userEmail: "user@test.com", backendName: "help-docs"}]
+	srv.connMu.RUnlock()
+	assert.True(t, exists, "healthy connection should remain pooled after the retry")
+}
+
+// TestAuthErrorNotRetriedWithoutCredential locks the gating: a 401 from a backend
+// with no re-mintable credential is returned after a single attempt rather than
+// retried pointlessly with the same rejected bearer.
+func TestAuthErrorNotRetriedWithoutCredential(t *testing.T) {
+	var factoryCalls atomic.Int32
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"public": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/public"},
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		factoryCalls.Add(1)
+		mock := &mockTransport{tools: []mcp.Tool{{Name: "ping"}}}
+		mock.listToolsErr = transport.ErrAuthorizationRequired
+		return mock, nil
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	_, err := srv.getTools(context.Background(), "user@test.com")
+	require.Error(t, err)
+	assert.Equal(t, int32(1), factoryCalls.Load(), "auth error without a refreshable credential must not be retried")
+
+	srv.connMu.RLock()
+	_, exists := srv.conns[connKey{userEmail: "user@test.com", backendName: "public"}]
+	srv.connMu.RUnlock()
+	assert.False(t, exists, "broken connection should have been evicted")
+}
+
 func TestGetUserTokenFailureDegradation(t *testing.T) {
 	mock := &mockTransport{
 		tools: []mcp.Tool{{Name: "query"}},

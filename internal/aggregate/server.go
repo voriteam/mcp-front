@@ -624,11 +624,19 @@ func (s *Server) withConnRetry(ctx context.Context, userEmail, backendName strin
 	// the error return, so an error here is a transport/protocol failure: the
 	// connection is broken or its session was rejected. Evict it either way.
 	s.evictConn(key, c)
-	if !isSessionError(err) {
+
+	// A stale session or an expired bearer (client-credentials/user tokens are
+	// captured into the pooled connection at createConn and never refreshed in
+	// place) both heal the same way: recreate the connection, which mints a fresh
+	// token, and retry once. Auth errors only retry when the backend has a
+	// re-mintable credential, so a genuinely misconfigured backend is not retried.
+	retryable := isSessionError(err) ||
+		(isAuthError(err) && s.hasRefreshableCredential(backendName))
+	if !retryable {
 		return err
 	}
 
-	log.LogWarnWithFields("aggregate", "Backend session invalidated; retrying with a fresh connection", map[string]any{
+	log.LogWarnWithFields("aggregate", "Backend connection rejected; retrying with a fresh connection", map[string]any{
 		"server":  s.name,
 		"backend": backendName,
 		"user":    userEmail,
@@ -644,7 +652,7 @@ func (s *Server) withConnRetry(ctx context.Context, userEmail, backendName strin
 
 	if err := fn(ctx, c); err != nil {
 		s.evictConn(key, c)
-		log.LogErrorWithFields("aggregate", "Backend call failed after session retry", map[string]any{
+		log.LogErrorWithFields("aggregate", "Backend call failed after fresh-connection retry", map[string]any{
 			"server":  s.name,
 			"backend": backendName,
 			"user":    userEmail,
@@ -668,6 +676,27 @@ func isSessionError(err error) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "session")
+}
+
+// isAuthError reports whether err is the backend rejecting the request's bearer
+// (HTTP 401). mcp-go returns transport.AuthorizationRequiredError (unwrapping to
+// ErrAuthorizationRequired) for the request path and ErrUnauthorized for the SSE
+// listen path; both indicate the captured token is no longer accepted.
+func isAuthError(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrUnauthorized)
+}
+
+// hasRefreshableCredential reports whether recreating the backend's connection
+// would mint a fresh credential: a client-credentials token source, or a user
+// token re-fetched per connection. Without one, retrying a 401 would just reuse
+// the same rejected bearer.
+func (s *Server) hasRefreshableCredential(backendName string) bool {
+	if _, ok := s.tokenSources[backendName]; ok {
+		return true
+	}
+	cfg := s.backends[backendName]
+	return cfg != nil && cfg.RequiresUserToken
 }
 
 func (s *Server) getOrCreateConn(ctx context.Context, userEmail, backendName string) (*conn, error) {
