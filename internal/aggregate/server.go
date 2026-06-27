@@ -25,6 +25,14 @@ import (
 const (
 	connIdleTimeout     = 5 * time.Minute
 	connCleanupInterval = 1 * time.Minute
+
+	// sessionIdleTTL bounds how long a streamable-http session's per-session
+	// transport state (notably its per-session tool map) is retained after the
+	// session's last request before mcp-go's sweeper reaps it. It comfortably
+	// exceeds a live client's inter-request idle gap so active sessions are not
+	// churned, while keeping retained sessions proportional to recent activity
+	// rather than growing without bound.
+	sessionIdleTTL = 10 * time.Minute
 )
 
 var ErrUserConnLimitExceeded = fmt.Errorf("user connection limit exceeded")
@@ -165,6 +173,13 @@ func NewServer(cfg ServerConfig) *Server {
 		streamable := mcpserver.NewStreamableHTTPServer(s.mcpServer,
 			mcpserver.WithEndpointPath("/"+cfg.Name+"/"),
 			mcpserver.WithSessionIdManager(&mcpserver.StatelessGeneratingSessionIdManager{}),
+			// Reap idle sessions' per-session state. Clients mint a fresh session
+			// on every `initialize` and rarely send DELETE, so without a TTL the
+			// per-session tool maps accumulate without bound and the process
+			// leaks memory to its limit. Swept sessions are rebuilt lazily from
+			// cached discovery on their next request (see the before-tool hooks
+			// above), so reaping idle ones is safe.
+			mcpserver.WithSessionIdleTTL(sessionIdleTTL),
 		)
 		s.transport = streamable
 	default:

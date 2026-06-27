@@ -85,7 +85,7 @@ func TestVerifier_NoStoredToken_DeniesWithoutPurge(t *testing.T) {
 	// No stored identity token: cannot positively verify the account, so deny the
 	// refresh (forcing re-auth) — but don't purge, since we have no evidence the
 	// account is gone.
-	revoked, err := v.IsUserRevoked(ctx, "u@x.com")
+	revoked, err := v.IsUserRevoked(ctx, "u@x.com", "google")
 	require.NoError(t, err)
 	assert.True(t, revoked)
 	assert.Equal(t, []string{"linear"}, store.tokens["u@x.com"], "must not purge on missing token")
@@ -99,7 +99,7 @@ func TestVerifier_InvalidGrant_RevokesAndPurges(t *testing.T) {
 	store.sessions["u@x.com"] = true
 	v := NewVerifier(store, &fakeRefresher{err: invalidGrantErr()})
 
-	revoked, err := v.IsUserRevoked(ctx, "u@x.com")
+	revoked, err := v.IsUserRevoked(ctx, "u@x.com", "google")
 	require.NoError(t, err)
 	assert.True(t, revoked)
 	assert.Empty(t, store.tokens["u@x.com"], "upstream tokens purged")
@@ -115,7 +115,7 @@ func TestVerifier_TransientError_AllowsAndKeepsState(t *testing.T) {
 	store.tokens["u@x.com"] = []string{"linear"}
 	v := NewVerifier(store, &fakeRefresher{err: errors.New("network blip")})
 
-	revoked, err := v.IsUserRevoked(ctx, "u@x.com")
+	revoked, err := v.IsUserRevoked(ctx, "u@x.com", "google")
 	require.NoError(t, err)
 	assert.False(t, revoked, "transient errors must not revoke")
 	assert.Equal(t, []string{"linear"}, store.tokens["u@x.com"])
@@ -128,8 +128,23 @@ func TestVerifier_Success_PersistsRotatedToken(t *testing.T) {
 	store.identity["u@x.com"] = "rt-old"
 	v := NewVerifier(store, &fakeRefresher{token: &oauth2.Token{RefreshToken: "rt-new"}})
 
-	revoked, err := v.IsUserRevoked(ctx, "u@x.com")
+	revoked, err := v.IsUserRevoked(ctx, "u@x.com", "google")
 	require.NoError(t, err)
 	assert.False(t, revoked)
 	assert.Equal(t, "rt-new", store.identity["u@x.com"], "rotated refresh token persisted")
+}
+
+func TestVerifier_NonGoogleProvider_Exempt(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.tokens["sa@x.iam.gserviceaccount.com"] = []string{"bigquery"}
+	// A GCP service account has no stored IdP token and is validated by GCP at
+	// token-exchange time. The refresher would revoke+purge if the check ran, so
+	// this proves the provider gate short-circuits before any IdP replay.
+	v := NewVerifier(store, &fakeRefresher{err: invalidGrantErr()})
+
+	revoked, err := v.IsUserRevoked(ctx, "sa@x.iam.gserviceaccount.com", "gcp")
+	require.NoError(t, err)
+	assert.False(t, revoked, "non-Google identities are exempt from the IdP-replay check")
+	assert.Equal(t, []string{"bigquery"}, store.tokens["sa@x.iam.gserviceaccount.com"], "must not purge exempt identities")
 }
