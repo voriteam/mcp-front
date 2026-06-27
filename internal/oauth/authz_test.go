@@ -533,7 +533,7 @@ type fakeRevocationChecker struct {
 	revoked map[string]bool
 }
 
-func (f *fakeRevocationChecker) IsUserRevoked(_ context.Context, email string) (bool, error) {
+func (f *fakeRevocationChecker) IsUserRevoked(_ context.Context, email, _ string) (bool, error) {
 	return f.revoked[email], nil
 }
 

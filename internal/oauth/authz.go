@@ -18,7 +18,7 @@ import (
 // revoked user cannot mint new access tokens; existing access tokens still expire
 // naturally within their TTL.
 type RevocationChecker interface {
-	IsUserRevoked(ctx context.Context, userEmail string) (bool, error)
+	IsUserRevoked(ctx context.Context, userEmail, providerType string) (bool, error)
 }
 
 type AuthorizationServer struct {
@@ -218,7 +218,7 @@ func (s *AuthorizationServer) RefreshTokens(ctx context.Context, refreshToken st
 	}
 
 	if s.revocationChecker != nil {
-		revoked, err := s.revocationChecker.IsUserRevoked(ctx, claims.Identity.Email)
+		revoked, err := s.revocationChecker.IsUserRevoked(ctx, claims.Identity.Email, claims.Identity.ProviderType)
 		if err != nil {
 			log.LogErrorWithFields("oauth", "Revocation check failed during refresh", map[string]any{
 				"email": claims.Identity.Email,

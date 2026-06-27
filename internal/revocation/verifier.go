@@ -22,6 +22,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// providerTypeGoogle matches idp.Identity.ProviderType for Google-authenticated
+// users — the only identities this verifier can replay against the IdP.
+const providerTypeGoogle = "google"
+
 // Store is the subset of storage the verifier needs.
 type Store interface {
 	GetIdentityToken(ctx context.Context, userEmail string) (string, error)
@@ -54,7 +58,16 @@ func NewVerifier(store Store, refresher IdentityRefresher) *Verifier {
 // revokes and purges the user, and a missing stored token denies the refresh
 // (forcing re-authentication, which Google gates). Only transient errors reaching
 // the provider or storage fail open, so a brief outage cannot lock everyone out.
-func (v *Verifier) IsUserRevoked(ctx context.Context, userEmail string) (bool, error) {
+//
+// The check applies only to Google-IdP identities. Identities minted by other
+// providers — notably GCP service accounts via RFC 8693 token exchange — never
+// have a stored IdP refresh token and are validated by their provider when the
+// token is exchanged, so they are exempt rather than denied.
+func (v *Verifier) IsUserRevoked(ctx context.Context, userEmail, providerType string) (bool, error) {
+	if providerType != providerTypeGoogle {
+		return false, nil
+	}
+
 	refreshToken, err := v.store.GetIdentityToken(ctx, userEmail)
 	if errors.Is(err, storage.ErrIdentityTokenNotFound) {
 		log.LogInfoWithFields("revocation", "No stored identity token; denying refresh to force re-authentication", map[string]any{
