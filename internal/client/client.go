@@ -146,21 +146,6 @@ func DefaultTransportCreator(conf *config.MCPClientConfig) (MCPClientInterface, 
 	return nil, errors.New("invalid client type: must have either command or url")
 }
 
-// stripInboundHeaders wraps a backend tool call to drop the Header field
-// before forwarding. mcp-go's server stamps every inbound HTTP request's
-// headers onto the parsed request structs (PR #480), and its streamable
-// client sends request.Header verbatim to the backend (PR #546) — so a proxy
-// that passes the request through forwards the end client's headers
-// (Accept-Encoding, cookies, auth) to the backend. An explicit
-// Accept-Encoding disables Go's transparent gzip decompression, which
-// corrupted gke/datadog responses in production.
-func stripInboundHeaders(backend MCPClientInterface) server.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		request.Header = nil
-		return backend.CallTool(ctx, request)
-	}
-}
-
 // stripEmptyParamsTransport is an http.RoundTripper that removes an empty
 // "params":{} (or null) value from outgoing JSON-RPC request bodies. mcp-go
 // always serializes that empty object, but JSON-RPC 2.0 treats empty params as
@@ -455,7 +440,7 @@ func (c *Client) addToolsToServer(
 					"description": tool.Description,
 				})
 				// Wrap the tool handler to check for user tokens if required
-				callTool := stripInboundHeaders(c.client)
+				callTool := c.client.CallTool
 				var handler server.ToolHandlerFunc
 				if requiresToken && tokenStore != nil {
 					handler = c.wrapToolHandler(
@@ -528,7 +513,6 @@ func (c *Client) addPromptsToServer(ctx context.Context, mcpServer *server.MCPSe
 		for _, prompt := range prompts.Prompts {
 			log.Logf("<%s> Adding prompt %s", c.name, prompt.Name)
 			mcpServer.AddPrompt(prompt, func(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-				request.Header = nil
 				return c.client.GetPrompt(ctx, request)
 			})
 		}
@@ -570,7 +554,6 @@ func (c *Client) addResourcesToServer(ctx context.Context, mcpServer *server.MCP
 		for _, resource := range resources.Resources {
 			log.Logf("<%s> Adding resource %s", c.name, resource.Name)
 			mcpServer.AddResource(resource, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-				request.Header = nil
 				readResource, e := c.client.ReadResource(ctx, request)
 				if e != nil {
 					return nil, e
@@ -607,7 +590,6 @@ func (c *Client) addResourceTemplatesToServer(ctx context.Context, mcpServer *se
 		for _, resourceTemplate := range resourceTemplates.ResourceTemplates {
 			log.Logf("<%s> Adding resource template %s", c.name, resourceTemplate.Name)
 			mcpServer.AddResourceTemplate(resourceTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-				request.Header = nil
 				readResource, e := c.client.ReadResource(ctx, request)
 				if e != nil {
 					return nil, e
