@@ -35,20 +35,16 @@ const (
 	// rather than growing without bound.
 	sessionIdleTTL = 10 * time.Minute
 
-	// staleToolsTTL bounds how long a backend's last successful discovery may
-	// stand in for a failed one. Past this the backend is dropped rather than
-	// advertised forever, so a permanently unreachable backend still disappears.
+	// staleToolsTTL bounds how long a failed backend may be served from its last
+	// successful discovery before it is dropped.
 	staleToolsTTL = 15 * time.Minute
 
-	// partialDiscoveryCacheTTL is the lifetime of a discovery result in which at
-	// least one backend failed. It is deliberately far shorter than CacheTTL so a
-	// transient upstream stall is retried within seconds instead of standing as
-	// the truth for a full cache cycle.
+	// partialDiscoveryCacheTTL caches a discovery that lost a backend, kept short
+	// so a transient stall is retried rather than standing for a full CacheTTL.
 	partialDiscoveryCacheTTL = 5 * time.Second
 
-	// maxBackendDiscoveryTimeout caps how long any single backend may take to
-	// initialize and list its tools, however long its own timeout is configured.
-	// It bounds the worst-case latency of a cold tools/list.
+	// maxBackendDiscoveryTimeout caps the per-backend discovery deadline however
+	// long the backend configures its own timeout.
 	maxBackendDiscoveryTimeout = 30 * time.Second
 )
 
@@ -79,16 +75,14 @@ type cachedTools struct {
 }
 
 // backendTools is the most recent successful discovery for a single backend.
-// It stands in when a later discovery fails for a transient reason, so a slow
-// upstream does not erase the backend from the aggregate's tool list.
 type backendTools struct {
 	tools      []mcp.Tool
 	discovered time.Time
 }
 
-// lastGoodKey scopes a retained discovery. Shared backends have identical tools
-// for everyone and use an empty scope; token-gated backends are scoped per user,
-// so one user's tools are never served to another.
+// lastGoodKey scopes a retained discovery. Shared backends use an empty scope;
+// token-gated backends are scoped per user so one user's tools are never served
+// to another.
 type lastGoodKey struct {
 	scope       string
 	backendName string
@@ -359,8 +353,6 @@ func (s *Server) populateToolsFromContext(ctx context.Context) {
 }
 
 // discoveryCacheTTL returns how long a discovery result deserves to be cached.
-// A run in which some backend failed or was served from its last known tools is
-// held only briefly, so recovery is seconds away rather than a full cache cycle.
 func (s *Server) discoveryCacheTTL(complete bool) time.Duration {
 	if complete {
 		return s.discovery.CacheTTL
@@ -418,8 +410,6 @@ func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[stri
 		// cancelled (e.g., SSE disconnect), discovery would fail for everyone.
 		// discoverBackends applies its own timeout from DiscoveryConfig.
 		discoveryCtx := context.WithoutCancel(ctx)
-		// Shared backends serve identical tools to everyone, so their retained
-		// discoveries are scoped globally.
 		tools, complete, err := s.discoverBackends(discoveryCtx, userEmail, "", s.sharedBackends, true)
 		if err != nil {
 			return nil, err
@@ -502,9 +492,7 @@ func (s *Server) backendsWithUserToken(ctx context.Context, userEmail string) ma
 	for name, conf := range s.userBackends {
 		token, err := s.getUserToken(ctx, userEmail, name, conf)
 		if err != nil {
-			// A user who has simply not connected this backend is the expected
-			// steady state, not a fault, and warning on it for every backend on
-			// every discovery buries the failures that do matter.
+			// Not connecting a backend is the expected steady state, not a fault.
 			if errors.Is(err, storage.ErrUserTokenNotFound) {
 				log.LogDebugWithFields("aggregate", "Backend not connected by user", map[string]any{
 					"server":  s.name,
@@ -529,9 +517,7 @@ func (s *Server) backendsWithUserToken(ctx context.Context, userEmail string) ma
 }
 
 // backendDiscoveryTimeout returns how long a single backend gets to initialize
-// and list its tools. A backend that configures a longer timeout than the
-// discovery default is honoured up to maxBackendDiscoveryTimeout, so a
-// deliberately slow upstream is not cut off by a budget meant for fast ones.
+// and list its tools, honouring a longer per-backend timeout up to the cap.
 func (s *Server) backendDiscoveryTimeout(conf *config.MCPClientConfig) time.Duration {
 	d := s.discovery.Timeout
 	if conf != nil && conf.Timeout > d {
@@ -540,8 +526,6 @@ func (s *Server) backendDiscoveryTimeout(conf *config.MCPClientConfig) time.Dura
 	return min(d, maxBackendDiscoveryTimeout)
 }
 
-// lastGoodTools returns a backend's most recent successful discovery, if one is
-// still within staleToolsTTL.
 func (s *Server) lastGoodTools(scope, backendName string) ([]mcp.Tool, bool) {
 	s.cacheMu.RLock()
 	defer s.cacheMu.RUnlock()
@@ -553,8 +537,6 @@ func (s *Server) lastGoodTools(scope, backendName string) ([]mcp.Tool, bool) {
 	return prev.tools, true
 }
 
-// storeLastGoodTools records a successful discovery so it can stand in for a
-// later transient failure.
 func (s *Server) storeLastGoodTools(scope, backendName string, tools []mcp.Tool) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -566,25 +548,20 @@ func (s *Server) storeLastGoodTools(scope, backendName string, tools []mcp.Tool)
 }
 
 // discoverBackends fans out tool discovery across the given backends in
-// parallel, each under its own deadline so one slow upstream cannot cut the
-// others short. When errorIfAllFail is set, a run where every backend fails
-// returns an error; otherwise the partial (possibly empty) result is returned.
+// parallel, each under its own deadline. When errorIfAllFail is set, a run where
+// every backend fails returns an error; otherwise the partial (possibly empty)
+// result is returned. The bool reports whether every backend was discovered
+// freshly, which callers use to pick a cache lifetime.
 //
-// A backend that fails for a transient reason falls back to its last successful
-// discovery rather than vanishing: clients snapshot the tool list when they
-// connect, so dropping a backend for one slow moment hides it for the whole of
-// a client's session. An auth failure is not transient -- the user's access is
-// genuinely gone -- so those backends are still dropped.
-//
-// The returned bool reports whether every backend was discovered freshly, which
-// callers use to decide how long the result deserves to be cached.
+// A backend failing transiently falls back to its last successful discovery:
+// clients snapshot the tool list when they connect, so dropping a backend for
+// one slow moment hides it for their whole session. An auth failure is not
+// transient, so those backends are still dropped.
 func (s *Server) discoverBackends(ctx context.Context, userEmail, scope string, backends map[string]*config.MCPClientConfig, errorIfAllFail bool) (map[string][]mcp.Tool, bool, error) {
 	if len(backends) == 0 {
 		return map[string][]mcp.Tool{}, true, nil
 	}
 
-	// The parent bounds the whole fan-out at the most any single backend is
-	// allowed, so a generous per-backend timeout cannot compound across them.
 	fanOutTimeout := s.discovery.Timeout
 	for _, conf := range backends {
 		fanOutTimeout = max(fanOutTimeout, s.backendDiscoveryTimeout(conf))
@@ -1040,9 +1017,6 @@ func (s *Server) cleanupExpiredCache() {
 			delete(s.userCache, user)
 		}
 	}
-	// Retained discoveries are keyed per user for token-gated backends, so drop
-	// the ones too old to be served rather than letting the map accumulate an
-	// entry for every user who ever connected.
 	for key, prev := range s.lastGood {
 		if now.Sub(prev.discovered) > staleToolsTTL {
 			delete(s.lastGood, key)

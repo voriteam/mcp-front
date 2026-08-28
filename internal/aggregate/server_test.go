@@ -94,7 +94,6 @@ func (m *mockTransport) ListTools(ctx context.Context, req mcp.ListToolsRequest)
 	return &mcp.ListToolsResult{Tools: tools}, nil
 }
 
-// setListToolsErr flips a backend into (or out of) failure mid-test.
 func (m *mockTransport) setListToolsErr(err error) {
 	m.mu.Lock()
 	m.listToolsErr = err
@@ -1459,12 +1458,11 @@ func TestRetryOnSessionInvalidationDuringDiscovery(t *testing.T) {
 	assert.Equal(t, int32(2), factoryCalls.Load(), "retry should re-initialize a fresh connection")
 }
 
-// errTransientDiscovery stands in for a transport-level discovery failure — a
-// slow or briefly unreachable upstream — as distinct from an auth rejection.
+// errTransientDiscovery is a transport-level failure, not an auth rejection.
 var errTransientDiscovery = errors.New("transport error: context deadline exceeded")
 
-// newStaleToolsTestServer builds an aggregate over the given mock backends with
-// a caller-supplied discovery config, so tests can drive cache expiry directly.
+// newStaleToolsTestServer builds an aggregate with a caller-supplied discovery
+// config so tests can drive cache expiry directly.
 func newStaleToolsTestServer(t *testing.T, backends map[string]*mockTransport, disc *config.DiscoveryConfig) *Server {
 	t.Helper()
 
@@ -1501,9 +1499,6 @@ func newStaleToolsTestServer(t *testing.T, backends map[string]*mockTransport, d
 	return srv
 }
 
-// A backend that briefly stops answering keeps its tools. Clients snapshot the
-// tool list when they connect, so dropping a backend for one slow discovery
-// hides it for the rest of a client's session.
 func TestDiscoveryServesLastKnownToolsOnTransientFailure(t *testing.T) {
 	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
 	backends := map[string]*mockTransport{
@@ -1529,8 +1524,6 @@ func TestDiscoveryServesLastKnownToolsOnTransientFailure(t *testing.T) {
 	assert.Equal(t, "create_issue", tools["linear"][0].Name)
 }
 
-// An auth failure is not transient: the user's access is genuinely gone, so the
-// backend is dropped rather than advertising tools they cannot call.
 func TestDiscoveryDropsBackendOnAuthFailure(t *testing.T) {
 	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
 	backends := map[string]*mockTransport{
@@ -1555,8 +1548,6 @@ func TestDiscoveryDropsBackendOnAuthFailure(t *testing.T) {
 	assert.Empty(t, tools["linear"], "backend rejected for auth is dropped, not served stale")
 }
 
-// A discovery that fell back to stale tools is held only briefly, so recovery is
-// seconds away rather than a full cache cycle.
 func TestPartialDiscoveryIsCachedBriefly(t *testing.T) {
 	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
 	backends := map[string]*mockTransport{
@@ -1576,7 +1567,6 @@ func TestPartialDiscoveryIsCachedBriefly(t *testing.T) {
 	srv.cacheMu.RUnlock()
 	assert.Greater(t, fullExpiry, 30*time.Minute, "a clean discovery earns the full CacheTTL")
 
-	// Force the next call to re-discover, with linear now failing.
 	linear.setListToolsErr(errTransientDiscovery)
 	srv.cacheMu.Lock()
 	srv.sharedCache = nil
@@ -1592,8 +1582,6 @@ func TestPartialDiscoveryIsCachedBriefly(t *testing.T) {
 		"a discovery that fell back to stale tools is not cached for the full TTL")
 }
 
-// A backend that stays unreachable eventually disappears instead of being
-// advertised from an ever-older snapshot.
 func TestStaleToolsExpireAfterStaleToolsTTL(t *testing.T) {
 	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
 	backends := map[string]*mockTransport{
@@ -1609,7 +1597,6 @@ func TestStaleToolsExpireAfterStaleToolsTTL(t *testing.T) {
 	require.NoError(t, err)
 
 	linear.setListToolsErr(errTransientDiscovery)
-	// Backdate the retained discovery past the staleness bound.
 	srv.cacheMu.Lock()
 	srv.lastGood[lastGoodKey{backendName: "linear"}].discovered = time.Now().Add(-staleToolsTTL - time.Minute)
 	srv.cacheMu.Unlock()
@@ -1621,9 +1608,6 @@ func TestStaleToolsExpireAfterStaleToolsTTL(t *testing.T) {
 	assert.Empty(t, tools["linear"], "tools older than the staleness bound are no longer served")
 }
 
-// A backend configuring a longer timeout than the discovery default is honoured
-// up to the hard cap, so a deliberately slow upstream is not cut off by a budget
-// meant for fast ones.
 func TestBackendDiscoveryTimeout(t *testing.T) {
 	srv := newStaleToolsTestServer(t, map[string]*mockTransport{
 		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
@@ -1647,8 +1631,6 @@ func TestBackendDiscoveryTimeout(t *testing.T) {
 	}
 }
 
-// Retained discoveries are keyed per user, so they must be pruned or the map
-// accumulates an entry for every user who ever connected.
 func TestCleanupPrunesRetainedDiscoveries(t *testing.T) {
 	srv := newStaleToolsTestServer(t, map[string]*mockTransport{
 		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
