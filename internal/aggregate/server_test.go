@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -82,14 +83,21 @@ func (m *mockTransport) ListTools(ctx context.Context, req mcp.ListToolsRequest)
 			return nil, ctx.Err()
 		}
 	}
-	if m.listToolsErr != nil {
-		return nil, m.listToolsErr
-	}
 	m.mu.Lock()
+	if err := m.listToolsErr; err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	tools := make([]mcp.Tool, len(m.tools))
 	copy(tools, m.tools)
 	m.mu.Unlock()
 	return &mcp.ListToolsResult{Tools: tools}, nil
+}
+
+func (m *mockTransport) setListToolsErr(err error) {
+	m.mu.Lock()
+	m.listToolsErr = err
+	m.mu.Unlock()
 }
 
 func (m *mockTransport) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1448,4 +1456,202 @@ func TestRetryOnSessionInvalidationDuringDiscovery(t *testing.T) {
 	require.NoError(t, err, "session error during discovery should be recovered")
 	assert.Len(t, tools["datadog"], 1, "retry must not duplicate tools from the failed attempt")
 	assert.Equal(t, int32(2), factoryCalls.Load(), "retry should re-initialize a fresh connection")
+}
+
+// errTransientDiscovery is a transport-level failure, not an auth rejection.
+var errTransientDiscovery = errors.New("transport error: context deadline exceeded")
+
+// newStaleToolsTestServer builds an aggregate with a caller-supplied discovery
+// config so tests can drive cache expiry directly.
+func newStaleToolsTestServer(t *testing.T, backends map[string]*mockTransport, disc *config.DiscoveryConfig) *Server {
+	t.Helper()
+
+	backendConfigs := make(map[string]*config.MCPClientConfig, len(backends))
+	for name := range backends {
+		backendConfigs[name] = &config.MCPClientConfig{
+			TransportType: config.MCPClientTypeSSE,
+			URL:           "http://localhost/" + name,
+		}
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		for name, mock := range backends {
+			if conf.URL == "http://localhost/"+name {
+				return mock, nil
+			}
+		}
+		return nil, fmt.Errorf("unknown backend")
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     disc,
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	return srv
+}
+
+func TestDiscoveryServesLastKnownToolsOnTransientFailure(t *testing.T) {
+	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
+	backends := map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+		"linear":   linear,
+	}
+	srv := newStaleToolsTestServer(t, backends, &config.DiscoveryConfig{
+		Timeout:  5 * time.Second,
+		CacheTTL: 10 * time.Millisecond,
+	})
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	require.Len(t, tools["linear"], 1)
+
+	linear.setListToolsErr(errTransientDiscovery)
+	time.Sleep(30 * time.Millisecond)
+
+	tools, err = srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	assert.Len(t, tools["postgres"], 1, "healthy backend still discovered")
+	require.Len(t, tools["linear"], 1, "failing backend served from its last successful discovery")
+	assert.Equal(t, "create_issue", tools["linear"][0].Name)
+}
+
+func TestDiscoveryDropsBackendOnAuthFailure(t *testing.T) {
+	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
+	backends := map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+		"linear":   linear,
+	}
+	srv := newStaleToolsTestServer(t, backends, &config.DiscoveryConfig{
+		Timeout:  5 * time.Second,
+		CacheTTL: 10 * time.Millisecond,
+	})
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	require.Len(t, tools["linear"], 1)
+
+	linear.setListToolsErr(transport.ErrAuthorizationRequired)
+	time.Sleep(30 * time.Millisecond)
+
+	tools, err = srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	assert.Len(t, tools["postgres"], 1)
+	assert.Empty(t, tools["linear"], "backend rejected for auth is dropped, not served stale")
+}
+
+func TestPartialDiscoveryIsCachedBriefly(t *testing.T) {
+	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
+	backends := map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+		"linear":   linear,
+	}
+	srv := newStaleToolsTestServer(t, backends, &config.DiscoveryConfig{
+		Timeout:  5 * time.Second,
+		CacheTTL: time.Hour,
+	})
+
+	_, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+
+	srv.cacheMu.RLock()
+	fullExpiry := time.Until(srv.sharedCache.expires)
+	srv.cacheMu.RUnlock()
+	assert.Greater(t, fullExpiry, 30*time.Minute, "a clean discovery earns the full CacheTTL")
+
+	linear.setListToolsErr(errTransientDiscovery)
+	srv.cacheMu.Lock()
+	srv.sharedCache = nil
+	srv.cacheMu.Unlock()
+
+	_, err = srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+
+	srv.cacheMu.RLock()
+	partialExpiry := time.Until(srv.sharedCache.expires)
+	srv.cacheMu.RUnlock()
+	assert.LessOrEqual(t, partialExpiry, partialDiscoveryCacheTTL,
+		"a discovery that fell back to stale tools is not cached for the full TTL")
+}
+
+func TestStaleToolsExpireAfterStaleToolsTTL(t *testing.T) {
+	linear := &mockTransport{tools: []mcp.Tool{{Name: "create_issue"}}}
+	backends := map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+		"linear":   linear,
+	}
+	srv := newStaleToolsTestServer(t, backends, &config.DiscoveryConfig{
+		Timeout:  5 * time.Second,
+		CacheTTL: 10 * time.Millisecond,
+	})
+
+	_, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+
+	linear.setListToolsErr(errTransientDiscovery)
+	srv.cacheMu.Lock()
+	srv.lastGood[lastGoodKey{backendName: "linear"}].discovered = time.Now().Add(-staleToolsTTL - time.Minute)
+	srv.cacheMu.Unlock()
+	time.Sleep(30 * time.Millisecond)
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	assert.Len(t, tools["postgres"], 1)
+	assert.Empty(t, tools["linear"], "tools older than the staleness bound are no longer served")
+}
+
+func TestBackendDiscoveryTimeout(t *testing.T) {
+	srv := newStaleToolsTestServer(t, map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	}, &config.DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: time.Minute})
+
+	tests := []struct {
+		name string
+		conf *config.MCPClientConfig
+		want time.Duration
+	}{
+		{"unset falls back to the discovery default", &config.MCPClientConfig{}, 10 * time.Second},
+		{"shorter than the default does not shrink it", &config.MCPClientConfig{Timeout: 2 * time.Second}, 10 * time.Second},
+		{"longer than the default is honoured", &config.MCPClientConfig{Timeout: 25 * time.Second}, 25 * time.Second},
+		{"beyond the cap is clamped", &config.MCPClientConfig{Timeout: 5 * time.Minute}, maxBackendDiscoveryTimeout},
+		{"nil config falls back to the default", nil, 10 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, srv.backendDiscoveryTimeout(tc.conf))
+		})
+	}
+}
+
+func TestCleanupPrunesRetainedDiscoveries(t *testing.T) {
+	srv := newStaleToolsTestServer(t, map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	}, &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: time.Minute})
+
+	_, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+
+	srv.cacheMu.Lock()
+	require.Len(t, srv.lastGood, 1)
+	srv.lastGood[lastGoodKey{scope: "stale@test.com", backendName: "linear"}] = &backendTools{
+		tools:      []mcp.Tool{{Name: "create_issue"}},
+		discovered: time.Now().Add(-staleToolsTTL - time.Minute),
+	}
+	srv.cacheMu.Unlock()
+
+	srv.cleanupExpiredCache()
+
+	srv.cacheMu.RLock()
+	defer srv.cacheMu.RUnlock()
+	assert.Len(t, srv.lastGood, 1, "entries past the staleness bound are dropped")
+	_, stillThere := srv.lastGood[lastGoodKey{backendName: "postgres"}]
+	assert.True(t, stillThere, "a recent discovery is retained")
 }
