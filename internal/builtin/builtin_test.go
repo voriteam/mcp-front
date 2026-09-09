@@ -78,7 +78,7 @@ func TestCallTool(t *testing.T) {
 	})
 }
 
-func TestLifecycleIsInert(t *testing.T) {
+func TestLifecycle(t *testing.T) {
 	c := NewClient("gtm", "ae@vori.com", nil)
 	ctx := context.Background()
 

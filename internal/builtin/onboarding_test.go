@@ -89,7 +89,7 @@ func keysOf(m map[string]any) []string {
 	return out
 }
 
-func TestCreateLink_RejectsMissingArguments(t *testing.T) {
+func TestCreateLink_RejectsBadArguments(t *testing.T) {
 	tools := OnboardingTools(OnboardingConfig{})
 	cases := []struct {
 		name string
