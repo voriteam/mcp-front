@@ -62,14 +62,40 @@ const onboardingSchemaFormat = `{
   "additionalProperties": false
 }`
 
-func OnboardingTools(cfg OnboardingConfig) []Tool {
+// OnboardingTools returns an error naming every field left empty. A blank
+// signing key would otherwise mint links that look right and fail only when
+// their recipient redeems them.
+func OnboardingTools(cfg OnboardingConfig) ([]Tool, error) {
+	var missing []string
+	if len(cfg.SigningKey) == 0 {
+		missing = append(missing, "signing key")
+	}
+	if cfg.AppRootURL == "" {
+		missing = append(missing, "app root URL")
+	}
+	if cfg.Issuer == "" {
+		missing = append(missing, "issuer")
+	}
+	if cfg.TinyURLAPIKey == "" {
+		missing = append(missing, "shortener API key")
+	}
+	if cfg.ShortenerDomain == "" {
+		missing = append(missing, "shortener domain")
+	}
+	if cfg.DefaultTokenTTL <= 0 {
+		missing = append(missing, "default TTL")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("onboarding builtin is missing: %s", strings.Join(missing, ", "))
+	}
+
 	return []Tool{{
 		Name:        "create_onboarding_link",
 		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient.",
 		InputSchema: json.RawMessage(fmt.Sprintf(onboardingSchemaFormat,
 			maxOnboardingTTLDays, int(cfg.DefaultTokenTTL/(24*time.Hour)))),
 		Handler: cfg.createLink,
-	}}
+	}}, nil
 }
 
 func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, raw json.RawMessage) (*mcp.CallToolResult, error) {

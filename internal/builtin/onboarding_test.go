@@ -47,7 +47,10 @@ func TestCreateLink_TokenShape(t *testing.T) {
 		HTTPClient:      shortener.Client(),
 	}
 	cfg.endpoint = shortener.URL
-	tools := OnboardingTools(cfg)
+	cfg.TinyURLAPIKey = "tinyurl-key"
+	cfg.ShortenerDomain = "link.vori.io"
+	tools, err := OnboardingTools(cfg)
+	require.NoError(t, err)
 	require.Len(t, tools, 1)
 
 	args := json.RawMessage(`{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`)
@@ -113,7 +116,14 @@ func newLinkTool(t *testing.T, cfg OnboardingConfig) (Tool, *string) {
 	if cfg.Issuer == "" {
 		cfg.Issuer = "https://jwt.vori.com"
 	}
-	tools := OnboardingTools(cfg)
+	if cfg.TinyURLAPIKey == "" {
+		cfg.TinyURLAPIKey = "tinyurl-key"
+	}
+	if cfg.ShortenerDomain == "" {
+		cfg.ShortenerDomain = "link.vori.io"
+	}
+	tools, err := OnboardingTools(cfg)
+	require.NoError(t, err)
 	require.Len(t, tools, 1)
 	return tools[0], long
 }
@@ -160,7 +170,15 @@ func TestCreateLink_ExpiryInDays(t *testing.T) {
 }
 
 func TestOnboardingSchema_AdvertisesDefaultAndCeiling(t *testing.T) {
-	tools := OnboardingTools(OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+	tools, err := OnboardingTools(OnboardingConfig{
+		SigningKey:      []byte("k"),
+		DefaultTokenTTL: 7 * 24 * time.Hour,
+		AppRootURL:      "https://app.vori.com",
+		Issuer:          "https://jwt.vori.com",
+		TinyURLAPIKey:   "tinyurl-key",
+		ShortenerDomain: "link.vori.io",
+	})
+	require.NoError(t, err)
 
 	var schema struct {
 		Properties struct {
@@ -180,7 +198,7 @@ func TestOnboardingSchema_AdvertisesDefaultAndCeiling(t *testing.T) {
 }
 
 func TestCreateLink_RejectsBadArguments(t *testing.T) {
-	tools := OnboardingTools(OnboardingConfig{})
+	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 	cases := []struct {
 		name string
 		args string
@@ -191,7 +209,7 @@ func TestCreateLink_RejectsBadArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := tools[0].Handler(context.Background(), "ae@vori.com", json.RawMessage(tc.args))
+			res, err := tool.Handler(context.Background(), "ae@vori.com", json.RawMessage(tc.args))
 			require.NoError(t, err, "bad input is a tool error, not a Go error")
 			require.NotNil(t, res)
 			assert.True(t, res.IsError)
@@ -251,5 +269,51 @@ func TestShorten_Errors(t *testing.T) {
 		cfg := OnboardingConfig{HTTPClient: srv.Client(), endpoint: srv.URL}
 		_, err := cfg.shorten(context.Background(), "https://app.vori.com/welcome")
 		require.Error(t, err)
+	})
+}
+
+func TestOnboardingTools_RejectsIncompleteConfig(t *testing.T) {
+	complete := func() OnboardingConfig {
+		return OnboardingConfig{
+			SigningKey:      []byte("invitation-signing-secret-value-32b"),
+			DefaultTokenTTL: 7 * 24 * time.Hour,
+			AppRootURL:      "https://app.vori.com",
+			Issuer:          "https://jwt.vori.com",
+			TinyURLAPIKey:   "tinyurl-key",
+			ShortenerDomain: "link.vori.io",
+		}
+	}
+
+	t.Run("a complete config builds", func(t *testing.T) {
+		tools, err := OnboardingTools(complete())
+		require.NoError(t, err)
+		assert.Len(t, tools, 1)
+	})
+
+	cases := map[string]func(*OnboardingConfig){
+		"signing key":       func(c *OnboardingConfig) { c.SigningKey = nil },
+		"app root URL":      func(c *OnboardingConfig) { c.AppRootURL = "" },
+		"issuer":            func(c *OnboardingConfig) { c.Issuer = "" },
+		"shortener API key": func(c *OnboardingConfig) { c.TinyURLAPIKey = "" },
+		"shortener domain":  func(c *OnboardingConfig) { c.ShortenerDomain = "" },
+		"default TTL":       func(c *OnboardingConfig) { c.DefaultTokenTTL = 0 },
+	}
+	for field, blank := range cases {
+		t.Run("rejects a blank "+field, func(t *testing.T) {
+			cfg := complete()
+			blank(&cfg)
+			tools, err := OnboardingTools(cfg)
+			require.Error(t, err)
+			assert.Nil(t, tools)
+			assert.Contains(t, err.Error(), field, "the error must name the field to fix")
+		})
+	}
+
+	t.Run("names every blank field at once", func(t *testing.T) {
+		_, err := OnboardingTools(OnboardingConfig{})
+		require.Error(t, err)
+		for _, field := range []string{"signing key", "app root URL", "issuer", "shortener API key", "shortener domain", "default TTL"} {
+			assert.Contains(t, err.Error(), field)
+		}
 	})
 }

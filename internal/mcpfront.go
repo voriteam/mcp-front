@@ -442,8 +442,14 @@ func buildHTTPHandler(
 		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(handler, mcpMiddlewares...))
 	}
 
-	builtinRegistry := builtin.Registry{
-		"onboarding": builtin.OnboardingTools(builtin.OnboardingConfig{
+	// Built only when a server asks for it, so a deployment using no builtin
+	// starts without any of its environment set.
+	builtinRegistry := builtin.Registry{}
+	for _, serverConfig := range cfg.MCPServers {
+		if serverConfig.TransportType != config.MCPClientTypeBuiltin || serverConfig.Builtin != "onboarding" {
+			continue
+		}
+		tools, err := builtin.OnboardingTools(builtin.OnboardingConfig{
 			SigningKey:      []byte(os.Getenv("INVITATION_SIGNING_SECRET")),
 			DefaultTokenTTL: 7 * 24 * time.Hour,
 			AppRootURL:      os.Getenv("APP_ROOT_URL"),
@@ -451,7 +457,12 @@ func buildHTTPHandler(
 			TinyURLAPIKey:   os.Getenv("TINYURL_API_KEY"),
 			ShortenerDomain: os.Getenv("URL_SHORTENER_DOMAIN"),
 			ShortenerTags:   []string{"gtm-onboarding"},
-		}),
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		builtinRegistry["onboarding"] = tools
+		break
 	}
 	createTransport := builtin.TransportCreator(builtinRegistry, client.DefaultTransportCreator)
 
