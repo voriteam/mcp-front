@@ -445,7 +445,7 @@ func buildHTTPHandler(
 	builtinRegistry := builtin.Registry{
 		"onboarding": builtin.OnboardingTools(builtin.OnboardingConfig{
 			SigningKey:      []byte(os.Getenv("INVITATION_SIGNING_SECRET")),
-			TokenTTL:        7 * 24 * time.Hour,
+			DefaultTokenTTL: 7 * 24 * time.Hour,
 			AppRootURL:      os.Getenv("APP_ROOT_URL"),
 			Issuer:          os.Getenv("VORI_JWT_ISSUER"),
 			TinyURLAPIKey:   os.Getenv("TINYURL_API_KEY"),

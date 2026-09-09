@@ -40,11 +40,11 @@ func TestCreateLink_TokenShape(t *testing.T) {
 	defer shortener.Close()
 
 	cfg := OnboardingConfig{
-		SigningKey: []byte("invitation-signing-secret-value-32b"),
-		TokenTTL:   7 * 24 * time.Hour,
-		AppRootURL: "https://app.vori.com",
-		Issuer:     "https://jwt.vori.com",
-		HTTPClient: shortener.Client(),
+		SigningKey:      []byte("invitation-signing-secret-value-32b"),
+		DefaultTokenTTL: 7 * 24 * time.Hour,
+		AppRootURL:      "https://app.vori.com",
+		Issuer:          "https://jwt.vori.com",
+		HTTPClient:      shortener.Client(),
 	}
 	cfg.endpoint = shortener.URL
 	tools := OnboardingTools(cfg)
@@ -90,6 +90,95 @@ func keysOf(m map[string]any) []string {
 	return out
 }
 
+// newLinkTool returns the tool plus a pointer to the long URL the shortener saw.
+func newLinkTool(t *testing.T, cfg OnboardingConfig) (Tool, *string) {
+	t.Helper()
+	long := new(string)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		*long = body["url"]
+		_, _ = io.WriteString(w, `{"data":{"tiny_url":"https://link.vori.io/abc123"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg.HTTPClient = srv.Client()
+	cfg.endpoint = srv.URL
+	if cfg.SigningKey == nil {
+		cfg.SigningKey = []byte("invitation-signing-secret-value-32b")
+	}
+	if cfg.AppRootURL == "" {
+		cfg.AppRootURL = "https://app.vori.com"
+	}
+	if cfg.Issuer == "" {
+		cfg.Issuer = "https://jwt.vori.com"
+	}
+	tools := OnboardingTools(cfg)
+	require.Len(t, tools, 1)
+	return tools[0], long
+}
+
+func claimsFromLink(t *testing.T, long string) map[string]any {
+	t.Helper()
+	parsed, err := url.Parse(long)
+	require.NoError(t, err)
+	token := parsed.Query().Get("token")
+	require.NotEmpty(t, token)
+	return decodeClaims(t, token)
+}
+
+func TestCreateLink_ExpiryInDays(t *testing.T) {
+	t.Run("defaults when the caller names none", func(t *testing.T) {
+		tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+		_, err := tool.Handler(context.Background(), "ae@vori.com",
+			json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example"}`))
+		require.NoError(t, err)
+
+		claims := claimsFromLink(t, *long)
+		assert.Equal(t, float64(7*24*60*60), claims["exp"].(float64)-claims["iat"].(float64))
+	})
+
+	t.Run("honours a caller-supplied expiry", func(t *testing.T) {
+		tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+		_, err := tool.Handler(context.Background(), "ae@vori.com",
+			json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":14}`))
+		require.NoError(t, err)
+
+		claims := claimsFromLink(t, *long)
+		assert.Equal(t, float64(14*24*60*60), claims["exp"].(float64)-claims["iat"].(float64))
+	})
+
+	t.Run("rejects out-of-range expiries", func(t *testing.T) {
+		tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+		for _, days := range []string{"0", "-1", "91"} {
+			res, err := tool.Handler(context.Background(), "ae@vori.com",
+				json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":`+days+`}`))
+			require.NoError(t, err, "a bad expiry is a tool error, not a Go error")
+			assert.True(t, res.IsError, "expiresInDays=%s must be rejected", days)
+		}
+	})
+}
+
+func TestOnboardingSchema_AdvertisesDefaultAndCeiling(t *testing.T) {
+	tools := OnboardingTools(OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+
+	var schema struct {
+		Properties struct {
+			ExpiresInDays struct {
+				Minimum     int    `json:"minimum"`
+				Maximum     int    `json:"maximum"`
+				Description string `json:"description"`
+			} `json:"expiresInDays"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(tools[0].InputSchema, &schema))
+
+	assert.Equal(t, 1, schema.Properties.ExpiresInDays.Minimum)
+	assert.Equal(t, maxOnboardingTTLDays, schema.Properties.ExpiresInDays.Maximum)
+	assert.Contains(t, schema.Properties.ExpiresInDays.Description, "7 days",
+		"the advertised default must track DefaultTokenTTL")
+}
+
 func TestCreateLink_RejectsBadArguments(t *testing.T) {
 	tools := OnboardingTools(OnboardingConfig{})
 	cases := []struct {
@@ -125,7 +214,7 @@ func TestShorten_RequestShape(t *testing.T) {
 	cfg := OnboardingConfig{
 		TinyURLAPIKey:   "tinyurl-key",
 		ShortenerDomain: "link.vori.io",
-		ShortenerTags:   []string{"gtm-onboarding", "ae"},
+		ShortenerTags:   []string{"gtm-onboarding", "signing-invite"},
 		HTTPClient:      srv.Client(),
 		endpoint:        srv.URL,
 	}
@@ -139,7 +228,7 @@ func TestShorten_RequestShape(t *testing.T) {
 	assert.Equal(t, "/", gotPath)
 	assert.Equal(t, "https://app.vori.com/welcome?token=t", gotBody["url"])
 	assert.Equal(t, "link.vori.io", gotBody["domain"])
-	assert.Equal(t, "gtm-onboarding,ae", gotBody["tags"], "tags are comma-joined")
+	assert.Equal(t, "gtm-onboarding,signing-invite", gotBody["tags"], "tags are comma-joined")
 }
 
 func TestShorten_Errors(t *testing.T) {
