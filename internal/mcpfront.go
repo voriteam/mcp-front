@@ -16,6 +16,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/aggregate"
 	"github.com/stainless-api/mcp-front/internal/auth"
+	"github.com/stainless-api/mcp-front/internal/builtin"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/crypto"
@@ -390,6 +391,12 @@ func buildHTTPHandler(
 			continue
 		}
 
+		// Builtins are reachable only through an aggregate; NewMCPHandler would
+		// get a config with neither command nor URL.
+		if serverConfig.TransportType == config.MCPClientTypeBuiltin {
+			continue
+		}
+
 		log.LogInfoWithFields("server", "Registering MCP server", map[string]any{
 			"name":                serverName,
 			"transport_type":      serverConfig.TransportType,
@@ -435,6 +442,18 @@ func buildHTTPHandler(
 		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(handler, mcpMiddlewares...))
 	}
 
+	builtinRegistry := builtin.Registry{
+		"onboarding": builtin.OnboardingTools(builtin.OnboardingConfig{
+			SigningKey:      []byte(os.Getenv("INVITATION_SIGNING_SECRET")),
+			TokenTTL:        7 * 24 * time.Hour,
+			AppRootURL:      os.Getenv("APP_ROOT_URL"),
+			TinyURLAPIKey:   os.Getenv("TINYURL_API_KEY"),
+			ShortenerDomain: os.Getenv("URL_SHORTENER_DOMAIN"),
+			ShortenerTags:   []string{"gtm-onboarding"},
+		}),
+	}
+	createTransport := builtin.TransportCreator(builtinRegistry, client.DefaultTransportCreator)
+
 	for serverName, serverConfig := range cfg.MCPServers {
 		if !serverConfig.IsAggregate() {
 			continue
@@ -454,7 +473,7 @@ func buildHTTPHandler(
 			StreamlineResponses: serverConfig.StreamlineResponses,
 			GetUserToken:        userTokenService.GetUserToken,
 			TokenSources:        backendTokenSources,
-			CreateTransport:     client.DefaultTransportCreator,
+			CreateTransport:     createTransport,
 			BaseURL:             baseURL,
 		})
 		agg.Start()

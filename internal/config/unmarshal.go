@@ -34,6 +34,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		ClientCredentials   *ClientCredentialsConfig   `json:"clientCredentials,omitempty"`
 		HMACJWTAuth         *HMACJWTAuthConfig         `json:"hmacJWT,omitempty"`
 		InlineConfig        json.RawMessage            `json:"inline,omitempty"`
+		Builtin             string                     `json:"builtin,omitempty"`
 		Servers             []string                   `json:"servers,omitempty"`
 		Discovery           json.RawMessage            `json:"discovery,omitempty"`
 		Delimiter           string                     `json:"delimiter,omitempty"`
@@ -77,6 +78,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		}
 	}
 	c.InlineConfig = raw.InlineConfig
+	c.Builtin = raw.Builtin
 	if c.Type == ServerTypeAggregate {
 		c.Delimiter = raw.Delimiter
 		if c.Delimiter == "" {
@@ -598,6 +600,14 @@ func (c *MCPClientConfig) WithBearerToken(token string) *MCPClientConfig {
 	maps.Copy(result.Headers, c.Headers)
 	result.Headers["Authorization"] = "Bearer " + token
 	return &result
+}
+
+// WithUserEmail returns a copy of the config carrying the authenticated user the
+// aggregate opened this connection for. Shallow copy: no maps are touched.
+func (c *MCPClientConfig) WithUserEmail(email string) *MCPClientConfig {
+	clone := *c
+	clone.UserEmail = email
+	return &clone
 }
 
 // ApplyUserToken creates a copy of the config with user tokens substituted

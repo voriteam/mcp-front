@@ -166,6 +166,45 @@ func TestMCPClientConfig_UnmarshalJSON(t *testing.T) {
 	assert.False(t, config.UserAuthentication.ValidationRegex.MatchString("test_123"))
 }
 
+// Builtin is assigned from the function-local rawConfig struct, so a struct tag
+// on MCPClientConfig alone leaves it empty and every builtin fails at runtime.
+func TestMCPClientConfig_UnmarshalJSON_Builtin(t *testing.T) {
+	t.Run("builtin transport", func(t *testing.T) {
+		input := `{
+			"transportType": "builtin",
+			"builtin": "onboarding"
+		}`
+		var config MCPClientConfig
+		require.NoError(t, json.Unmarshal([]byte(input), &config))
+		assert.Equal(t, MCPClientTypeBuiltin, config.TransportType)
+		assert.Equal(t, "onboarding", config.Builtin)
+	})
+
+	t.Run("user email is never parsed from JSON", func(t *testing.T) {
+		input := `{
+			"transportType": "builtin",
+			"builtin": "onboarding",
+			"userEmail": "attacker@example.com"
+		}`
+		var config MCPClientConfig
+		require.NoError(t, json.Unmarshal([]byte(input), &config))
+		assert.Empty(t, config.UserEmail)
+	})
+}
+
+func TestMCPClientConfig_WithUserEmail(t *testing.T) {
+	original := &MCPClientConfig{
+		TransportType: MCPClientTypeBuiltin,
+		Builtin:       "onboarding",
+	}
+
+	clone := original.WithUserEmail("ae@vori.com")
+
+	assert.Equal(t, "ae@vori.com", clone.UserEmail)
+	assert.Empty(t, original.UserEmail, "the original config is shared across users")
+	assert.Equal(t, "onboarding", clone.Builtin)
+}
+
 func TestMCPClientConfig_UnmarshalJSON_Delimiter(t *testing.T) {
 	t.Run("aggregate with delimiter", func(t *testing.T) {
 		input := `{
