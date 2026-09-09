@@ -43,6 +43,7 @@ func TestCreateLink_TokenShape(t *testing.T) {
 		SigningKey: []byte("invitation-signing-secret-value-32b"),
 		TokenTTL:   7 * 24 * time.Hour,
 		AppRootURL: "https://app.vori.com",
+		Issuer:     "https://jwt.vori.com",
 		HTTPClient: shortener.Client(),
 	}
 	cfg.endpoint = shortener.URL

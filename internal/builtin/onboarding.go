@@ -18,9 +18,6 @@ import (
 const (
 	tinyURLCreateEndpoint = "https://api.tinyurl.com/create"
 
-	// Must match VORI_JWT_ISSUER in backend shared/providers/jwt_handler.ts.
-	voriJWTIssuer = "https://jwt.vori.com"
-
 	// Must match InvitationType.Signing in backend
 	// shared/nest/libs/invitations/enum.ts.
 	invitationTypeSigning = "signing"
@@ -32,6 +29,7 @@ type OnboardingConfig struct {
 	SigningKey      []byte
 	TokenTTL        time.Duration // backend default is 7 days
 	AppRootURL      string        // backend config app_root_url; link is <root>/welcome
+	Issuer          string        // matches VORI_JWT_ISSUER in backend shared/providers/jwt_handler.ts
 	TinyURLAPIKey   string        // Secret Manager: tinyurl-api-key
 	ShortenerDomain string        // matches backend config url_shortener.domain
 	ShortenerTags   []string      // e.g. ["gtm-onboarding"] — this is the tracking hook
@@ -83,7 +81,7 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 		"invitation_type": invitationTypeSigning,
 		"hubspot_deal_id": args.HubspotDealID,
 		"email":           args.RecipientEmail,
-		"iss":             voriJWTIssuer,
+		"iss":             cfg.Issuer,
 		"iat":             now.Unix(),
 		"exp":             expires.Unix(),
 	})

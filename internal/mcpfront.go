@@ -447,6 +447,7 @@ func buildHTTPHandler(
 			SigningKey:      []byte(os.Getenv("INVITATION_SIGNING_SECRET")),
 			TokenTTL:        7 * 24 * time.Hour,
 			AppRootURL:      os.Getenv("APP_ROOT_URL"),
+			Issuer:          os.Getenv("VORI_JWT_ISSUER"),
 			TinyURLAPIKey:   os.Getenv("TINYURL_API_KEY"),
 			ShortenerDomain: os.Getenv("URL_SHORTENER_DOMAIN"),
 			ShortenerTags:   []string{"gtm-onboarding"},
