@@ -408,12 +408,32 @@ func validateMCPServer(name string, server *MCPClientConfig) error {
 		return fmt.Errorf("server %s requires user token but has no userAuthentication", name)
 	}
 
+	if err := validateOAuthEndpoints(name, server); err != nil {
+		return err
+	}
+
 	// Validate tool filter configuration
 	if err := validateToolFilter(name, server); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// validateOAuthEndpoints mirrors the structural validator: the endpoints are optional
+// only because mcp-front can read them off the backend.
+func validateOAuthEndpoints(name string, server *MCPClientConfig) error {
+	auth := server.UserAuthentication
+	if auth == nil || auth.Type != UserAuthTypeOAuth {
+		return nil
+	}
+	if auth.AuthorizationURL != "" && auth.TokenURL != "" {
+		return nil
+	}
+	if server.CanDiscoverOAuth() {
+		return nil
+	}
+	return fmt.Errorf("server %s needs userAuthentication.authorizationUrl and tokenUrl because it has no url to discover them from", name)
 }
 
 func validateToolFilter(name string, server *MCPClientConfig) error {

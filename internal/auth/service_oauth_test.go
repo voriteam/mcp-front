@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -200,4 +201,237 @@ func TestGetConnectURL(t *testing.T) {
 		url := client.GetConnectURL("my-service", "")
 		assert.Equal(t, "https://mcp-front.example.com/oauth/connect?service=my-service", url)
 	})
+}
+
+func serviceOAuthTestClient(t *testing.T) *ServiceOAuthClient {
+	t.Helper()
+	return NewServiceOAuthClient(storage.NewMemoryStorage(), "https://mcp-front.example.com", []byte(strings.Repeat("test-key", 4)))
+}
+
+func discoverableServer(url string, auth *config.UserAuthentication) *config.MCPClientConfig {
+	return &config.MCPClientConfig{
+		TransportType:      config.MCPClientTypeStreamable,
+		URL:                url,
+		RequiresUserToken:  true,
+		UserAuthentication: auth,
+	}
+}
+
+func TestResolveOAuthDiscoversWhatConfigOmits(t *testing.T) {
+	b := &backend{}
+	server := b.start(t)
+	client := serviceOAuthTestClient(t)
+
+	resolved, err := client.resolveOAuth(context.Background(), "someserver", discoverableServer(b.resourceURL(server), &config.UserAuthentication{
+		Type:        config.UserAuthTypeOAuth,
+		DisplayName: "Some Server",
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, server.URL+"/oauth/authorize", resolved.authorizationURL)
+	assert.Equal(t, server.URL+"/oauth/token", resolved.tokenURL)
+	assert.Equal(t, server.URL+"/register", resolved.registrationURL)
+	assert.Equal(t, []string{"ZohoMCP.tool.execute", "ZohoMCP.tool.read"}, resolved.scopes)
+	assert.Empty(t, resolved.clientID)
+}
+
+func TestResolveOAuthConfigWins(t *testing.T) {
+	tests := []struct {
+		name   string
+		auth   config.UserAuthentication
+		assert func(t *testing.T, server *httptest.Server, resolved *resolvedOAuth)
+	}{
+		{
+			name: "authorizationUrl",
+			auth: config.UserAuthentication{AuthorizationURL: "https://configured.example.com/authorize"},
+			assert: func(t *testing.T, server *httptest.Server, resolved *resolvedOAuth) {
+				assert.Equal(t, "https://configured.example.com/authorize", resolved.authorizationURL)
+				assert.Equal(t, server.URL+"/oauth/token", resolved.tokenURL)
+			},
+		},
+		{
+			name: "tokenUrl",
+			auth: config.UserAuthentication{TokenURL: "https://configured.example.com/token"},
+			assert: func(t *testing.T, server *httptest.Server, resolved *resolvedOAuth) {
+				assert.Equal(t, "https://configured.example.com/token", resolved.tokenURL)
+				assert.Equal(t, server.URL+"/oauth/authorize", resolved.authorizationURL)
+			},
+		},
+		{
+			name: "scopes",
+			auth: config.UserAuthentication{Scopes: []string{"read", "write"}},
+			assert: func(t *testing.T, server *httptest.Server, resolved *resolvedOAuth) {
+				assert.Equal(t, []string{"read", "write"}, resolved.scopes)
+			},
+		},
+		{
+			name: "clientId and clientSecret",
+			auth: config.UserAuthentication{ClientID: config.Secret("configured-id"), ClientSecret: config.Secret("configured-secret")},
+			assert: func(t *testing.T, server *httptest.Server, resolved *resolvedOAuth) {
+				assert.Equal(t, "configured-id", resolved.clientID)
+				assert.Equal(t, "configured-secret", resolved.clientSecret)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &backend{}
+			server := b.start(t)
+			client := serviceOAuthTestClient(t)
+
+			auth := tt.auth
+			auth.Type = config.UserAuthTypeOAuth
+			auth.DisplayName = "Some Server"
+
+			resolved, err := client.resolveOAuth(context.Background(), "someserver", discoverableServer(b.resourceURL(server), &auth))
+			require.NoError(t, err)
+			tt.assert(t, server, resolved)
+		})
+	}
+}
+
+func TestResolveOAuthSkipsDiscoveryWhenFullyConfigured(t *testing.T) {
+	b := &backend{}
+	server := b.start(t)
+	client := serviceOAuthTestClient(t)
+
+	resolved, err := client.resolveOAuth(context.Background(), "someserver", discoverableServer(b.resourceURL(server), &config.UserAuthentication{
+		Type:             config.UserAuthTypeOAuth,
+		DisplayName:      "Some Server",
+		ClientID:         config.Secret("configured-id"),
+		ClientSecret:     config.Secret("configured-secret"),
+		AuthorizationURL: "https://configured.example.com/authorize",
+		TokenURL:         "https://configured.example.com/token",
+		Scopes:           []string{"read"},
+	}))
+	require.NoError(t, err)
+
+	assert.False(t, resolved.discovered)
+	assert.Empty(t, b.requests, "a fully configured server must not touch the backend")
+}
+
+func TestResolveOAuthCachesDiscovery(t *testing.T) {
+	b := &backend{}
+	server := b.start(t)
+	client := serviceOAuthTestClient(t)
+	serverConfig := discoverableServer(b.resourceURL(server), &config.UserAuthentication{
+		Type:        config.UserAuthTypeOAuth,
+		DisplayName: "Some Server",
+	})
+
+	_, err := client.resolveOAuth(context.Background(), "someserver", serverConfig)
+	require.NoError(t, err)
+	afterFirst := len(b.requests)
+	require.NotZero(t, afterFirst)
+
+	_, err = client.resolveOAuth(context.Background(), "someserver", serverConfig)
+	require.NoError(t, err)
+	assert.Equal(t, afterFirst, len(b.requests))
+}
+
+func TestResolveOAuthWithoutADiscoverableURL(t *testing.T) {
+	client := serviceOAuthTestClient(t)
+
+	_, err := client.resolveOAuth(context.Background(), "stainless", &config.MCPClientConfig{
+		TransportType:     config.MCPClientTypeStdio,
+		Command:           "stainless",
+		RequiresUserToken: true,
+		UserAuthentication: &config.UserAuthentication{
+			Type:        config.UserAuthTypeOAuth,
+			DisplayName: "Stainless",
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no discoverable url")
+}
+
+// A service that supplies its endpoints but no client credentials keeps working when
+// its backend advertises nothing to discover.
+func TestResolveOAuthFallsBackWhenEndpointsAreConfigured(t *testing.T) {
+	unreachable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer unreachable.Close()
+
+	client := serviceOAuthTestClient(t)
+	resolved, err := client.resolveOAuth(context.Background(), "sentry", discoverableServer(unreachable.URL+"/mcp", &config.UserAuthentication{
+		Type:             config.UserAuthTypeOAuth,
+		DisplayName:      "Sentry",
+		AuthorizationURL: "https://sentry.example.com/oauth/authorize",
+		TokenURL:         "https://sentry.example.com/oauth/token",
+	}))
+	require.NoError(t, err)
+
+	assert.False(t, resolved.discovered)
+	assert.Equal(t, "https://sentry.example.com/oauth/authorize", resolved.authorizationURL)
+	assert.Equal(t, "https://sentry.example.com/oauth/token", resolved.tokenURL)
+}
+
+func TestRegisterClientUsesTheDiscoveredEndpointAndScopes(t *testing.T) {
+	var registrationBody map[string]any
+	b := &backend{}
+	server := b.start(t)
+
+	registrar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&registrationBody))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"client_id": "registered-id", "client_secret": "registered-secret"}`))
+	}))
+	defer registrar.Close()
+
+	client := serviceOAuthTestClient(t)
+	reg, err := client.registerClient(context.Background(), "someserver", &resolvedOAuth{
+		authorizationURL: server.URL + "/oauth/authorize",
+		tokenURL:         server.URL + "/oauth/token",
+		registrationURL:  registrar.URL,
+		issuer:           server.URL,
+		scopes:           []string{"ZohoMCP.tool.execute"},
+		discovered:       true,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "registered-id", reg.ClientID)
+	assert.Equal(t, "ZohoMCP.tool.execute", registrationBody["scope"])
+}
+
+func TestRegisterClientWithoutARegistrationEndpoint(t *testing.T) {
+	b := &backend{registrationOmitted: true}
+	server := b.start(t)
+	client := serviceOAuthTestClient(t)
+
+	resolved, err := client.resolveOAuth(context.Background(), "someserver", discoverableServer(b.resourceURL(server), &config.UserAuthentication{
+		Type:        config.UserAuthTypeOAuth,
+		DisplayName: "Some Server",
+	}))
+	require.NoError(t, err)
+
+	_, err = client.registerClient(context.Background(), "someserver", resolved)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "advertises no registration_endpoint")
+}
+
+func TestStartOAuthFlowFromDiscovery(t *testing.T) {
+	b := &backend{}
+	server := b.start(t)
+
+	registrar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"client_id": "registered-id"}`))
+	}))
+	defer registrar.Close()
+	b.authServerBody = fmt.Sprintf(`{"issuer": "%s", "authorization_endpoint": "%s/oauth/authorize", "token_endpoint": "%s/oauth/token", "registration_endpoint": "%s"}`,
+		server.URL, server.URL, server.URL, registrar.URL)
+
+	client := serviceOAuthTestClient(t)
+	authURL, err := client.StartOAuthFlow(context.Background(), "user@example.com", "someserver", "/my/tokens",
+		discoverableServer(b.resourceURL(server), &config.UserAuthentication{
+			Type:        config.UserAuthTypeOAuth,
+			DisplayName: "Some Server",
+		}))
+	require.NoError(t, err)
+
+	assert.Contains(t, authURL, server.URL+"/oauth/authorize")
+	assert.Contains(t, authURL, "client_id=registered-id")
+	assert.Contains(t, authURL, "scope=ZohoMCP.tool.execute+ZohoMCP.tool.read")
 }

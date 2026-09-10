@@ -429,7 +429,7 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 					Message: "userAuthentication is required when requiresUserToken is true. Hint: Add userAuthentication with type, displayName and instructions",
 				})
 			} else {
-				validateUserAuthentication(userAuth, fmt.Sprintf("mcpServers.%s.userAuthentication", name), result)
+				validateUserAuthentication(userAuth, fmt.Sprintf("mcpServers.%s.userAuthentication", name), canDiscoverOAuth(transportType, srv), result)
 			}
 		}
 
@@ -798,7 +798,24 @@ func validateUserTokenReference(userToken any, path string, result *ValidationRe
 }
 
 // validateUserAuthentication validates user authentication configuration
-func validateUserAuthentication(userAuth any, path string, result *ValidationResult) {
+// canDiscoverOAuth reports whether the server exposes an endpoint mcp-front could read
+// an authorization server from. Runs before env resolution, so a url written as a
+// reference object counts as present.
+func canDiscoverOAuth(transportType string, srv map[string]any) bool {
+	if transportType != "sse" && transportType != "streamable-http" {
+		return false
+	}
+	switch u := srv["url"].(type) {
+	case string:
+		return u != ""
+	case map[string]any:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateUserAuthentication(userAuth any, path string, canDiscover bool, result *ValidationResult) {
 	auth, ok := userAuth.(map[string]any)
 	if !ok {
 		result.Errors = append(result.Errors, ValidationError{
@@ -821,7 +838,7 @@ func validateUserAuthentication(userAuth any, path string, result *ValidationRes
 	// Validate based on type
 	switch authType {
 	case "oauth":
-		validateOAuthServiceConfig(auth, path, result)
+		validateOAuthServiceConfig(auth, path, canDiscover, result)
 	case "manual":
 		// Manual requires displayName and instructions
 		if _, ok := auth["displayName"]; !ok {
@@ -845,18 +862,17 @@ func validateUserAuthentication(userAuth any, path string, result *ValidationRes
 }
 
 // validateOAuthServiceConfig validates OAuth service configuration.
-// authorizationUrl and tokenUrl are required. clientId, clientSecret, and scopes
-// are optional — if omitted, mcp-front performs dynamic client registration (RFC 7591)
-// with the upstream service.
-func validateOAuthServiceConfig(oauth map[string]any, path string, result *ValidationResult) {
-	requiredFields := []string{"authorizationUrl", "tokenUrl"}
-	for _, field := range requiredFields {
-		if _, ok := oauth[field]; !ok {
-			result.Errors = append(result.Errors, ValidationError{
-				Path:    path + "." + field,
-				Message: fmt.Sprintf("%s is required for OAuth configuration", field),
-			})
-		}
+// Every field is optional for a server mcp-front can read an authorization server
+// from: authorizationUrl and tokenUrl come from the backend's own metadata, and
+// clientId/clientSecret from dynamic client registration (RFC 7591).
+func validateOAuthServiceConfig(oauth map[string]any, path string, canDiscover bool, result *ValidationResult) {
+	_, hasAuthorizationURL := oauth["authorizationUrl"]
+	_, hasTokenURL := oauth["tokenUrl"]
+	if !canDiscover && (!hasAuthorizationURL || !hasTokenURL) {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    path,
+			Message: "authorizationUrl and tokenUrl are required because this server has no url to discover them from",
+		})
 	}
 
 	// Scopes are optional (some providers support dynamic registration without explicit scopes)
