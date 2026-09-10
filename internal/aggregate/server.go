@@ -665,7 +665,7 @@ func (s *Server) discoverBackendTools(ctx context.Context, userEmail, backendNam
 	filtered := make([]mcp.Tool, 0, len(tools))
 	for _, tool := range tools {
 		if filter(tool.Name) {
-			filtered = append(filtered, tool)
+			filtered = append(filtered, conf.Options.ApplyToolAnnotations(tool))
 		}
 	}
 

@@ -127,6 +127,24 @@ The aggregate endpoint uses the same middleware stack as everything else: CORS, 
 
 Tool filtering works at two levels. Per-backend `toolFilter` config on individual servers is respected during aggregation — if the postgres config blocks `drop_table`, it won't appear in the aggregated list. A `toolFilter` on the aggregate server itself filters the final namespaced tool list.
 
+### Tool annotations
+
+Some backends advertise no MCP tool annotations, and clients that gate on them (Claude Code plan mode only auto-runs tools with `readOnlyHint: true`) then prompt on every call, even for a read-only query. Per-backend `toolAnnotations` overlays hints onto what the backend sent. It is keyed by the backend's own tool name (before namespacing), and only the hints you set are replaced; anything else the backend advertised is kept.
+
+```json
+"clickhouse": {
+  "transportType": "streamable-http",
+  "url": "http://localhost:8005/mcp",
+  "options": {
+    "toolAnnotations": {
+      "run_query": { "readOnlyHint": true }
+    }
+  }
+}
+```
+
+Accepted hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, each a boolean. Validation rejects unknown hint names and non-boolean values. The override applies on both the per-service endpoint and the aggregate; there is no aggregate-level form.
+
 ## What stays the same
 
 Per-service endpoints (`/postgres/`, `/linear/`, etc.) continue to work. The aggregate endpoint is additive. Some deployments may prefer per-service connections for token isolation or when a client only needs a single service.

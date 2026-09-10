@@ -580,6 +580,64 @@ func TestToolFilter(t *testing.T) {
 	assert.NotContains(t, names, "dangerous_drop")
 }
 
+func TestToolAnnotationsOverride(t *testing.T) {
+	trueVal, falseVal := true, false
+	pgMock := &mockTransport{
+		tools: []mcp.Tool{
+			{Name: "run_query"},
+			{Name: "execute_sql", Annotations: mcp.ToolAnnotation{ReadOnlyHint: &falseVal, DestructiveHint: &trueVal}},
+			{Name: "list_tables", Annotations: mcp.ToolAnnotation{ReadOnlyHint: &trueVal}},
+		},
+	}
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"postgres": {
+			TransportType: config.MCPClientTypeSSE,
+			URL:           "http://localhost/postgres",
+			Options: &config.Options{
+				ToolAnnotations: map[string]config.ToolAnnotationOverride{
+					"run_query":   {ReadOnlyHint: &trueVal},
+					"execute_sql": {ReadOnlyHint: &trueVal},
+				},
+			},
+		},
+	}
+
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		return pgMock, nil
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+
+	byName := make(map[string]mcp.ToolAnnotation)
+	for _, tool := range tools["postgres"] {
+		byName[tool.Name] = tool.Annotations
+	}
+	assert.Equal(t, map[string]mcp.ToolAnnotation{
+		// Backend sent nothing: the override fills in the hint.
+		"run_query": {ReadOnlyHint: &trueVal},
+		// Backend sent both hints: only the configured one is replaced.
+		"execute_sql": {ReadOnlyHint: &trueVal, DestructiveHint: &trueVal},
+		// No override configured: passes through untouched.
+		"list_tables": {ReadOnlyHint: &trueVal},
+	}, byName)
+}
+
 func TestDiscoverySurvivesCallerCancellation(t *testing.T) {
 	initStarted := make(chan struct{})
 	initProceed := make(chan struct{})

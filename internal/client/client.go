@@ -434,6 +434,7 @@ func (c *Client) addToolsToServer(
 
 		for _, tool := range tools.Tools {
 			if filterFunc(tool.Name) {
+				tool = c.options.ApplyToolAnnotations(tool)
 				log.LogDebugWithFields("client", "Adding tool", map[string]any{
 					"server":      c.name,
 					"tool":        tool.Name,

@@ -76,10 +76,22 @@ type ToolFilterConfig struct {
 	List []string       `json:"list,omitempty"`
 }
 
+// ToolAnnotationOverride sets MCP tool annotation hints on a backend tool.
+// Only the hints that are set override what the backend advertised.
+type ToolAnnotationOverride struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool `json:"openWorldHint,omitempty"`
+}
+
 // Options for MCP client configuration
 type Options struct {
 	AuthTokens []string          `json:"authTokens,omitempty"`
 	ToolFilter *ToolFilterConfig `json:"toolFilter,omitempty"`
+	// ToolAnnotations is keyed by the backend's own tool name, before any
+	// aggregate namespacing.
+	ToolAnnotations map[string]ToolAnnotationOverride `json:"toolAnnotations,omitempty"`
 }
 
 // ServiceAuthType represents the type of service authentication

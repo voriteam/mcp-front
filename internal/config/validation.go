@@ -447,6 +447,9 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 			if toolFilter, ok := options["toolFilter"].(map[string]any); ok {
 				validateToolFilterStructure(toolFilter, fmt.Sprintf("mcpServers.%s.options.toolFilter", name), result)
 			}
+			if toolAnnotations, ok := options["toolAnnotations"]; ok {
+				validateToolAnnotationsStructure(toolAnnotations, fmt.Sprintf("mcpServers.%s.options.toolAnnotations", name), result)
+			}
 		}
 	}
 }
@@ -466,6 +469,51 @@ func validateToolFilterStructure(filter map[string]any, path string, result *Val
 			Path:    path + ".mode",
 			Message: fmt.Sprintf("invalid mode '%s' (must be 'allow' or 'block')", mode),
 		})
+	}
+}
+
+var toolAnnotationHints = map[string]bool{
+	"readOnlyHint":    true,
+	"destructiveHint": true,
+	"idempotentHint":  true,
+	"openWorldHint":   true,
+}
+
+func validateToolAnnotationsStructure(raw any, path string, result *ValidationResult) {
+	byTool, ok := raw.(map[string]any)
+	if !ok {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    path,
+			Message: "must be an object keyed by tool name",
+		})
+		return
+	}
+	for toolName, rawHints := range byTool {
+		toolPath := path + "." + toolName
+		hints, ok := rawHints.(map[string]any)
+		if !ok {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    toolPath,
+				Message: "must be an object of annotation hints",
+			})
+			continue
+		}
+		for hint, value := range hints {
+			hintPath := toolPath + "." + hint
+			if !toolAnnotationHints[hint] {
+				result.Errors = append(result.Errors, ValidationError{
+					Path:    hintPath,
+					Message: fmt.Sprintf("unknown annotation '%s' (must be one of readOnlyHint, destructiveHint, idempotentHint, openWorldHint)", hint),
+				})
+				continue
+			}
+			if _, ok := value.(bool); !ok {
+				result.Errors = append(result.Errors, ValidationError{
+					Path:    hintPath,
+					Message: "must be a boolean",
+				})
+			}
+		}
 	}
 }
 

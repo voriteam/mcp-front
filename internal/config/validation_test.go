@@ -1143,6 +1143,72 @@ func TestValidateFile_AggregateServer(t *testing.T) {
 	}
 }
 
+func TestValidateFile_ToolAnnotations(t *testing.T) {
+	configWithOptions := func(options string) string {
+		return `{
+			"version": "v0.0.1-DEV_EDITION",
+			"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+			"mcpServers": {
+				"clickhouse": {
+					"transportType": "sse",
+					"url": "http://localhost:8005",
+					"options": ` + options + `
+				}
+			}
+		}`
+	}
+	tests := []struct {
+		name       string
+		options    string
+		wantErrors []string
+	}{
+		{
+			name:       "valid_tool_annotations",
+			options:    `{"toolAnnotations": {"run_query": {"readOnlyHint": true, "destructiveHint": false}}}`,
+			wantErrors: nil,
+		},
+		{
+			name:       "unknown_annotation_hint",
+			options:    `{"toolAnnotations": {"run_query": {"readOnly": true}}}`,
+			wantErrors: []string{"unknown annotation 'readOnly'"},
+		},
+		{
+			name:       "non_boolean_hint",
+			options:    `{"toolAnnotations": {"run_query": {"readOnlyHint": "yes"}}}`,
+			wantErrors: []string{"must be a boolean"},
+		},
+		{
+			name:       "hints_not_an_object",
+			options:    `{"toolAnnotations": {"run_query": true}}`,
+			wantErrors: []string{"must be an object of annotation hints"},
+		},
+		{
+			name:       "not_keyed_by_tool",
+			options:    `{"toolAnnotations": ["run_query"]}`,
+			wantErrors: []string{"must be an object keyed by tool name"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpFile := filepath.Join(t.TempDir(), "config.json")
+			require.NoError(t, os.WriteFile(tmpFile, []byte(configWithOptions(tt.options)), 0644))
+
+			result, err := ValidateFile(tmpFile)
+			require.NoError(t, err)
+
+			var messages []string
+			for _, gotErr := range result.Errors {
+				messages = append(messages, gotErr.Message)
+			}
+			require.Len(t, messages, len(tt.wantErrors), "errors: %v", result.Errors)
+			for _, wantErr := range tt.wantErrors {
+				assert.Contains(t, strings.Join(messages, "\n"), wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateFile_ToolFilterMode(t *testing.T) {
 	tests := []struct {
 		name       string
