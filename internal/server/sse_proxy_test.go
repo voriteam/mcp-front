@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +12,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/config"
+	"github.com/stainless-api/mcp-front/internal/pinnedargs"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestForwardSSEToBackend(t *testing.T) {
@@ -525,5 +529,73 @@ func TestSSEVsStdioRouting(t *testing.T) {
 
 		// Should not get the backend response (stdio doesn't proxy)
 		assert.NotContains(t, rec.Body.String(), "from-backend")
+	})
+}
+
+func TestStreamSSEResponse_PinnedArguments(t *testing.T) {
+	const toolsListEvent = `event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"list_invoices","inputSchema":{"type":"object","properties":{"org":{"type":"string"},"page":{"type":"integer"}},"required":["org","page"]}}]}}
+
+`
+
+	t.Run("no pinned arguments relays the stream byte for byte", func(t *testing.T) {
+		stream := "event: endpoint\ndata: /message?sessionId=abc\n\n" + toolsListEvent + ": keepalive\n\n"
+		rec := httptest.NewRecorder()
+
+		streamSSEResponse(rec, rec, strings.NewReader(stream), "test", nil)
+
+		assert.Equal(t, stream, rec.Body.String())
+	})
+
+	t.Run("strips the pinned property from a tools/list event", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+
+		streamSSEResponse(rec, rec, strings.NewReader(toolsListEvent), "test", pinnedargs.Set{"org": "12345"})
+
+		body := rec.Body.String()
+		assert.True(t, strings.HasPrefix(body, "event: message\ndata: "), "event field should be relayed first, got %q", body)
+		assert.NotContains(t, body, `"org"`)
+		assert.Contains(t, body, `"page"`)
+		assert.True(t, strings.HasSuffix(body, "\n\n"), "event should end with a blank line, got %q", body)
+	})
+
+	t.Run("relays events that carry no tool list", func(t *testing.T) {
+		stream := "event: endpoint\ndata: /message?sessionId=abc\n\n"
+		rec := httptest.NewRecorder()
+
+		streamSSEResponse(rec, rec, strings.NewReader(stream), "test", pinnedargs.Set{"org": "12345"})
+
+		assert.Equal(t, stream, rec.Body.String())
+	})
+
+	t.Run("emits a final event that has no trailing blank line", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+
+		streamSSEResponse(rec, rec, strings.NewReader(`data: {"jsonrpc":"2.0","id":1,"result":{}}`), "test", pinnedargs.Set{"org": "12345"})
+
+		assert.Equal(t, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n", rec.Body.String())
+	})
+
+	t.Run("reads a data line without a space after the colon", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+
+		streamSSEResponse(rec, rec, strings.NewReader("data:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"a\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"org\":{\"type\":\"string\"}}}}]}}\n\n"), "test", pinnedargs.Set{"org": "12345"})
+
+		assert.NotContains(t, rec.Body.String(), `"org"`)
+	})
+
+	t.Run("handles a payload larger than the scanner token limit", func(t *testing.T) {
+		var tools []string
+		for i := range 4000 {
+			tools = append(tools, fmt.Sprintf(`{"name":"tool_%d","inputSchema":{"type":"object","properties":{"org":{"type":"string"},"page":{"type":"integer"}}}}`, i))
+		}
+		payload := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"tools":[%s]}}`, strings.Join(tools, ","))
+		require.Greater(t, len(payload), bufio.MaxScanTokenSize)
+
+		rec := httptest.NewRecorder()
+		streamSSEResponse(rec, rec, strings.NewReader("data: "+payload+"\n\n"), "test", pinnedargs.Set{"org": "12345"})
+
+		assert.NotContains(t, rec.Body.String(), `"org"`)
+		assert.Contains(t, rec.Body.String(), `"tool_3999"`)
 	})
 }

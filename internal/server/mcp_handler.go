@@ -292,6 +292,8 @@ func (h *MCPHandler) forwardMessageToBackend(ctx context.Context, w http.Respons
 		return
 	}
 
+	body = pinnedArguments(config).RewriteRequestBody(body)
+
 	req, err := http.NewRequestWithContext(ctx, r.Method, backendURL, bytes.NewReader(body))
 	if err != nil {
 		log.LogErrorWithFields("mcp", "Failed to create backend request", map[string]any{

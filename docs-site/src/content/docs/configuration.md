@@ -302,6 +302,24 @@ Filter which tools are exposed to clients.
 
 `mode` is `"allow"` (only expose listed tools) or `"block"` (hide listed tools).
 
+### `options.pinnedArguments`
+
+Pin a tool-call argument to a fixed value. Some APIs scope every request to an account or organization and expect that identifier as a tool argument rather than a header, and there is only one correct value per deployment. Map the argument path to the value and mcp-front fills it in before forwarding the call, so a client can neither omit it nor send a different one.
+
+```json
+{
+  "options": {
+    "pinnedArguments": {
+      "headers.X-Account-Id": { "$env": "BILLING_ACCOUNT_ID" }
+    }
+  }
+}
+```
+
+A dot separates path segments, so `headers.X-Account-Id` addresses the `X-Account-Id` property of the `headers` object and creates that object when a call omits it. To pin a property whose own name contains a dot, escape it as `\.`. Values are plain strings or `{"$env": "VAR"}` references, resolved when the config loads.
+
+mcp-front also removes each pinned property from the schemas it advertises, along with its entry in `required`, so the model never sees an argument it cannot get right. An object left with no properties is removed too. Pin arguments on the backend server rather than on an aggregate, and note that inline servers declare their own arguments and cannot use this.
+
 ### Aggregate servers
 
 Set `type` to `"aggregate"` to combine tools from multiple backends into one endpoint. See [Server Types](/mcp-front/server-types/#aggregate-servers) for details.

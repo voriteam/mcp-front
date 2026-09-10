@@ -191,3 +191,7 @@ All server types support `serviceAuths` for connection authentication and `requi
 ## Tool filtering
 
 Any server type supports filtering which tools are exposed to clients. See [Configuration](/mcp-front/configuration/#optionstoolfilter) for details and examples.
+
+## Pinned arguments
+
+Any server type but inline can pin a tool-call argument to a fixed value, which mcp-front fills in and hides from the advertised schema. See [Configuration](/mcp-front/configuration/#optionspinnedarguments) for details and examples.

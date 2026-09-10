@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/stainless-api/mcp-front/internal/config"
@@ -23,6 +24,9 @@ func forwardStreamablePostToBackend(ctx context.Context, w http.ResponseWriter, 
 		jsonrpc.WriteError(w, nil, jsonrpc.InternalError, "Failed to read request")
 		return
 	}
+
+	pinned := pinnedArguments(config)
+	body = pinned.RewriteRequestBody(body)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.URL, bytes.NewReader(body))
 	if err != nil {
@@ -84,7 +88,28 @@ func forwardStreamablePostToBackend(ctx context.Context, w http.ResponseWriter, 
 			return
 		}
 
-		streamSSEResponse(w, flusher, resp.Body, "streamable_proxy")
+		streamSSEResponse(w, flusher, resp.Body, "streamable_proxy", pinned)
+	} else if len(pinned) > 0 {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.LogErrorWithFields("streamable_proxy", "Failed to read response body", map[string]any{
+				"error": err.Error(),
+			})
+			jsonrpc.WriteError(w, nil, jsonrpc.InternalError, "backend request failed")
+			return
+		}
+		respBody = pinned.RewriteResponseBody(respBody)
+
+		maps.Copy(w.Header(), resp.Header)
+		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+
+		w.WriteHeader(resp.StatusCode)
+
+		if _, err := w.Write(respBody); err != nil {
+			log.LogErrorWithFields("streamable_proxy", "Failed to write response body", map[string]any{
+				"error": err.Error(),
+			})
+		}
 	} else {
 		maps.Copy(w.Header(), resp.Header)
 

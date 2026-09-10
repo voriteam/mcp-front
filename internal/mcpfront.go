@@ -464,7 +464,7 @@ func buildHTTPHandler(
 		builtinRegistry["onboarding"] = tools
 		break
 	}
-	createTransport := builtin.TransportCreator(builtinRegistry, client.DefaultTransportCreator)
+	createTransport := client.WithPinnedArguments(builtin.TransportCreator(builtinRegistry, client.DefaultTransportCreator))
 
 	for serverName, serverConfig := range cfg.MCPServers {
 		if !serverConfig.IsAggregate() {

@@ -857,3 +857,104 @@ func TestValidateConfig_BuiltinServer(t *testing.T) {
 		assert.Contains(t, err.Error(), "cannot have command or url")
 	})
 }
+
+func TestValidateConfig_PinnedArguments(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		expectError string
+	}{
+		{
+			name: "valid_pinned_argument",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"billing": {
+						Type: ServerTypeDirect, TransportType: MCPClientTypeStreamable, URL: "https://example.com/mcp",
+						Options: &Options{PinnedArguments: map[string]string{"headers.X-Account-Id": "12345"}},
+					},
+				},
+			},
+		},
+		{
+			name: "valid_on_stdio",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"billing": {
+						Type: ServerTypeDirect, TransportType: MCPClientTypeStdio, Command: "billing-mcp",
+						Options: &Options{PinnedArguments: map[string]string{"org": "12345"}},
+					},
+				},
+			},
+		},
+		{
+			name: "empty_path",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"billing": {
+						Type: ServerTypeDirect, TransportType: MCPClientTypeStreamable, URL: "https://example.com/mcp",
+						Options: &Options{PinnedArguments: map[string]string{"": "12345"}},
+					},
+				},
+			},
+			expectError: "pinnedArguments path that is empty",
+		},
+		{
+			name: "empty_path_segment",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"billing": {
+						Type: ServerTypeDirect, TransportType: MCPClientTypeStreamable, URL: "https://example.com/mcp",
+						Options: &Options{PinnedArguments: map[string]string{"headers..X-Account-Id": "12345"}},
+					},
+				},
+			},
+			expectError: "with an empty segment",
+		},
+		{
+			name: "rejected_on_inline",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"billing": {
+						Type: ServerTypeDirect, TransportType: MCPClientTypeInline, InlineConfig: []byte(`{"tools":[]}`),
+						Options: &Options{PinnedArguments: map[string]string{"org": "12345"}},
+					},
+				},
+			},
+			expectError: "inline transport cannot use pinnedArguments",
+		},
+		{
+			name: "rejected_on_aggregate",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"billing": {
+						Type: ServerTypeDirect, TransportType: MCPClientTypeStreamable, URL: "https://example.com/mcp",
+					},
+					"all": {
+						Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Servers: []string{"billing"},
+						Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
+						Options:   &Options{PinnedArguments: map[string]string{"org": "12345"}},
+					},
+				},
+			},
+			expectError: "aggregate server all cannot use pinnedArguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(tt.config)
+			if tt.expectError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectError)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

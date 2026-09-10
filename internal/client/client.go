@@ -69,7 +69,7 @@ func NewMCPClientWith(name string, conf *config.MCPClientConfig, createTransport
 		name:            name,
 		needPing:        needPing,
 		needManualStart: needManualStart,
-		client:          transport,
+		client:          withPinnedArguments(transport, conf),
 		options:         conf.Options,
 	}, nil
 }

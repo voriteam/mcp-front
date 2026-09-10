@@ -83,6 +83,24 @@ const server = http.createServer((req, res) => {
                     },
                     required: ['text']
                   }
+                },
+                {
+                  name: 'echo_arguments',
+                  description: 'Echo the received arguments back as JSON',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      text: { type: 'string' },
+                      headers: {
+                        type: 'object',
+                        properties: {
+                          'X-Account-Id': { type: 'string' }
+                        },
+                        required: ['X-Account-Id']
+                      }
+                    },
+                    required: ['text', 'headers']
+                  }
                 }
               ]
             }
@@ -91,7 +109,17 @@ const server = http.createServer((req, res) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(response));
         } else if (request.method === 'tools/call') {
-          if (request.params.name === 'get_time') {
+          if (request.params.name === 'echo_arguments') {
+            const response = {
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                content: [{ type: 'text', text: JSON.stringify(request.params.arguments || {}) }]
+              }
+            };
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(response));
+          } else if (request.params.name === 'get_time') {
             const response = {
               jsonrpc: '2.0',
               id: request.id,

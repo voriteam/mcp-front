@@ -91,7 +91,7 @@ See the **[Quickstart](https://stainless-api.github.io/mcp-front/quickstart/)** 
 
 **[Identity Providers](https://stainless-api.github.io/mcp-front/identity-providers/)** — Set up Google, Azure AD, GitHub, or any OIDC provider for production OAuth.
 
-**[Configuration](https://stainless-api.github.io/mcp-front/configuration/)** — All config options including Firestore persistence, HTTPS, and per-user service authentication.
+**[Configuration](https://stainless-api.github.io/mcp-front/configuration/)** — All config options including Firestore persistence, HTTPS, per-user service authentication, tool filtering, and pinning a tool argument to a fixed value.
 
 **[Server Types](https://stainless-api.github.io/mcp-front/server-types/)** — Stdio, SSE, streamable HTTP, inline tools, and aggregate endpoints.
 

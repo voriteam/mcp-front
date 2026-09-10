@@ -1181,3 +1181,132 @@ func TestValidateFile_ToolFilterMode(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateFile_PinnedArguments(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		wantErrors []string
+	}{
+		{
+			name: "valid_pinned_arguments",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"billing": {
+						"transportType": "streamable-http",
+						"url": "https://example.com/mcp",
+						"options": {"pinnedArguments": {"headers.X-Account-Id": "12345"}}
+					}
+				}
+			}`,
+			wantErrors: nil,
+		},
+		{
+			name: "empty_path",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"billing": {
+						"transportType": "streamable-http",
+						"url": "https://example.com/mcp",
+						"options": {"pinnedArguments": {"": "12345"}}
+					}
+				}
+			}`,
+			wantErrors: []string{"argument path must not be empty"},
+		},
+		{
+			name: "empty_path_segment",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"billing": {
+						"transportType": "streamable-http",
+						"url": "https://example.com/mcp",
+						"options": {"pinnedArguments": {"headers..X-Account-Id": "12345"}}
+					}
+				}
+			}`,
+			wantErrors: []string{"has an empty segment"},
+		},
+		{
+			name: "not_an_object",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"billing": {
+						"transportType": "streamable-http",
+						"url": "https://example.com/mcp",
+						"options": {"pinnedArguments": ["headers.X-Account-Id"]}
+					}
+				}
+			}`,
+			wantErrors: []string{"must be an object mapping an argument path to a value"},
+		},
+		{
+			name: "rejected_on_inline",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"billing": {
+						"transportType": "inline",
+						"inline": {"tools": []},
+						"options": {"pinnedArguments": {"org": "12345"}}
+					}
+				}
+			}`,
+			wantErrors: []string{"not allowed on inline transport"},
+		},
+		{
+			name: "rejected_on_aggregate",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"billing": {
+						"transportType": "streamable-http",
+						"url": "https://example.com/mcp"
+					},
+					"all": {
+						"type": "aggregate",
+						"transportType": "sse",
+						"servers": ["billing"],
+						"options": {"pinnedArguments": {"org": "12345"}}
+					}
+				}
+			}`,
+			wantErrors: []string{"not allowed on aggregate servers"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpFile := filepath.Join(t.TempDir(), "config.json")
+			require.NoError(t, os.WriteFile(tmpFile, []byte(tt.config), 0644))
+
+			result, err := ValidateFile(tmpFile)
+			require.NoError(t, err)
+
+			if tt.wantErrors == nil {
+				assert.True(t, result.IsValid(), "Expected no errors, got: %v", result.Errors)
+			} else {
+				for _, wantErr := range tt.wantErrors {
+					found := false
+					for _, gotErr := range result.Errors {
+						if strings.Contains(gotErr.Message, wantErr) {
+							found = true
+							break
+						}
+					}
+					assert.True(t, found, "Expected error containing '%s', got: %v", wantErr, result.Errors)
+				}
+			}
+		})
+	}
+}

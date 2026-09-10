@@ -6,10 +6,12 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/stainless-api/mcp-front/internal/log"
+	"github.com/stainless-api/mcp-front/internal/pinnedargs"
 )
 
 var validServerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -361,6 +363,9 @@ func validateMCPServer(name string, server *MCPClientConfig) error {
 		if server.Discovery == nil {
 			return fmt.Errorf("aggregate server %s is missing discovery configuration", name)
 		}
+		if server.Options != nil && len(server.Options.PinnedArguments) > 0 {
+			return fmt.Errorf("aggregate server %s cannot use pinnedArguments (set it on the backend server instead)", name)
+		}
 		return nil
 	}
 
@@ -413,6 +418,10 @@ func validateMCPServer(name string, server *MCPClientConfig) error {
 		return err
 	}
 
+	if err := validatePinnedArguments(name, server); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -428,6 +437,24 @@ func validateToolFilter(name string, server *MCPClientConfig) error {
 		mode := ToolFilterMode(strings.ToLower(string(filter.Mode)))
 		if mode != ToolFilterModeAllow && mode != ToolFilterModeBlock {
 			return fmt.Errorf("server %s has invalid toolFilter mode '%s' (must be 'allow' or 'block')", name, filter.Mode)
+		}
+	}
+	return nil
+}
+
+func validatePinnedArguments(name string, server *MCPClientConfig) error {
+	if server.Options == nil || len(server.Options.PinnedArguments) == 0 {
+		return nil
+	}
+	if server.TransportType == MCPClientTypeInline {
+		return fmt.Errorf("server %s with inline transport cannot use pinnedArguments (inline tools declare their own arguments)", name)
+	}
+	for path := range server.Options.PinnedArguments {
+		if path == "" {
+			return fmt.Errorf("server %s has a pinnedArguments path that is empty", name)
+		}
+		if slices.Contains(pinnedargs.SplitPath(path), "") {
+			return fmt.Errorf("server %s has pinnedArguments path '%s' with an empty segment", name, path)
 		}
 	}
 	return nil

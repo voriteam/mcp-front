@@ -639,3 +639,84 @@ func TestMCPClientConfig_DirectTypeDefault(t *testing.T) {
 	assert.Equal(t, ServerTypeDirect, cfg.Type)
 	assert.False(t, cfg.IsAggregate())
 }
+
+func TestUnmarshalOptionsPinnedArguments(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		envVars       map[string]string
+		expected      map[string]string
+		expectedError string
+	}{
+		{
+			name:     "plain string",
+			input:    `{"pinnedArguments": {"headers.X-Account-Id": "12345"}}`,
+			expected: map[string]string{"headers.X-Account-Id": "12345"},
+		},
+		{
+			name:     "env reference",
+			input:    `{"pinnedArguments": {"headers.X-Account-Id": {"$env": "TEST_ACCOUNT_ID"}}}`,
+			envVars:  map[string]string{"TEST_ACCOUNT_ID": "12345"},
+			expected: map[string]string{"headers.X-Account-Id": "12345"},
+		},
+		{
+			name:          "missing env var",
+			input:         `{"pinnedArguments": {"headers.X-Account-Id": {"$env": "MISSING_ACCOUNT_ID"}}}`,
+			expectedError: "environment variable MISSING_ACCOUNT_ID not set",
+		},
+		{
+			name:          "user token reference is rejected",
+			input:         `{"pinnedArguments": {"headers.X-Account-Id": {"$userToken": "{{token}}"}}}`,
+			expectedError: "cannot use a $userToken reference",
+		},
+		{
+			name:          "unknown reference type",
+			input:         `{"pinnedArguments": {"headers.X-Account-Id": {"$unknown": "value"}}}`,
+			expectedError: "unknown reference type",
+		},
+		{
+			name:     "absent leaves the map nil",
+			input:    `{"toolFilter": {"mode": "allow", "list": ["query"]}}`,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.envVars {
+				t.Setenv(k, v)
+			}
+
+			var options Options
+			err := json.Unmarshal([]byte(tt.input), &options)
+
+			if tt.expectedError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectedError)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, options.PinnedArguments)
+		})
+	}
+}
+
+func TestUnmarshalOptionsPinnedArgumentsThroughServerConfig(t *testing.T) {
+	t.Setenv("TEST_ACCOUNT_ID", "12345")
+
+	var cfg MCPClientConfig
+	err := json.Unmarshal([]byte(`{
+		"transportType": "streamable-http",
+		"url": "https://example.com/mcp",
+		"options": {
+			"toolFilter": {"mode": "block", "list": ["drop"]},
+			"pinnedArguments": {"headers.X-Account-Id": {"$env": "TEST_ACCOUNT_ID"}}
+		}
+	}`), &cfg)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.Options)
+	assert.Equal(t, map[string]string{"headers.X-Account-Id": "12345"}, cfg.Options.PinnedArguments)
+	assert.Equal(t, ToolFilterModeBlock, cfg.Options.ToolFilter.Mode)
+}

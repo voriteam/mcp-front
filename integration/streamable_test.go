@@ -53,7 +53,7 @@ func TestStreamableServerIntegration(t *testing.T) {
 		// Verify tools are present
 		if resultData, ok := result["result"].(map[string]any); ok {
 			if tools, ok := resultData["tools"].([]any); ok {
-				assert.Equal(t, 2, len(tools), "Expected 2 tools")
+				assert.Equal(t, 3, len(tools), "Expected 3 tools")
 			}
 		}
 	})

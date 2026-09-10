@@ -80,6 +80,11 @@ type ToolFilterConfig struct {
 type Options struct {
 	AuthTokens []string          `json:"authTokens,omitempty"`
 	ToolFilter *ToolFilterConfig `json:"toolFilter,omitempty"`
+
+	// PinnedArguments maps a dotted tool-call argument path to the fixed value
+	// mcp-front sets there before forwarding the call. The pinned property is
+	// removed from the tool schemas the server advertises.
+	PinnedArguments map[string]string `json:"pinnedArguments,omitempty"`
 }
 
 // ServiceAuthType represents the type of service authentication

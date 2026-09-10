@@ -13,6 +13,40 @@ import (
 	"github.com/stainless-api/mcp-front/internal/log"
 )
 
+// UnmarshalJSON resolves {"$env": "VAR"} references inside options. Stock
+// unmarshaling would reject them, since the resolved values are plain strings.
+func (o *Options) UnmarshalJSON(data []byte) error {
+	type rawOptions struct {
+		AuthTokens      []string                   `json:"authTokens,omitempty"`
+		ToolFilter      *ToolFilterConfig          `json:"toolFilter,omitempty"`
+		PinnedArguments map[string]json.RawMessage `json:"pinnedArguments,omitempty"`
+	}
+
+	var raw rawOptions
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	o.AuthTokens = raw.AuthTokens
+	o.ToolFilter = raw.ToolFilter
+
+	if len(raw.PinnedArguments) == 0 {
+		o.PinnedArguments = nil
+		return nil
+	}
+	values, needsToken, err := ParseConfigValueMap(raw.PinnedArguments)
+	if err != nil {
+		return fmt.Errorf("parsing pinnedArguments: %w", err)
+	}
+	for path := range values {
+		if needsToken[path] {
+			return fmt.Errorf("pinnedArguments[%q] cannot use a $userToken reference", path)
+		}
+	}
+	o.PinnedArguments = values
+	return nil
+}
+
 // UnmarshalJSON implements custom unmarshaling for MCPClientConfig
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	// Use a raw type to avoid recursion

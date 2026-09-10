@@ -1,15 +1,18 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/ioutil"
 	jsonwriter "github.com/stainless-api/mcp-front/internal/json"
 	"github.com/stainless-api/mcp-front/internal/log"
+	"github.com/stainless-api/mcp-front/internal/pinnedargs"
 )
 
 // forwardSSEToBackend forwards an SSE request to the backend SSE server
@@ -103,10 +106,17 @@ func forwardSSEToBackend(ctx context.Context, w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	streamSSEResponse(w, flusher, resp.Body, "sse_proxy")
+	streamSSEResponse(w, flusher, resp.Body, "sse_proxy", pinnedArguments(config))
 }
 
-func streamSSEResponse(w http.ResponseWriter, flusher http.Flusher, body io.Reader, logPrefix string) {
+// streamSSEResponse relays the backend's event stream to the client. With no
+// pinned arguments it copies bytes as they arrive; otherwise it reframes the
+// stream so tool schemas can be rewritten, which costs one event of buffering.
+func streamSSEResponse(w http.ResponseWriter, flusher http.Flusher, body io.Reader, logPrefix string, pinned pinnedargs.Set) {
+	if len(pinned) > 0 {
+		rewriteSSEResponse(w, flusher, body, logPrefix, pinned)
+		return
+	}
 	buf := make([]byte, 4096)
 	for {
 		n, err := body.Read(buf)
@@ -125,6 +135,64 @@ func streamSSEResponse(w http.ResponseWriter, flusher http.Flusher, body io.Read
 					"error": err.Error(),
 				})
 			}
+			return
+		}
+	}
+}
+
+// rewriteSSEResponse accumulates one event at a time and rewrites the tool
+// schemas in its payload. Every line that is not part of a data payload —
+// comments, event and id fields — is relayed byte for byte.
+//
+// bufio.Reader rather than bufio.Scanner: a tools/list payload routinely
+// exceeds the scanner's token limit.
+func rewriteSSEResponse(w http.ResponseWriter, flusher http.Flusher, body io.Reader, logPrefix string, pinned pinnedargs.Set) {
+	reader := bufio.NewReader(body)
+	var event []string
+
+	flushEvent := func(terminator string) bool {
+		if len(event) > 0 {
+			payload := pinned.RewriteResponseBody([]byte(strings.Join(event, "\n")))
+			for _, line := range strings.Split(string(payload), "\n") {
+				if _, err := w.Write([]byte("data: " + line + "\n")); err != nil {
+					return false
+				}
+			}
+			event = event[:0]
+		}
+		if _, err := w.Write([]byte(terminator)); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			trimmed := strings.TrimRight(line, "\r\n")
+			if data, ok := strings.CutPrefix(trimmed, "data:"); ok {
+				event = append(event, strings.TrimPrefix(data, " "))
+			} else if trimmed == "" {
+				if !flushEvent(line) {
+					log.LogDebugWithFields(logPrefix, "Client disconnected", nil)
+					return
+				}
+			} else {
+				// A field ordered before this event's data lines.
+				if _, writeErr := w.Write([]byte(line)); writeErr != nil {
+					log.LogDebugWithFields(logPrefix, "Client disconnected", nil)
+					return
+				}
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				log.LogErrorWithFields(logPrefix, "Error reading from backend", map[string]any{
+					"error": err.Error(),
+				})
+			}
+			flushEvent("")
 			return
 		}
 	}

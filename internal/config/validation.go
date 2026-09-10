@@ -6,8 +6,11 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/stainless-api/mcp-front/internal/pinnedargs"
 )
 
 var validToolNameChars = regexp.MustCompile(`^[A-Za-z0-9_\-.]+$`)
@@ -447,6 +450,9 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 			if toolFilter, ok := options["toolFilter"].(map[string]any); ok {
 				validateToolFilterStructure(toolFilter, fmt.Sprintf("mcpServers.%s.options.toolFilter", name), result)
 			}
+			if pinned, ok := options["pinnedArguments"]; ok {
+				validatePinnedArgumentsStructure(pinned, transportType, fmt.Sprintf("mcpServers.%s.options.pinnedArguments", name), result)
+			}
 		}
 	}
 }
@@ -469,6 +475,41 @@ func validateToolFilterStructure(filter map[string]any, path string, result *Val
 	}
 }
 
+func validatePinnedArgumentsStructure(pinned any, transportType, path string, result *ValidationResult) {
+	paths, ok := pinned.(map[string]any)
+	if !ok {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    path,
+			Message: "pinnedArguments must be an object mapping an argument path to a value",
+		})
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+	if transportType == "inline" {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    path,
+			Message: "pinnedArguments is not allowed on inline transport (inline tools declare their own arguments)",
+		})
+	}
+	for argPath := range paths {
+		if argPath == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    path,
+				Message: "argument path must not be empty",
+			})
+			continue
+		}
+		if slices.Contains(pinnedargs.SplitPath(argPath), "") {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    path + "." + argPath,
+				Message: fmt.Sprintf("argument path '%s' has an empty segment", argPath),
+			})
+		}
+	}
+}
+
 // validateAggregateServerStructure checks aggregate server configuration
 func validateAggregateServerStructure(name string, srv map[string]any, allServers map[string]any, aggregateNames map[string]bool, result *ValidationResult) {
 	path := fmt.Sprintf("mcpServers.%s", name)
@@ -480,6 +521,15 @@ func validateAggregateServerStructure(name string, srv map[string]any, allServer
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    path + "." + field,
 				Message: fmt.Sprintf("%s is not allowed on aggregate servers", field),
+			})
+		}
+	}
+
+	if options, ok := srv["options"].(map[string]any); ok {
+		if pinned, ok := options["pinnedArguments"].(map[string]any); ok && len(pinned) > 0 {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    path + ".options.pinnedArguments",
+				Message: "pinnedArguments is not allowed on aggregate servers (set it on the backend server instead)",
 			})
 		}
 	}

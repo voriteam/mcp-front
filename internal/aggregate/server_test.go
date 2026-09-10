@@ -1705,3 +1705,78 @@ func TestBuiltinBackendCarriesUserEmail(t *testing.T) {
 			"createConn must stamp the caller onto a builtin's config")
 	}
 }
+
+func TestPinnedArgumentsThroughAggregate(t *testing.T) {
+	var forwarded mcp.CallToolRequest
+	billingMock := &mockTransport{
+		tools: []mcp.Tool{
+			{
+				Name: "list_invoices",
+				InputSchema: mcp.ToolInputSchema{
+					Type: "object",
+					Properties: map[string]any{
+						"headers": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"X-Account-Id": map[string]any{"type": "string"}},
+							"required":   []any{"X-Account-Id"},
+						},
+						"page": map[string]any{"type": "integer"},
+					},
+					Required: []string{"headers", "page"},
+				},
+			},
+		},
+		callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			forwarded = req
+			return &mcp.CallToolResult{}, nil
+		},
+	}
+
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"billing": {
+			TransportType: config.MCPClientTypeStreamable,
+			URL:           "http://localhost/billing",
+			Options:       &config.Options{PinnedArguments: map[string]string{"headers.X-Account-Id": "12345"}},
+		},
+	}
+
+	factory := client.WithPinnedArguments(func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		return billingMock, nil
+	})
+
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	tools, err := srv.getTools(context.Background(), "user@test.com")
+	require.NoError(t, err)
+	require.Len(t, tools["billing"], 1)
+
+	schema := tools["billing"][0].InputSchema
+	assert.NotContains(t, schema.Properties, "headers", "the pinned property's only parent should be gone")
+	assert.Contains(t, schema.Properties, "page")
+	assert.Equal(t, []string{"page"}, schema.Required)
+
+	var request mcp.CallToolRequest
+	request.Params.Name = PrefixToolName("billing", "list_invoices", srv.delimiter)
+	request.Params.Arguments = map[string]any{"page": float64(2)}
+
+	_, err = srv.makeToolHandler("user@test.com", "billing")(context.Background(), request)
+	require.NoError(t, err)
+
+	assert.Equal(t, "list_invoices", forwarded.Params.Name)
+	assert.Equal(t, map[string]any{
+		"page":    float64(2),
+		"headers": map[string]any{"X-Account-Id": "12345"},
+	}, forwarded.GetArguments())
+}
