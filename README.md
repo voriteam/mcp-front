@@ -95,7 +95,7 @@ See the **[Quickstart](https://stainless-api.github.io/mcp-front/quickstart/)** 
 
 **[Server Types](https://stainless-api.github.io/mcp-front/server-types/)** — Stdio, SSE, streamable HTTP, inline tools, and aggregate endpoints.
 
-**[Service Authentication](https://stainless-api.github.io/mcp-front/service-authentication/)** — Per-user tokens for services like Notion, Linear, and other OAuth or API key services.
+**[Service Authentication](https://stainless-api.github.io/mcp-front/service-authentication/)** — Per-user tokens for services like Notion, Linear, and other OAuth or API key services. An OAuth-protected remote server needs only its URL: mcp-front reads the authorization and token endpoints, the client registration and the scopes off what the backend advertises, and you supply them in config only when a provider cannot be discovered or you want different values.
 
 **[Architecture](https://stainless-api.github.io/mcp-front/architecture/)** — Per-service audience validation, token flow, and MCP spec compliance.
 

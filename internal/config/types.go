@@ -238,6 +238,16 @@ type MCPClientConfig struct {
 	StreamlineResponses bool             `json:"streamlineResponses,omitempty"`
 }
 
+// CanDiscoverOAuth reports whether the server exposes an endpoint mcp-front can read
+// an authorization server from, per RFC 9728. A URL carrying a user token cannot be
+// probed unauthenticated.
+func (c *MCPClientConfig) CanDiscoverOAuth() bool {
+	if c.URL == "" || c.URLNeedsToken {
+		return false
+	}
+	return c.TransportType == MCPClientTypeSSE || c.TransportType == MCPClientTypeStreamable
+}
+
 // ClientCredentialsConfig configures OAuth2 client credentials grant (RFC 6749 Section 4.4).
 type ClientCredentialsConfig struct {
 	ClientID     Secret   `json:"-"`

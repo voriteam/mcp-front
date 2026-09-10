@@ -857,3 +857,120 @@ func TestValidateConfig_BuiltinServer(t *testing.T) {
 		assert.Contains(t, err.Error(), "cannot have command or url")
 	})
 }
+
+func TestValidateConfig_OAuthEndpointDiscovery(t *testing.T) {
+	newConfig := func(server *MCPClientConfig) *Config {
+		return &Config{
+			Proxy: ProxyConfig{
+				BaseURL: "https://test.example.com",
+				Addr:    ":8080",
+				Auth: &OAuthAuthConfig{
+					Kind:   "oauth",
+					Issuer: "https://auth.example.com",
+					IDP: IDPConfig{
+						Provider:     "google",
+						ClientID:     "test-client",
+						ClientSecret: "test-secret",
+						RedirectURI:  "https://test.example.com/callback",
+					},
+					JWTSecret:               "test-jwt-secret-must-be-32-bytes-long",
+					EncryptionKey:           "test-encryption-key-32-bytes-ok!",
+					AllowedDomains:          []string{"example.com"},
+					AllowedOrigins:          []string{"https://test.example.com"},
+					AllowAnyRedirectURIHost: true,
+					TokenTTL:                time.Hour,
+					RefreshTokenTTL:         30 * 24 * time.Hour,
+				},
+			},
+			MCPServers: map[string]*MCPClientConfig{"someserver": server},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		server      *MCPClientConfig
+		expectError string
+	}{
+		{
+			name: "remote_server_may_omit_the_endpoints",
+			server: &MCPClientConfig{
+				TransportType:     MCPClientTypeStreamable,
+				URL:               "https://example.com/mcp/abc123/message",
+				RequiresUserToken: true,
+				UserAuthentication: &UserAuthentication{
+					Type:        UserAuthTypeOAuth,
+					DisplayName: "Some Server",
+				},
+			},
+			expectError: "",
+		},
+		{
+			name: "stdio_server_must_supply_the_endpoints",
+			server: &MCPClientConfig{
+				TransportType:     MCPClientTypeStdio,
+				Command:           "npx",
+				RequiresUserToken: true,
+				UserAuthentication: &UserAuthentication{
+					Type:        UserAuthTypeOAuth,
+					DisplayName: "Some Server",
+				},
+			},
+			expectError: "no url to discover them from",
+		},
+		{
+			name: "a_url_needing_a_user_token_cannot_be_probed",
+			server: &MCPClientConfig{
+				TransportType:     MCPClientTypeStreamable,
+				URL:               "https://example.com/mcp/{{token}}/message",
+				URLNeedsToken:     true,
+				RequiresUserToken: true,
+				UserAuthentication: &UserAuthentication{
+					Type:        UserAuthTypeOAuth,
+					DisplayName: "Some Server",
+				},
+			},
+			expectError: "no url to discover them from",
+		},
+		{
+			name: "one_endpoint_alone_is_not_enough_without_discovery",
+			server: &MCPClientConfig{
+				TransportType:     MCPClientTypeStdio,
+				Command:           "npx",
+				RequiresUserToken: true,
+				UserAuthentication: &UserAuthentication{
+					Type:             UserAuthTypeOAuth,
+					DisplayName:      "Some Server",
+					AuthorizationURL: "https://example.com/oauth/authorize",
+				},
+			},
+			expectError: "no url to discover them from",
+		},
+		{
+			name: "both_endpoints_satisfy_a_stdio_server",
+			server: &MCPClientConfig{
+				TransportType:     MCPClientTypeStdio,
+				Command:           "npx",
+				RequiresUserToken: true,
+				UserAuthentication: &UserAuthentication{
+					Type:             UserAuthTypeOAuth,
+					DisplayName:      "Some Server",
+					AuthorizationURL: "https://example.com/oauth/authorize",
+					TokenURL:         "https://example.com/oauth/token",
+				},
+			},
+			expectError: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(newConfig(tt.server))
+			if tt.expectError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectError)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

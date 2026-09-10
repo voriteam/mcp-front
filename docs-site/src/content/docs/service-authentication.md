@@ -28,6 +28,25 @@ Set `requiresUserToken: true` and add a `userAuthentication` object specifying t
 
 For services with OAuth 2.0 support. MCP Front handles the token exchange and refresh cycle.
 
+A remote server usually needs nothing beyond its URL. MCP Front asks the backend for an authentication challenge, follows it to the resource's metadata ([RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728)), and reads the authorization and token endpoints, the registration endpoint and the scopes off the authorization server that names ([RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414)).
+
+```json
+"someserver": {
+  "transportType": "streamable-http",
+  "url": "https://example.com/mcp/abc123/message",
+  "requiresUserToken": true,
+  "userAuthentication": {
+    "type": "oauth",
+    "displayName": "Some Server"
+  },
+  "headers": {
+    "Authorization": {"$userToken": "Bearer {{token}}"}
+  }
+}
+```
+
+Supply the endpoints yourself when the backend advertises nothing to discover, when it is a stdio server with no URL to ask, or when you want different values than it advertises.
+
 ```json
 "stainless": {
   "transportType": "stdio",
@@ -46,7 +65,7 @@ For services with OAuth 2.0 support. MCP Front handles the token exchange and re
 }
 ```
 
-Fields: `displayName` (shown on the interstitial page), `clientId` and `clientSecret` (your OAuth app credentials), `authorizationUrl` and `tokenUrl` (service OAuth endpoints), `scopes` (permissions to request).
+Fields: `displayName` (shown on the interstitial page), `clientId` and `clientSecret` (your OAuth app credentials, otherwise obtained by dynamic client registration), `authorizationUrl` and `tokenUrl` (service OAuth endpoints), `scopes` (permissions to request). Everything but `displayName` is optional for a discoverable server, and anything you do set overrides what the backend advertises.
 
 ### Type: `manual`
 

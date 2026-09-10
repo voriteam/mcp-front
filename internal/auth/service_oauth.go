@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stainless-api/mcp-front/internal/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/storage"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -41,6 +43,9 @@ type ServiceOAuthClient struct {
 	baseURL     string
 	httpClient  *http.Client
 	stateSigner crypto.TokenSigner
+
+	discoveryCache sync.Map
+	discoveryGroup singleflight.Group
 }
 
 // ServiceOAuthState stores OAuth flow state for external service authentication (mcp-front → external service)
@@ -68,14 +73,32 @@ func NewServiceOAuthClient(store serviceStorage, baseURL string, signingKey []by
 	}
 }
 
+// resolvedOAuth is the effective OAuth configuration for a service: config values
+// where the operator supplied them, discovered values everywhere else.
+type resolvedOAuth struct {
+	clientID         string
+	clientSecret     string
+	authorizationURL string
+	tokenURL         string
+	registrationURL  string
+	issuer           string
+	scopes           []string
+	discovered       bool
+}
+
 // getOAuth2Config builds an oauth2.Config for the given service, performing dynamic
 // client registration if no clientId is configured.
-func (c *ServiceOAuthClient) getOAuth2Config(ctx context.Context, serviceName string, auth *config.UserAuthentication) (*oauth2.Config, error) {
-	clientID := string(auth.ClientID)
-	clientSecret := string(auth.ClientSecret)
+func (c *ServiceOAuthClient) getOAuth2Config(ctx context.Context, serviceName string, serverConfig *config.MCPClientConfig) (*oauth2.Config, error) {
+	resolved, err := c.resolveOAuth(ctx, serviceName, serverConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	clientID := resolved.clientID
+	clientSecret := resolved.clientSecret
 
 	if clientID == "" {
-		reg, err := c.getOrRegisterClient(ctx, serviceName, auth)
+		reg, err := c.getOrRegisterClient(ctx, serviceName, resolved)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic client registration failed: %w", err)
 		}
@@ -87,16 +110,105 @@ func (c *ServiceOAuthClient) getOAuth2Config(ctx context.Context, serviceName st
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  auth.AuthorizationURL,
-			TokenURL: auth.TokenURL,
+			AuthURL:  resolved.authorizationURL,
+			TokenURL: resolved.tokenURL,
 		},
 		RedirectURL: fmt.Sprintf("%s/oauth/callback/%s", c.baseURL, serviceName),
-		Scopes:      auth.Scopes,
+		Scopes:      resolved.scopes,
 	}, nil
 }
 
+// Discovery also runs when only the client credentials are missing, because the
+// registration endpoint lives at the issuer, which need not share a host with the
+// authorization endpoint the config names.
+func (c *ServiceOAuthClient) resolveOAuth(ctx context.Context, serviceName string, serverConfig *config.MCPClientConfig) (*resolvedOAuth, error) {
+	auth := serverConfig.UserAuthentication
+	resolved := &resolvedOAuth{
+		clientID:         string(auth.ClientID),
+		clientSecret:     string(auth.ClientSecret),
+		authorizationURL: auth.AuthorizationURL,
+		tokenURL:         auth.TokenURL,
+		scopes:           auth.Scopes,
+	}
+
+	endpointsConfigured := resolved.authorizationURL != "" && resolved.tokenURL != ""
+	if endpointsConfigured && resolved.clientID != "" {
+		return resolved, nil
+	}
+
+	discovered, err := c.discover(ctx, serviceName, serverConfig)
+	if err != nil {
+		if !endpointsConfigured {
+			return nil, err
+		}
+		log.LogInfoWithFields("service_oauth", "Registering against the configured authorization endpoint's own origin", map[string]any{
+			"service": serviceName,
+			"reason":  err.Error(),
+		})
+		return resolved, nil
+	}
+
+	if resolved.authorizationURL == "" {
+		resolved.authorizationURL = discovered.AuthorizationURL
+	}
+	if resolved.tokenURL == "" {
+		resolved.tokenURL = discovered.TokenURL
+	}
+	if len(resolved.scopes) == 0 {
+		resolved.scopes = discovered.Scopes
+	}
+	resolved.registrationURL = discovered.RegistrationURL
+	resolved.issuer = discovered.Issuer
+	resolved.discovered = true
+
+	if resolved.authorizationURL == "" || resolved.tokenURL == "" {
+		return nil, fmt.Errorf("authorization server %s advertises no authorization_endpoint or token_endpoint: set authorizationUrl and tokenUrl for service %s", discovered.Issuer, serviceName)
+	}
+
+	return resolved, nil
+}
+
+func (c *ServiceOAuthClient) discover(ctx context.Context, serviceName string, serverConfig *config.MCPClientConfig) (*discoveredOAuth, error) {
+	if cached, ok := c.discoveryCache.Load(serviceName); ok {
+		return cached.(*discoveredOAuth), nil
+	}
+
+	if !serverConfig.CanDiscoverOAuth() {
+		return nil, fmt.Errorf("service %s has no discoverable url: set userAuthentication.authorizationUrl and tokenUrl", serviceName)
+	}
+
+	result, err, _ := c.discoveryGroup.Do(serviceName, func() (any, error) {
+		if cached, ok := c.discoveryCache.Load(serviceName); ok {
+			return cached, nil
+		}
+
+		// Detached from the caller: the result is shared with every concurrent
+		// caller, and token refresh runs on a request that can disconnect.
+		discoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryChainTimeout)
+		defer cancel()
+
+		discovered, err := discoverOAuth(discoveryCtx, c.httpClient, serverConfig.TransportType, serverConfig.URL)
+		if err != nil {
+			return nil, fmt.Errorf("discovering the OAuth endpoints of service %s: %w", serviceName, err)
+		}
+
+		c.discoveryCache.Store(serviceName, discovered)
+		log.LogInfoWithFields("service_oauth", "Discovered OAuth endpoints from backend", map[string]any{
+			"service":          serviceName,
+			"issuer":           discovered.Issuer,
+			"authorizationUrl": discovered.AuthorizationURL,
+			"tokenUrl":         discovered.TokenURL,
+		})
+		return discovered, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*discoveredOAuth), nil
+}
+
 // getOrRegisterClient returns a stored service registration, registering dynamically if needed.
-func (c *ServiceOAuthClient) getOrRegisterClient(ctx context.Context, serviceName string, auth *config.UserAuthentication) (*storage.ServiceRegistration, error) {
+func (c *ServiceOAuthClient) getOrRegisterClient(ctx context.Context, serviceName string, resolved *resolvedOAuth) (*storage.ServiceRegistration, error) {
 	reg, err := c.storage.GetServiceRegistration(ctx, serviceName)
 	if err == nil {
 		if reg.ExpiresAt.IsZero() || time.Now().Before(reg.ExpiresAt) {
@@ -109,12 +221,12 @@ func (c *ServiceOAuthClient) getOrRegisterClient(ctx context.Context, serviceNam
 		return nil, fmt.Errorf("failed to get service registration: %w", err)
 	}
 
-	return c.registerClient(ctx, serviceName, auth)
+	return c.registerClient(ctx, serviceName, resolved)
 }
 
 // registerClient performs RFC 7591 dynamic client registration with the upstream service.
-func (c *ServiceOAuthClient) registerClient(ctx context.Context, serviceName string, auth *config.UserAuthentication) (*storage.ServiceRegistration, error) {
-	registrationURL, err := c.discoverRegistrationEndpoint(ctx, auth.AuthorizationURL)
+func (c *ServiceOAuthClient) registerClient(ctx context.Context, serviceName string, resolved *resolvedOAuth) (*storage.ServiceRegistration, error) {
+	registrationURL, err := c.registrationEndpoint(ctx, resolved)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover registration endpoint: %w", err)
 	}
@@ -128,8 +240,8 @@ func (c *ServiceOAuthClient) registerClient(ctx context.Context, serviceName str
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "client_secret_post",
 	}
-	if len(auth.Scopes) > 0 {
-		reqBody["scope"] = strings.Join(auth.Scopes, " ")
+	if len(resolved.scopes) > 0 {
+		reqBody["scope"] = strings.Join(resolved.scopes, " ")
 	}
 
 	reqJSON, err := json.Marshal(reqBody)
@@ -192,41 +304,28 @@ func (c *ServiceOAuthClient) registerClient(ctx context.Context, serviceName str
 	return reg, nil
 }
 
-// discoverRegistrationEndpoint fetches OAuth server metadata to find the registration endpoint.
-func (c *ServiceOAuthClient) discoverRegistrationEndpoint(ctx context.Context, authorizationURL string) (string, error) {
-	u, err := url.Parse(authorizationURL)
+// Without discovery there is no issuer to ask, so the authorization endpoint's own
+// origin stands in for one.
+func (c *ServiceOAuthClient) registrationEndpoint(ctx context.Context, resolved *resolvedOAuth) (string, error) {
+	if resolved.discovered {
+		if resolved.registrationURL == "" {
+			return "", fmt.Errorf("authorization server %s advertises no registration_endpoint: set clientId and clientSecret", resolved.issuer)
+		}
+		return resolved.registrationURL, nil
+	}
+
+	u, err := url.Parse(resolved.authorizationURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse authorization URL: %w", err)
 	}
 
-	metaURL := fmt.Sprintf("%s://%s/.well-known/oauth-authorization-server", u.Scheme, u.Host)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metaURL, nil)
+	meta, err := fetchAuthServerMetadata(ctx, c.httpClient, u.Scheme+"://"+u.Host)
 	if err != nil {
-		return "", fmt.Errorf("failed to create metadata request: %w", err)
+		return "", err
 	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch OAuth metadata: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("metadata endpoint returned status %d", resp.StatusCode)
-	}
-
-	var meta struct {
-		RegistrationEndpoint string `json:"registration_endpoint"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return "", fmt.Errorf("failed to decode OAuth metadata: %w", err)
-	}
-
 	if meta.RegistrationEndpoint == "" {
 		return "", fmt.Errorf("OAuth metadata missing registration_endpoint")
 	}
-
 	return meta.RegistrationEndpoint, nil
 }
 
@@ -243,9 +342,7 @@ func (c *ServiceOAuthClient) StartOAuthFlow(
 		return "", fmt.Errorf("service %s does not support OAuth", serviceName)
 	}
 
-	auth := serviceConfig.UserAuthentication
-
-	oauth2Config, err := c.getOAuth2Config(ctx, serviceName, auth)
+	oauth2Config, err := c.getOAuth2Config(ctx, serviceName, serviceConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to get OAuth config: %w", err)
 	}
@@ -303,7 +400,7 @@ func (c *ServiceOAuthClient) HandleCallback(
 		return nil, fmt.Errorf("service %s does not support OAuth", serviceName)
 	}
 
-	oauth2Config, err := c.getOAuth2Config(ctx, serviceName, auth)
+	oauth2Config, err := c.getOAuth2Config(ctx, serviceName, serviceConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OAuth config: %w", err)
 	}
@@ -326,7 +423,7 @@ func (c *ServiceOAuthClient) HandleCallback(
 			RefreshToken: token.RefreshToken,
 			ExpiresAt:    token.Expiry,
 			TokenType:    token.TokenType,
-			Scopes:       auth.Scopes,
+			Scopes:       oauth2Config.Scopes,
 		},
 		UpdatedAt: time.Now(),
 	}
@@ -399,7 +496,7 @@ func (c *ServiceOAuthClient) RefreshToken(
 		return fmt.Errorf("service configuration missing OAuth settings")
 	}
 
-	oauth2Config, err := c.getOAuth2Config(ctx, serviceName, auth)
+	oauth2Config, err := c.getOAuth2Config(ctx, serviceName, serviceConfig)
 	if err != nil {
 		return fmt.Errorf("failed to get OAuth config: %w", err)
 	}

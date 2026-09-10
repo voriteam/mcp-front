@@ -399,10 +399,50 @@ func TestValidateFile(t *testing.T) {
 				}
 			}`,
 			wantErrors: []string{
-				"authorizationUrl is required for OAuth configuration",
-				"tokenUrl is required for OAuth configuration",
+				"authorizationUrl and tokenUrl are required because this server has no url to discover them from",
 			},
-			wantErrCount: 2,
+			wantErrCount: 1,
+		},
+		{
+			name: "oauth_user_authentication_without_endpoints_on_a_discoverable_server",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080",
+					"auth": {
+						"kind": "oauth",
+						"issuer": "https://example.com",
+						"idp": {
+							"provider": "google",
+							"clientId": "id",
+							"clientSecret": "secret",
+							"redirectUri": "https://example.com/callback"
+						},
+						"jwtSecret": "secret123456789012345678901234567890",
+						"encryptionKey": "key12345678901234567890123456789",
+						"allowedDomains": ["example.com"],
+						"allowedOrigins": ["https://claude.ai"],
+						"allowedRedirectUriHosts": ["https://claude.ai"]
+					}
+				},
+				"mcpServers": {
+					"someserver": {
+						"transportType": "streamable-http",
+						"url": "https://example.com/mcp/abc123/message",
+						"requiresUserToken": true,
+						"userAuthentication": {
+							"type": "oauth",
+							"displayName": "Some Server"
+						},
+						"headers": {
+							"Authorization": {"$userToken": "Bearer {{token}}"}
+						}
+					}
+				}
+			}`,
+			wantErrors:   []string{},
+			wantErrCount: 0,
 		},
 	}
 
