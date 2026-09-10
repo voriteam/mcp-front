@@ -37,6 +37,7 @@ const (
 	MCPClientTypeSSE        MCPClientType = "sse"
 	MCPClientTypeStreamable MCPClientType = "streamable-http"
 	MCPClientTypeInline     MCPClientType = "inline"
+	MCPClientTypeBuiltin    MCPClientType = "builtin"
 )
 
 // ServerType represents whether a server is a direct backend or an aggregate
@@ -222,6 +223,13 @@ type MCPClientConfig struct {
 
 	// Inline MCP server configuration
 	InlineConfig json.RawMessage `json:"inline,omitempty"`
+
+	// Builtin names the in-process implementation to serve (transportType "builtin").
+	Builtin string `json:"builtin,omitempty"`
+
+	// UserEmail is stamped per-connection by the aggregate. Keep it out of
+	// rawConfig in unmarshal.go so a config file cannot set it.
+	UserEmail string `json:"-"`
 
 	// Aggregate server configuration
 	Servers             []string         `json:"servers,omitempty"`

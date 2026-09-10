@@ -905,6 +905,10 @@ func (s *Server) createConn(ctx context.Context, userEmail, backendName string) 
 		effectiveConfig = effectiveConfig.WithBearerToken(token.AccessToken)
 	}
 
+	if backendConfig.TransportType == config.MCPClientTypeBuiltin {
+		effectiveConfig = effectiveConfig.WithUserEmail(userEmail)
+	}
+
 	transport, err := s.createTransport(effectiveConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating transport: %w", err)

@@ -161,7 +161,7 @@ func TestValidateFile(t *testing.T) {
 					}
 				}
 			}`,
-			wantErrors:   []string{"transportType is required. Options: stdio, sse, streamable-http, inline"},
+			wantErrors:   []string{"transportType is required. Options: stdio, sse, streamable-http, inline, builtin"},
 			wantErrCount: 1,
 		},
 		{
@@ -896,6 +896,59 @@ func TestValidateFile_AggregateServer(t *testing.T) {
 				}
 			}`,
 			wantErrors: []string{"cannot reference inline server"},
+		},
+		{
+			name: "builtin_missing_builtin_key",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080"
+				},
+				"mcpServers": {
+					"gtm": {
+						"transportType": "builtin"
+					}
+				}
+			}`,
+			wantErrors: []string{"builtin is required for builtin transport (names the in-process implementation)"},
+		},
+		{
+			name: "aggregate_references_builtin",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080"
+				},
+				"mcpServers": {
+					"gtm": {
+						"transportType": "builtin",
+						"builtin": "onboarding"
+					},
+					"mcp": {
+						"type": "aggregate",
+						"servers": ["gtm"]
+					}
+				}
+			}`,
+			wantErrors: nil,
+		},
+		{
+			name: "unknown_transport_lists_builtin",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080"
+				},
+				"mcpServers": {
+					"gtm": {
+						"transportType": "carrier-pigeon"
+					}
+				}
+			}`,
+			wantErrors: []string{"invalid transportType 'carrier-pigeon' - supported types: stdio, sse, streamable-http, inline, builtin"},
 		},
 		{
 			name: "aggregate_invalid_transport",

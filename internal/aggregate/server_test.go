@@ -1655,3 +1655,53 @@ func TestCleanupPrunesRetainedDiscoveries(t *testing.T) {
 	_, stillThere := srv.lastGood[lastGoodKey{backendName: "postgres"}]
 	assert.True(t, stillThere, "a recent discovery is retained")
 }
+
+func TestBuiltinBackendCarriesUserEmail(t *testing.T) {
+	backendConfigs := map[string]*config.MCPClientConfig{
+		"gtm": {
+			TransportType: config.MCPClientTypeBuiltin,
+			Builtin:       "onboarding",
+		},
+	}
+
+	var mu sync.Mutex
+	var seenEmails []string
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		mu.Lock()
+		seenEmails = append(seenEmails, conf.UserEmail)
+		mu.Unlock()
+		return newMockTransport([]mcp.Tool{
+			{Name: "create_onboarding_link", Description: "Generate a short onboarding URL"},
+		}), nil
+	}
+
+	srv := NewServer(ServerConfig{
+		Name:            "test-aggregate",
+		TransportType:   config.MCPClientTypeSSE,
+		Backends:        backendConfigs,
+		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	tools, err := srv.getTools(context.Background(), "ae@vori.com")
+	require.NoError(t, err)
+	require.Len(t, tools["gtm"], 1)
+	assert.Equal(t, "create_onboarding_link", tools["gtm"][0].Name)
+
+	handler := srv.makeToolHandler("ae@vori.com", "gtm")
+	req := mcp.CallToolRequest{}
+	req.Params.Name = PrefixToolName("gtm", "create_onboarding_link", srv.delimiter)
+	_, err = handler(context.Background(), req)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, seenEmails)
+	for _, email := range seenEmails {
+		assert.Equal(t, "ae@vori.com", email,
+			"createConn must stamp the caller onto a builtin's config")
+	}
+}

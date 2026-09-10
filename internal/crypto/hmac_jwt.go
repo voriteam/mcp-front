@@ -69,20 +69,29 @@ func (s *HMACJWTSource) Token() (*oauth2.Token, error) {
 	}
 	payload["exp"] = exp.Unix()
 
-	payloadJSON, err := json.Marshal(payload)
+	token, err := SignHS256(s.secret, payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal claims: %w", err)
+		return nil, err
+	}
+
+	s.token = token
+	s.exp = exp
+	return &oauth2.Token{AccessToken: s.token, TokenType: "Bearer", Expiry: exp}, nil
+}
+
+// SignHS256 returns a compact JWT carrying claims, signed with secret. Callers
+// supply every claim, including exp.
+func SignHS256(secret []byte, claims map[string]any) (string, error) {
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("marshal claims: %w", err)
 	}
 
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	body := base64.RawURLEncoding.EncodeToString(payloadJSON)
 	unsigned := header + "." + body
 
-	mac := hmac.New(sha256.New, s.secret)
+	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(unsigned))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
-	s.token = unsigned + "." + sig
-	s.exp = exp
-	return &oauth2.Token{AccessToken: s.token, TokenType: "Bearer", Expiry: exp}, nil
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }

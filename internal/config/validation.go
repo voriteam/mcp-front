@@ -373,7 +373,7 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 		if !ok {
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    fmt.Sprintf("mcpServers.%s.transportType", name),
-				Message: "transportType is required. Options: stdio, sse, streamable-http, inline",
+				Message: "transportType is required. Options: stdio, sse, streamable-http, inline, builtin",
 			})
 			continue
 		}
@@ -401,10 +401,17 @@ func validateServersStructure(rawConfig map[string]any, result *ValidationResult
 					Message: "inline configuration is required for inline transport",
 				})
 			}
+		case "builtin":
+			if _, ok := srv["builtin"]; !ok {
+				result.Errors = append(result.Errors, ValidationError{
+					Path:    fmt.Sprintf("mcpServers.%s.builtin", name),
+					Message: "builtin is required for builtin transport (names the in-process implementation)",
+				})
+			}
 		default:
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    fmt.Sprintf("mcpServers.%s.transportType", name),
-				Message: fmt.Sprintf("invalid transportType '%s' - supported types: stdio, sse, streamable-http, inline", transportType),
+				Message: fmt.Sprintf("invalid transportType '%s' - supported types: stdio, sse, streamable-http, inline, builtin", transportType),
 			})
 		}
 

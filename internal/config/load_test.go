@@ -812,3 +812,48 @@ func TestValidateOAuthConfig_RedirectURIHostPolicy(t *testing.T) {
 		})
 	}
 }
+
+// The gateway rejected a valid builtin at startup because validateConfig has
+// its own transport switch, separate from the one ValidateFile walks.
+func TestValidateConfig_BuiltinServer(t *testing.T) {
+	newConfig := func(server *MCPClientConfig) *Config {
+		return &Config{
+			Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+			MCPServers: map[string]*MCPClientConfig{
+				"gtm": server,
+				"all": {
+					Type:          ServerTypeAggregate,
+					TransportType: MCPClientTypeSSE,
+					Servers:       []string{"gtm"},
+					Discovery:     &DiscoveryConfig{Timeout: time.Second, CacheTTL: time.Second},
+				},
+			},
+		}
+	}
+
+	t.Run("accepts a builtin naming an implementation", func(t *testing.T) {
+		err := ValidateConfig(newConfig(&MCPClientConfig{
+			TransportType: MCPClientTypeBuiltin,
+			Builtin:       "onboarding",
+		}))
+		assert.NoError(t, err)
+	})
+
+	t.Run("rejects a builtin naming none", func(t *testing.T) {
+		err := ValidateConfig(newConfig(&MCPClientConfig{
+			TransportType: MCPClientTypeBuiltin,
+		}))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must name a builtin")
+	})
+
+	t.Run("rejects a builtin carrying a url", func(t *testing.T) {
+		err := ValidateConfig(newConfig(&MCPClientConfig{
+			TransportType: MCPClientTypeBuiltin,
+			Builtin:       "onboarding",
+			URL:           "http://localhost:9000",
+		}))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot have command or url")
+	})
+}

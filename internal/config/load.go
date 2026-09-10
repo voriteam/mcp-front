@@ -392,6 +392,13 @@ func validateMCPServer(name string, server *MCPClientConfig) error {
 		if server.Command != "" || server.URL != "" {
 			return fmt.Errorf("server %s with inline transport cannot have command or url", name)
 		}
+	case MCPClientTypeBuiltin:
+		if server.Builtin == "" {
+			return fmt.Errorf("server %s with builtin transport must name a builtin", name)
+		}
+		if server.Command != "" || server.URL != "" {
+			return fmt.Errorf("server %s with builtin transport cannot have command or url", name)
+		}
 	default:
 		return fmt.Errorf("server %s has invalid transportType: %s", name, server.TransportType)
 	}
