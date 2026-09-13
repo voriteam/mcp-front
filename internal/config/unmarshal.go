@@ -161,12 +161,13 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 
 	// Parse headers if present
 	if len(raw.Headers) > 0 {
-		values, needsToken, err := ParseConfigValueMap(raw.Headers)
+		values, needsToken, needsEmail, err := ParseHeaderValueMap(raw.Headers)
 		if err != nil {
 			return fmt.Errorf("parsing headers: %w", err)
 		}
 		c.Headers = values
 		c.HeadersNeedToken = needsToken
+		c.HeadersNeedEmail = needsEmail
 	}
 
 	// Parse client credentials if present
@@ -608,6 +609,27 @@ func (c *MCPClientConfig) WithUserEmail(email string) *MCPClientConfig {
 	clone := *c
 	clone.UserEmail = email
 	return &clone
+}
+
+// ApplyUserEmail creates a copy of the config with the caller's email
+// substituted into the headers that name it.
+func (c *MCPClientConfig) ApplyUserEmail(email string) *MCPClientConfig {
+	if email == "" || !c.NeedsUserEmail() {
+		return c
+	}
+
+	result := *c
+	result.Headers = make(map[string]string, len(c.Headers))
+	for key, value := range c.Headers {
+		if c.HeadersNeedEmail[key] {
+			result.Headers[key] = strings.ReplaceAll(value, UserEmailPlaceholder, email)
+		} else {
+			result.Headers[key] = value
+		}
+	}
+	result.HeadersNeedEmail = nil
+
+	return &result
 }
 
 // ApplyUserToken creates a copy of the config with user tokens substituted

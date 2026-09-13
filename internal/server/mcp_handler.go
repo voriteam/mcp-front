@@ -88,6 +88,21 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serverConfig = serverConfig.ApplyUserToken(userToken)
 	}
 
+	if serverConfig.NeedsUserEmail() {
+		// A backend that trusts this header cannot tell a blank value apart
+		// from a real identity, so refuse the request instead of sending one.
+		if userEmail == "" {
+			log.LogWarnWithFields("mcp", "Rejecting request for a backend that needs the caller's email", map[string]any{
+				"server":     h.serverName,
+				"path":       r.URL.Path,
+				"remoteAddr": r.RemoteAddr,
+			})
+			jsonrpc.WriteErrorWithStatus(w, nil, jsonrpc.InvalidRequest, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		serverConfig = serverConfig.ApplyUserEmail(userEmail)
+	}
+
 	if serverConfig.TransportType == config.MCPClientTypeStreamable {
 		switch r.Method {
 		case http.MethodPost:

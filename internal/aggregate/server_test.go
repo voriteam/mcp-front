@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1704,4 +1705,90 @@ func TestBuiltinBackendCarriesUserEmail(t *testing.T) {
 		assert.Equal(t, "ae@vori.com", email,
 			"createConn must stamp the caller onto a builtin's config")
 	}
+}
+
+func TestUserEmailHeaderAppliedToBackendConfig(t *testing.T) {
+	newBackends := func() map[string]*config.MCPClientConfig {
+		return map[string]*config.MCPClientConfig{
+			"caura": {
+				TransportType: config.MCPClientTypeStreamable,
+				URL:           "http://localhost/caura",
+				Headers: map[string]string{
+					"X-Agent-ID":  "{{email}}",
+					"X-Tenant-ID": "vori",
+				},
+				HeadersNeedEmail: map[string]bool{
+					"X-Agent-ID":  true,
+					"X-Tenant-ID": false,
+				},
+			},
+			"plain": {
+				TransportType: config.MCPClientTypeStreamable,
+				URL:           "http://localhost/plain",
+			},
+		}
+	}
+
+	newServer := func(t *testing.T, backendConfigs map[string]*config.MCPClientConfig, seen map[string]map[string]string, mu *sync.Mutex) *Server {
+		t.Helper()
+		factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+			mu.Lock()
+			headers := make(map[string]string, len(conf.Headers))
+			maps.Copy(headers, conf.Headers)
+			for name, bc := range backendConfigs {
+				if conf.URL == bc.URL {
+					seen[name] = headers
+				}
+			}
+			mu.Unlock()
+			return &mockTransport{tools: []mcp.Tool{{Name: "caura_recall"}}}, nil
+		}
+
+		srv := NewServer(ServerConfig{
+			Name:            "test-aggregate",
+			TransportType:   config.MCPClientTypeStreamable,
+			Backends:        backendConfigs,
+			Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+			CreateTransport: factory,
+			BaseURL:         "http://localhost:8080",
+		})
+		srv.Start()
+		t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+		return srv
+	}
+
+	t.Run("the caller's email reaches the upstream request", func(t *testing.T) {
+		var mu sync.Mutex
+		seen := make(map[string]map[string]string)
+		backendConfigs := newBackends()
+		srv := newServer(t, backendConfigs, seen, &mu)
+
+		_, err := srv.getOrCreateConn(context.Background(), "ae@vori.com", "caura")
+		require.NoError(t, err)
+		_, err = srv.getOrCreateConn(context.Background(), "ae@vori.com", "plain")
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, "ae@vori.com", seen["caura"]["X-Agent-ID"])
+		assert.Equal(t, "vori", seen["caura"]["X-Tenant-ID"])
+		assert.NotContains(t, seen["plain"], "X-Agent-ID")
+
+		assert.Equal(t, "{{email}}", backendConfigs["caura"].Headers["X-Agent-ID"],
+			"the shared backend config must not be mutated")
+	})
+
+	t.Run("a connection with no authenticated user is refused", func(t *testing.T) {
+		var mu sync.Mutex
+		seen := make(map[string]map[string]string)
+		srv := newServer(t, newBackends(), seen, &mu)
+
+		_, err := srv.getOrCreateConn(context.Background(), "anonymous", "caura")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no authenticated user")
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.NotContains(t, seen, "caura", "no transport is opened without an identity")
+	})
 }
