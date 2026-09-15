@@ -61,6 +61,20 @@ For MCP servers that need per-user tokens injected at request time, use the `{"$
 
 This works in `env`, `args`, `url`, and `headers` fields on MCP servers. See [Service Authentication](/mcp-front/service-authentication/) for how users provide these tokens.
 
+## User email references
+
+For MCP servers that need to know which caller a request belongs to, use the `{"$userEmail": "...{{email}}..."}` syntax in a header. The `{{email}}` placeholder is replaced at request time with the authenticated caller's email, whether they signed in through the identity provider or presented a GCP service-account token.
+
+```json
+{
+  "headers": {
+    "X-Agent-ID": { "$userEmail": "{{email}}" }
+  }
+}
+```
+
+This works in `headers` only, because that is the one field MCP Front rewrites per request without restarting the backend. A template must contain `{{email}}` or the config fails to load, and a request that reaches such a server without an authenticated caller is refused rather than sent with a blank header.
+
 ## Proxy configuration
 
 ### `proxy.baseURL`

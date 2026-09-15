@@ -905,6 +905,15 @@ func (s *Server) createConn(ctx context.Context, userEmail, backendName string) 
 		effectiveConfig = effectiveConfig.WithBearerToken(token.AccessToken)
 	}
 
+	if backendConfig.NeedsUserEmail() {
+		// A backend that trusts this header cannot tell a blank value apart
+		// from a real identity, so refuse the connection instead of sending one.
+		if userEmail == "" || userEmail == "anonymous" {
+			return nil, fmt.Errorf("backend %s stamps the caller's email on a header, but this connection has no authenticated user", backendName)
+		}
+		effectiveConfig = effectiveConfig.ApplyUserEmail(userEmail)
+	}
+
 	if backendConfig.TransportType == config.MCPClientTypeBuiltin {
 		effectiveConfig = effectiveConfig.WithUserEmail(userEmail)
 	}

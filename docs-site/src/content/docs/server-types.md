@@ -61,7 +61,7 @@ For MCP servers that expose a Server-Sent Events endpoint. MCP Front connects to
 }
 ```
 
-Headers and URL support `{"$env": "VAR"}` and `{"$userToken": "...{{token}}..."}` syntax.
+Headers and URL support `{"$env": "VAR"}` and `{"$userToken": "...{{token}}..."}` syntax. Headers additionally support `{"$userEmail": "...{{email}}..."}`, which names the authenticated caller.
 
 ## Streamable HTTP servers
 

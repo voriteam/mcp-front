@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -176,6 +177,11 @@ type UserAuthentication struct {
 //
 // User token references using {"$userToken": "...{{token}}..."} follow the same
 // pattern but are resolved at request time with the authenticated user's token.
+//
+// Header references using {"$userEmail": "...{{email}}..."} are resolved at
+// request time with the authenticated caller's email, which is either a Google
+// account or a GCP service account. Upstream sessions are keyed per user, so a
+// connection never carries another caller's identity.
 type MCPClientConfig struct {
 	Type          ServerType    `json:"type,omitempty"`
 	TransportType MCPClientType `json:"transportType,omitempty"`
@@ -194,6 +200,7 @@ type MCPClientConfig struct {
 	URLNeedsToken    bool              `json:"-"` // Track if URL needs token substitution
 	Headers          map[string]string `json:"headers,omitempty"`
 	HeadersNeedToken map[string]bool   `json:"-"` // Track which headers need token substitution
+	HeadersNeedEmail map[string]bool   `json:"-"`
 	Timeout          time.Duration     `json:"timeout,omitempty"`
 
 	Options *Options `json:"options,omitempty"`
@@ -283,6 +290,16 @@ func (c *MCPClientConfig) IsStdio() bool {
 // IsAggregate returns true if this is an aggregate server
 func (c *MCPClientConfig) IsAggregate() bool {
 	return c.Type == ServerTypeAggregate
+}
+
+// NeedsUserEmail returns true if any header names the authenticated caller
+func (c *MCPClientConfig) NeedsUserEmail() bool {
+	for _, needs := range c.HeadersNeedEmail {
+		if needs {
+			return true
+		}
+	}
+	return false
 }
 
 // SessionConfig represents session management configuration
@@ -383,15 +400,36 @@ type Config struct {
 	MCPServers map[string]*MCPClientConfig `json:"mcpServers"`
 }
 
+// UserEmailPlaceholder is the substring a $userEmail template must contain.
+const UserEmailPlaceholder = "{{email}}"
+
 // RawConfigValue represents a value that could be a string, env ref, or user token ref
 // This is only used during parsing, not in the final config
 type RawConfigValue struct {
 	value          string
 	needsUserToken bool
+	needsUserEmail bool
 }
 
 // ParseConfigValue parses a JSON value that could be a string or reference object
 func ParseConfigValue(raw json.RawMessage) (*RawConfigValue, error) {
+	parsed, err := parseConfigValue(raw)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.needsUserEmail {
+		return nil, fmt.Errorf("$userEmail is only supported in a header value")
+	}
+	return parsed, nil
+}
+
+// ParseHeaderConfigValue parses a header value, which may additionally name the
+// authenticated caller with a $userEmail reference.
+func ParseHeaderConfigValue(raw json.RawMessage) (*RawConfigValue, error) {
+	return parseConfigValue(raw)
+}
+
+func parseConfigValue(raw json.RawMessage) (*RawConfigValue, error) {
 	// Try plain string first
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
@@ -423,6 +461,13 @@ func ParseConfigValue(raw json.RawMessage) (*RawConfigValue, error) {
 	// Check for $userToken reference
 	if template, ok := ref["$userToken"]; ok {
 		return &RawConfigValue{value: template, needsUserToken: true}, nil
+	}
+
+	if template, ok := ref["$userEmail"]; ok {
+		if !strings.Contains(template, UserEmailPlaceholder) {
+			return nil, fmt.Errorf("$userEmail template %q must contain %s", template, UserEmailPlaceholder)
+		}
+		return &RawConfigValue{value: template, needsUserEmail: true}, nil
 	}
 
 	return nil, fmt.Errorf("unknown reference type in config value")
@@ -460,4 +505,24 @@ func ParseConfigValueMap(raw map[string]json.RawMessage) (map[string]string, map
 	}
 
 	return values, needsToken, nil
+}
+
+// ParseHeaderValueMap parses a header map, reporting per key whether the value
+// carries a user token or the caller's email.
+func ParseHeaderValueMap(raw map[string]json.RawMessage) (map[string]string, map[string]bool, map[string]bool, error) {
+	values := make(map[string]string)
+	needsToken := make(map[string]bool)
+	needsEmail := make(map[string]bool)
+
+	for key, item := range raw {
+		parsed, err := ParseHeaderConfigValue(item)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("parsing key %s: %w", key, err)
+		}
+		values[key] = parsed.value
+		needsToken[key] = parsed.needsUserToken
+		needsEmail[key] = parsed.needsUserEmail
+	}
+
+	return values, needsToken, needsEmail, nil
 }

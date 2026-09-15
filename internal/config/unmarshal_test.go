@@ -639,3 +639,140 @@ func TestMCPClientConfig_DirectTypeDefault(t *testing.T) {
 	assert.Equal(t, ServerTypeDirect, cfg.Type)
 	assert.False(t, cfg.IsAggregate())
 }
+
+func TestParseHeaderConfigValue_UserEmail(t *testing.T) {
+	t.Run("template is kept for request-time substitution", func(t *testing.T) {
+		parsed, err := ParseHeaderConfigValue(json.RawMessage(`{"$userEmail": "{{email}}"}`))
+		require.NoError(t, err)
+		assert.Equal(t, "{{email}}", parsed.value)
+		assert.True(t, parsed.needsUserEmail)
+		assert.False(t, parsed.needsUserToken)
+	})
+
+	t.Run("template may wrap the placeholder", func(t *testing.T) {
+		parsed, err := ParseHeaderConfigValue(json.RawMessage(`{"$userEmail": "agent:{{email}}"}`))
+		require.NoError(t, err)
+		assert.Equal(t, "agent:{{email}}", parsed.value)
+		assert.True(t, parsed.needsUserEmail)
+	})
+
+	t.Run("template without the placeholder is rejected", func(t *testing.T) {
+		_, err := ParseHeaderConfigValue(json.RawMessage(`{"$userEmail": "vori"}`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "{{email}}")
+	})
+
+	t.Run("plain and env values are unaffected", func(t *testing.T) {
+		parsed, err := ParseHeaderConfigValue(json.RawMessage(`"v1"`))
+		require.NoError(t, err)
+		assert.Equal(t, "v1", parsed.value)
+		assert.False(t, parsed.needsUserEmail)
+	})
+}
+
+// Only a header is substituted at request time, so a $userEmail anywhere else
+// would reach the backend as the literal template.
+func TestParseConfigValue_RejectsUserEmailOutsideHeaders(t *testing.T) {
+	_, err := ParseConfigValue(json.RawMessage(`{"$userEmail": "{{email}}"}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "$userEmail")
+
+	_, _, err = ParseConfigValueMap(map[string]json.RawMessage{
+		"AGENT": json.RawMessage(`{"$userEmail": "{{email}}"}`),
+	})
+	require.Error(t, err)
+
+	_, _, err = ParseConfigValueSlice([]json.RawMessage{json.RawMessage(`{"$userEmail": "{{email}}"}`)})
+	require.Error(t, err)
+}
+
+func TestMCPClientConfig_UnmarshalJSON_UserEmailHeader(t *testing.T) {
+	t.Run("header is tracked", func(t *testing.T) {
+		input := `{
+			"transportType": "streamable-http",
+			"url": "http://localhost:8006/mcp",
+			"headers": {
+				"X-Agent-ID": {"$userEmail": "{{email}}"},
+				"X-Tenant-ID": "vori"
+			}
+		}`
+		var config MCPClientConfig
+		require.NoError(t, json.Unmarshal([]byte(input), &config))
+
+		assert.Equal(t, "{{email}}", config.Headers["X-Agent-ID"])
+		assert.Equal(t, "vori", config.Headers["X-Tenant-ID"])
+		assert.True(t, config.HeadersNeedEmail["X-Agent-ID"])
+		assert.False(t, config.HeadersNeedEmail["X-Tenant-ID"])
+		assert.False(t, config.HeadersNeedToken["X-Agent-ID"])
+		assert.True(t, config.NeedsUserEmail())
+	})
+
+	t.Run("a config with no email header needs no email", func(t *testing.T) {
+		input := `{
+			"transportType": "streamable-http",
+			"url": "http://localhost:8006/mcp",
+			"headers": {"X-Tenant-ID": "vori"}
+		}`
+		var config MCPClientConfig
+		require.NoError(t, json.Unmarshal([]byte(input), &config))
+		assert.False(t, config.NeedsUserEmail())
+	})
+
+	t.Run("a template without the placeholder fails the load", func(t *testing.T) {
+		input := `{
+			"transportType": "streamable-http",
+			"url": "http://localhost:8006/mcp",
+			"headers": {"X-Agent-ID": {"$userEmail": "vori"}}
+		}`
+		var config MCPClientConfig
+		err := json.Unmarshal([]byte(input), &config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "{{email}}")
+	})
+
+	t.Run("env cannot name the caller", func(t *testing.T) {
+		input := `{
+			"transportType": "stdio",
+			"command": "echo",
+			"env": {"AGENT": {"$userEmail": "{{email}}"}}
+		}`
+		var config MCPClientConfig
+		err := json.Unmarshal([]byte(input), &config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "$userEmail")
+	})
+}
+
+func TestMCPClientConfig_ApplyUserEmail(t *testing.T) {
+	original := &MCPClientConfig{
+		TransportType: MCPClientTypeStreamable,
+		URL:           "http://localhost:8006/mcp",
+		Headers: map[string]string{
+			"X-Agent-ID":  "{{email}}",
+			"X-Tenant-ID": "vori",
+		},
+		HeadersNeedEmail: map[string]bool{
+			"X-Agent-ID":  true,
+			"X-Tenant-ID": false,
+		},
+	}
+
+	result := original.ApplyUserEmail("ae@vori.com")
+
+	assert.Equal(t, "ae@vori.com", result.Headers["X-Agent-ID"])
+	assert.Equal(t, "vori", result.Headers["X-Tenant-ID"])
+	assert.Nil(t, result.HeadersNeedEmail)
+
+	assert.Equal(t, "{{email}}", original.Headers["X-Agent-ID"],
+		"the original config is shared across users")
+	assert.True(t, original.HeadersNeedEmail["X-Agent-ID"])
+
+	t.Run("an empty email leaves the config untouched", func(t *testing.T) {
+		assert.Same(t, original, original.ApplyUserEmail(""))
+	})
+
+	t.Run("a config with no email header is returned as is", func(t *testing.T) {
+		plain := &MCPClientConfig{Headers: map[string]string{"X-Tenant-ID": "vori"}}
+		assert.Same(t, plain, plain.ApplyUserEmail("ae@vori.com"))
+	})
+}
