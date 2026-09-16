@@ -448,3 +448,80 @@ func TestLoggerMiddlewareTakesTheSSESessionFromTheQuery(t *testing.T) {
 	require.Len(t, records, 1)
 	assert.Equal(t, "abc", records[0]["mcp.session.id"])
 }
+
+func serveLogged(t *testing.T, handler http.HandlerFunc, req *http.Request) map[string]any {
+	t.Helper()
+	readLogs := testutil.CaptureLogs(t)
+	NewLoggerMiddleware("mcp")(handler).ServeHTTP(httptest.NewRecorder(), req)
+	records := readLogs()
+	require.Len(t, records, 1)
+	return records[0]
+}
+
+func jsonRequest(path, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestCanonicalLineNamesTheToolCall(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		reqlog.RecordTool(r.Context(), reqlog.ToolCall{Backend: "github", Name: "get_me"})
+		w.WriteHeader(http.StatusOK)
+	}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"secret"}}}`))
+
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call github__get_me 200 in \d+ms$`, record["msg"])
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"[string]"}}}`, record["request_body"].(string))
+	assert.Equal(t, true, record["succeeded"])
+	assert.Contains(t, record, "responseTime")
+}
+
+func TestCanonicalLineMarksAToolReportedFailure(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		reqlog.RecordTool(r.Context(), reqlog.ToolCall{Backend: "gke", Name: "get_k8s_version", Failed: true})
+		w.WriteHeader(http.StatusOK)
+	}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"gke__get_k8s_version"}}`))
+
+	assert.Equal(t, false, record["succeeded"])
+	assert.Regexp(t, `\(tool error\)$`, record["msg"])
+}
+
+func TestCanonicalLineDefersAnSSEToolCallToTheAggregate(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}, jsonRequest("/gateway/message?sessionId=abc", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"github__get_me"}}`))
+
+	assert.Equal(t, true, record["mcp.call.deferred"])
+	assert.NotContains(t, record, "request_body")
+	assert.NotContains(t, record, "succeeded")
+	assert.Regexp(t, `\(deferred\)$`, record["msg"])
+}
+
+func TestCanonicalLineForARequestWithoutABody(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}, httptest.NewRequest(http.MethodGet, "/gateway-streamable", nil))
+
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] GET /gateway-streamable 200 in \d+ms$`, record["msg"])
+	assert.NotContains(t, record, "request_body")
+}
+
+func TestCanonicalLineUnwrapsAJSONRPCErrorReply(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"Invalid session ID"}}`))
+	}, jsonRequest("/gateway/message?sessionId=old", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+
+	assert.Equal(t, "Invalid session ID", record["error.message"])
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] initialize 400 in \d+ms: Invalid session ID$`, record["msg"])
+	assert.Equal(t, false, record["succeeded"])
+}
+
+func TestCanonicalLineLeavesNonRPCBodiesOut(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}, jsonRequest("/register", `{"client_name":"x","redirect_uris":["https://a"]}`))
+
+	assert.NotContains(t, record, "request_body")
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] POST /register 201 in \d+ms$`, record["msg"])
+}

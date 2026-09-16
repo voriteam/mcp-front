@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 )
 
 // Bodies above this are passed through without envelope fields rather than
@@ -128,6 +131,36 @@ func argumentNames(raw json.RawMessage) string {
 		return ""
 	}
 	return strings.Join(slices.Sorted(maps.Keys(args)), ",")
+}
+
+func canonicalMessage(fields map[string]any, r *http.Request, status int, duration time.Duration, errorMessage string) string {
+	label := r.Method + " " + r.URL.Path
+	if method, ok := fields["mcp.method.name"].(string); ok {
+		label = method
+		if tool, ok := fields["gen_ai.tool.name"].(string); ok {
+			label += " " + tool
+		}
+	}
+
+	msg := fmt.Sprintf("[CANONICAL-REQUEST-LOG] %s %d in %s", label, status, reqlog.FormatDuration(duration))
+	if errorMessage != "" {
+		msg += ": " + errorMessage
+	}
+	return msg
+}
+
+// errorText prefers the message inside a JSON-RPC error response over the raw
+// JSON, which is what the SSE transport sends with its 4xx replies.
+func errorText(body []byte) string {
+	var rpc struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpc); err == nil && rpc.Error.Message != "" {
+		return rpc.Error.Message
+	}
+	return strings.TrimSpace(string(body))
 }
 
 func setIfPresent(fields map[string]any, key, value string) {

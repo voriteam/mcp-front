@@ -127,7 +127,7 @@ func (r *responseWriterDelegator) Write(b []byte) (int, error) {
 }
 
 func (r *responseWriterDelegator) ErrorMessage() string {
-	return strings.TrimSpace(string(r.errorBody))
+	return errorText(r.errorBody)
 }
 
 // Unwrap returns the underlying ResponseWriter for interface detection
@@ -175,13 +175,6 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 			duration := time.Since(start)
 			status := wrapped.Status()
 
-			var msg string
-			if status >= 400 {
-				msg = fmt.Sprintf("[CANONICAL-REQUEST-LOG] Request failed in %dms", duration.Milliseconds())
-			} else {
-				msg = fmt.Sprintf("[CANONICAL-REQUEST-LOG] Request succeeded in %dms", duration.Milliseconds())
-			}
-
 			scheme := "http"
 			if r.TLS != nil {
 				scheme = "https"
@@ -195,6 +188,7 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 			}
 
 			fields := map[string]any{
+				"responseTime":              duration.Milliseconds(),
 				"http.request.method":       r.Method,
 				"url.path":                  r.URL.Path,
 				"url.scheme":                scheme,
@@ -222,10 +216,12 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 				fields["url.query"] = r.URL.RawQuery
 			}
 
+			var requestBody string
 			if body != nil {
 				fields["http.request.body.size"] = len(body)
 				if bodyComplete {
 					maps.Copy(fields, rpcFields(body))
+					requestBody, _ = reqlog.RedactedRPCBody(body)
 				}
 			}
 
@@ -238,9 +234,11 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 				setIfPresent(fields, "mcp.protocol.version", r.Header.Get("Mcp-Protocol-Version"))
 			}
 
+			errorMessage := ""
 			if status >= 400 {
+				errorMessage = wrapped.ErrorMessage()
 				fields["error.type"] = strconv.Itoa(status)
-				setIfPresent(fields, "error.message", wrapped.ErrorMessage())
+				setIfPresent(fields, "error.message", errorMessage)
 			}
 
 			// This middleware is chained innermost, so the auth middlewares that
@@ -252,12 +250,32 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 				fields["enduser.id"] = info.ServiceName
 			}
 
-			if tool, ok := rc.TakeTool(); ok {
+			tool, toolRecorded := rc.TakeTool()
+			if toolRecorded {
 				fields["mcp.tool.name"] = tool.Name
 				fields["mcp.backend.name"] = tool.Backend
 				fields["mcp.session.id"] = tool.SessionID
 				fields["mcp.tool.duration_ms"] = tool.DurationMS
 				fields["mcp.tool.is_error"] = tool.Failed
+			}
+
+			// The SSE transport accepts a tool call and runs it after this
+			// response, and the aggregate logs the outcome with its own
+			// request_body. Carrying the body here too would count the call twice.
+			deferred := fields["mcp.method.name"] == "tools/call" && status == http.StatusAccepted && !toolRecorded
+			if deferred {
+				fields["mcp.call.deferred"] = true
+			} else {
+				setIfPresent(fields, "request_body", requestBody)
+				fields["succeeded"] = status < 400 && !(toolRecorded && tool.Failed)
+			}
+
+			msg := canonicalMessage(fields, r, status, duration, errorMessage)
+			if toolRecorded && tool.Failed {
+				msg += " (tool error)"
+			}
+			if deferred {
+				msg += " (deferred)"
 			}
 
 			switch {

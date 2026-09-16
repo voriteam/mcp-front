@@ -4,7 +4,9 @@ package reqlog
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 )
 
 type contextKey struct{}
@@ -58,4 +60,13 @@ func (c *Context) TakeTool() (ToolCall, bool) {
 		return ToolCall{}, false
 	}
 	return *c.tool, true
+}
+
+// FormatDuration renders sub-second durations in whole milliseconds and longer
+// ones such as held-open streams in minutes and seconds.
+func FormatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return d.Round(time.Millisecond).String()
 }
