@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -484,6 +485,27 @@ func TestCanonicalLineMarksAToolReportedFailure(t *testing.T) {
 
 	assert.Equal(t, false, record["succeeded"])
 	assert.Regexp(t, `\(tool error\)$`, record["msg"])
+	assert.Equal(t, "ERROR", record["level"])
+}
+
+func TestCanonicalLineLevelFollowsTheOutcome(t *testing.T) {
+	tests := []struct {
+		status int
+		level  string
+	}{
+		{http.StatusOK, "INFO"},
+		{http.StatusNotFound, "WARN"},
+		{http.StatusBadGateway, "ERROR"},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.status), func(t *testing.T) {
+			record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+			}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+
+			assert.Equal(t, tt.level, record["level"])
+		})
+	}
 }
 
 func TestCanonicalLineDefersAnSSEToolCallToTheAggregate(t *testing.T) {

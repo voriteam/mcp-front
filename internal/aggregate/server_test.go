@@ -1914,6 +1914,7 @@ func TestToolCallIsLoggedWithoutARequestLogContext(t *testing.T) {
 	assert.Equal(t, "user@test.com", lines[0]["enduser.id"])
 	assert.Equal(t, false, lines[0]["mcp.tool.is_error"])
 	assert.Equal(t, true, lines[0]["succeeded"])
+	assert.Equal(t, "INFO", lines[0]["level"])
 	assert.Equal(t, true, lines[0]["is_canonical"])
 	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call postgres.query succeeded in \d+ms$`, lines[0]["msg"])
 }
@@ -1958,6 +1959,7 @@ func TestFailedToolCallLineSaysWhy(t *testing.T) {
 	lines := toolCallLines(readLogs())
 	require.Len(t, lines, 1)
 	assert.Equal(t, false, lines[0]["succeeded"])
+	assert.Equal(t, "ERROR", lines[0]["level"])
 	assert.Equal(t, "connection refused", lines[0]["error.message"])
 	assert.Contains(t, lines[0]["msg"], "tools/call postgres.query failed in")
 }

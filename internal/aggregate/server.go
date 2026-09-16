@@ -758,6 +758,10 @@ func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, req
 		fields["error.message"] = err.Error()
 		msg += ": " + err.Error()
 	}
+	if call.Failed {
+		log.LogErrorWithFields("aggregate", msg, fields)
+		return
+	}
 	log.LogInfoWithFields("aggregate", msg, fields)
 }
 

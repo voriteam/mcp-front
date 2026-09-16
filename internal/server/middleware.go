@@ -279,7 +279,7 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 			}
 
 			switch {
-			case status >= 500:
+			case status >= 500, toolRecorded && tool.Failed:
 				log.LogErrorWithFields(prefix, msg, fields)
 			case status >= 400:
 				log.LogWarnWithFields(prefix, msg, fields)
