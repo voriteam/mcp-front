@@ -720,9 +720,11 @@ func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, too
 		return
 	}
 
+	// enduser.id rather than this package's usual user, so that one query
+	// covers this line and the request line that carries the other calls.
 	fields := map[string]any{
 		"server":               s.name,
-		"user":                 userEmail,
+		"enduser.id":           userEmail,
 		"mcp.tool.name":        call.Name,
 		"mcp.backend.name":     call.Backend,
 		"mcp.session.id":       call.SessionID,

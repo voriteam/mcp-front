@@ -1911,7 +1911,7 @@ func TestToolCallIsLoggedWithoutARequestLogContext(t *testing.T) {
 	require.Len(t, lines, 1)
 	assert.Equal(t, "query", lines[0]["mcp.tool.name"])
 	assert.Equal(t, "postgres", lines[0]["mcp.backend.name"])
-	assert.Equal(t, "user@test.com", lines[0]["user"])
+	assert.Equal(t, "user@test.com", lines[0]["enduser.id"])
 	assert.Equal(t, false, lines[0]["mcp.tool.is_error"])
 }
 
