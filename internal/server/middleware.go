@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"slices"
@@ -86,6 +87,7 @@ type responseWriterDelegator struct {
 	status      int
 	written     int
 	wroteHeader bool
+	errorBody   []byte
 }
 
 func wrapResponseWriter(w http.ResponseWriter) *responseWriterDelegator {
@@ -118,7 +120,14 @@ func (r *responseWriterDelegator) Write(b []byte) (int, error) {
 	}
 	n, err := r.ResponseWriter.Write(b)
 	r.written += n
+	if r.status >= 400 && len(r.errorBody) < maxLoggedErrorBytes {
+		r.errorBody = append(r.errorBody, b[:min(n, maxLoggedErrorBytes-len(r.errorBody))]...)
+	}
 	return n, err
+}
+
+func (r *responseWriterDelegator) ErrorMessage() string {
+	return strings.TrimSpace(string(r.errorBody))
 }
 
 // Unwrap returns the underlying ResponseWriter for interface detection
@@ -153,6 +162,8 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			wrapped := wrapResponseWriter(w)
+
+			body, bodyComplete := peekJSONBody(r)
 
 			ctx, rc := reqlog.Inject(r.Context())
 			traceID := fallbackTraceID()
@@ -211,8 +222,25 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 				fields["url.query"] = r.URL.RawQuery
 			}
 
+			if body != nil {
+				fields["http.request.body.size"] = len(body)
+				if bodyComplete {
+					maps.Copy(fields, rpcFields(body))
+				}
+			}
+
+			if sessionID := r.Header.Get("Mcp-Session-Id"); sessionID != "" {
+				fields["mcp.session.id"] = sessionID
+			} else if sessionID := r.URL.Query().Get("sessionId"); sessionID != "" {
+				fields["mcp.session.id"] = sessionID
+			}
+			if _, ok := fields["mcp.protocol.version"]; !ok {
+				setIfPresent(fields, "mcp.protocol.version", r.Header.Get("Mcp-Protocol-Version"))
+			}
+
 			if status >= 400 {
 				fields["error.type"] = strconv.Itoa(status)
+				setIfPresent(fields, "error.message", wrapped.ErrorMessage())
 			}
 
 			// This middleware is chained innermost, so the auth middlewares that

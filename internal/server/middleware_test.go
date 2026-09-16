@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,4 +395,56 @@ func TestLoggerMiddlewareRecordsTheAuthenticatedUser(t *testing.T) {
 	records := readLogs()
 	require.Len(t, records, 1)
 	assert.Equal(t, "user@vori.com", records[0]["enduser.id"])
+}
+
+func TestLoggerMiddlewareDescribesTheRPCRequest(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "tools/list", "the handler must still see the whole body")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/gateway-streamable", strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", "mcp-session-xyz")
+	req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "tools/list", records[0]["mcp.method.name"])
+	assert.Equal(t, "3", records[0]["jsonrpc.request.id"])
+	assert.Equal(t, "mcp-session-xyz", records[0]["mcp.session.id"])
+	assert.Equal(t, "2025-06-18", records[0]["mcp.protocol.version"])
+}
+
+func TestLoggerMiddlewareRecordsWhyARequestFailed(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Invalid session ID", http.StatusNotFound)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway-streamable", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "Invalid session ID", records[0]["error.message"])
+}
+
+func TestLoggerMiddlewareTakesTheSSESessionFromTheQuery(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway/message?sessionId=abc", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "abc", records[0]["mcp.session.id"])
 }
