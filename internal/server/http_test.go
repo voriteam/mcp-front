@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -147,5 +148,42 @@ func TestOAuthEndpointsCORS(t *testing.T) {
 				assert.Equal(t, http.StatusOK, w.Code, "OPTIONS should return 200")
 			}
 		})
+	}
+}
+
+type fakeReadiness struct {
+	name  string
+	ready bool
+}
+
+func (f fakeReadiness) Name() string               { return f.name }
+func (f fakeReadiness) Ready(context.Context) bool { return f.ready }
+
+func TestReadyHandler(t *testing.T) {
+	handler := NewReadyHandler([]ReadinessCheck{
+		fakeReadiness{name: "gateway", ready: true},
+		fakeReadiness{name: "gateway-streamable", ready: false},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 while an aggregate is starting, got %d", rec.Code)
+	}
+	var body struct {
+		Status  string   `json:"status"`
+		Waiting []string `json:"waiting"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "starting" || len(body.Waiting) != 1 || body.Waiting[0] != "gateway-streamable" {
+		t.Fatalf("unexpected body %s", rec.Body.String())
+	}
+
+	handler = NewReadyHandler([]ReadinessCheck{fakeReadiness{name: "gateway", ready: true}})
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 once every aggregate is ready, got %d", rec.Code)
 	}
 }

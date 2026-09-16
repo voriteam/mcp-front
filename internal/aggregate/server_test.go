@@ -69,13 +69,20 @@ func (m *mockTransport) Initialize(ctx context.Context, req mcp.InitializeReques
 			return nil, ctx.Err()
 		}
 	}
-	if m.initializeErr != nil {
-		return nil, m.initializeErr
-	}
 	m.mu.Lock()
+	if err := m.initializeErr; err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	m.initialized = true
 	m.mu.Unlock()
 	return &mcp.InitializeResult{}, nil
+}
+
+func (m *mockTransport) setInitializeErr(err error) {
+	m.mu.Lock()
+	m.initializeErr = err
+	m.mu.Unlock()
 }
 
 func (m *mockTransport) ListTools(ctx context.Context, req mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
@@ -1223,6 +1230,7 @@ type fakeSessionWithTools struct {
 	id    string
 	mu    sync.Mutex
 	tools map[string]mcpserver.ServerTool
+	sets  int
 }
 
 func (f *fakeSessionWithTools) Initialize()       {}
@@ -1243,6 +1251,7 @@ func (f *fakeSessionWithTools) GetSessionTools() map[string]mcpserver.ServerTool
 func (f *fakeSessionWithTools) SetSessionTools(tools map[string]mcpserver.ServerTool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sets++
 	f.tools = make(map[string]mcpserver.ServerTool, len(tools))
 	for k, v := range tools {
 		f.tools[k] = v
@@ -1981,4 +1990,124 @@ func TestToolCallCarriesTheSessionID(t *testing.T) {
 	tool, ok := rc.TakeTool()
 	require.True(t, ok)
 	assert.Equal(t, "mcp-session-abc", tool.SessionID)
+}
+
+// newReadinessTestServer keys each backend by an explicit URL so a test can mix
+// loopback sidecars with remote backends.
+func newReadinessTestServer(t *testing.T, backends map[string]*mockTransport, urls map[string]string, disc *config.DiscoveryConfig) *Server {
+	t.Helper()
+
+	backendConfigs := make(map[string]*config.MCPClientConfig, len(backends))
+	for name := range backends {
+		backendConfigs[name] = &config.MCPClientConfig{
+			TransportType: config.MCPClientTypeSSE,
+			URL:           urls[name],
+		}
+	}
+	factory := func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+		for name, mock := range backends {
+			if conf.URL == urls[name] {
+				return mock, nil
+			}
+		}
+		return nil, fmt.Errorf("unknown backend")
+	}
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     disc,
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: factory,
+		BaseURL:         "http://localhost:8080",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	return srv
+}
+
+func TestReadyWaitsForLoopbackBackends(t *testing.T) {
+	clickhouse := &mockTransport{tools: []mcp.Tool{{Name: "run_query"}}}
+	clickhouse.setInitializeErr(errTransientDiscovery)
+	srv := newReadinessTestServer(t,
+		map[string]*mockTransport{
+			"postgres":   {tools: []mcp.Tool{{Name: "query"}}},
+			"clickhouse": clickhouse,
+		},
+		map[string]string{
+			"postgres":   "http://localhost:5000/mcp",
+			"clickhouse": "http://127.0.0.1:8005/mcp",
+		},
+		&config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 10 * time.Millisecond},
+	)
+
+	assert.False(t, srv.Ready(context.Background()), "a sidecar that refuses connections holds the pod")
+	assert.False(t, srv.Ready(context.Background()))
+
+	clickhouse.setInitializeErr(nil)
+	time.Sleep(30 * time.Millisecond)
+	assert.True(t, srv.Ready(context.Background()), "ready once every sidecar has been discovered")
+
+	clickhouse.setInitializeErr(errTransientDiscovery)
+	time.Sleep(30 * time.Millisecond)
+	assert.True(t, srv.Ready(context.Background()), "readiness is sticky after a sidecar restarts")
+}
+
+func TestReadyIgnoresRemoteBackends(t *testing.T) {
+	github := &mockTransport{tools: []mcp.Tool{{Name: "search_code"}}}
+	github.setInitializeErr(errTransientDiscovery)
+	srv := newReadinessTestServer(t,
+		map[string]*mockTransport{
+			"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+			"github":   github,
+		},
+		map[string]string{
+			"postgres": "http://localhost:5000/mcp",
+			"github":   "https://api.githubcopilot.com/mcp/",
+		},
+		&config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+	)
+
+	assert.True(t, srv.Ready(context.Background()), "a remote backend outage must not pull the pod from rotation")
+}
+
+func TestPartialSessionRefreshedWhenSidecarRecovers(t *testing.T) {
+	clickhouse := &mockTransport{tools: []mcp.Tool{{Name: "run_query"}}}
+	clickhouse.setInitializeErr(errTransientDiscovery)
+	srv := newReadinessTestServer(t,
+		map[string]*mockTransport{
+			"postgres":   {tools: []mcp.Tool{{Name: "query"}}},
+			"clickhouse": clickhouse,
+		},
+		map[string]string{
+			"postgres":   "http://localhost:5000/mcp",
+			"clickhouse": "http://localhost:8005/mcp",
+		},
+		&config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 10 * time.Millisecond},
+	)
+	session := &fakeSessionWithTools{id: "mcp-session-early"}
+	ctx := srv.mcpServer.WithContext(context.Background(), session)
+	runQuery := "clickhouse" + srv.delimiter + "run_query"
+
+	srv.populateToolsFromContext(ctx)
+	require.Len(t, session.GetSessionTools(), 1, "registered with only the sidecar that was listening")
+	assert.True(t, srv.isPartialSession(session.id))
+
+	time.Sleep(30 * time.Millisecond)
+	srv.populateToolsFromContext(ctx)
+	_, ok := session.GetSessionTools()[runQuery]
+	assert.False(t, ok, "still partial while the sidecar is down")
+
+	clickhouse.setInitializeErr(nil)
+	time.Sleep(30 * time.Millisecond)
+	srv.populateToolsFromContext(ctx)
+	_, ok = session.GetSessionTools()[runQuery]
+	require.True(t, ok, "the recovered sidecar's tools reach the session on its next request")
+	assert.False(t, srv.isPartialSession(session.id))
+
+	sets := session.sets
+	srv.populateToolsFromContext(ctx)
+	assert.Equal(t, sets, session.sets, "a complete session is left alone")
 }

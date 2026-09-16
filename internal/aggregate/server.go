@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +47,9 @@ const (
 	// so a transient stall is retried rather than standing for a full CacheTTL.
 	partialDiscoveryCacheTTL = 5 * time.Second
 
+	// Pool key for the connections a readiness probe opens; reaped like a user's.
+	readinessIdentity = "readiness-probe"
+
 	// maxBackendDiscoveryTimeout caps the per-backend discovery deadline however
 	// long the backend configures its own timeout.
 	maxBackendDiscoveryTimeout = 30 * time.Second
@@ -72,8 +77,9 @@ type conn struct {
 
 // cachedTools holds discovered tool schemas, valid until expires.
 type cachedTools struct {
-	tools   map[string][]mcp.Tool // backendName -> filtered tools
-	expires time.Time
+	tools    map[string][]mcp.Tool // backendName -> filtered tools
+	expires  time.Time
+	complete bool // every backend answered; a partial result is cached briefly and retried
 }
 
 // backendTools is the most recent successful discovery for a single backend.
@@ -117,6 +123,15 @@ type Server struct {
 	lastGood       map[lastGoodKey]*backendTools
 	discoveryGroup singleflight.Group
 
+	// localBackends are the shared backends reached over loopback: sidecars
+	// that start beside the gateway and may not be listening yet when the
+	// load balancer first routes to the pod.
+	localBackends []string
+	ready         atomic.Bool
+
+	partialMu       sync.Mutex
+	partialSessions map[string]struct{} // sessions whose tools came from an incomplete discovery
+
 	connMu    sync.RWMutex
 	conns     map[connKey]*conn
 	closed    bool
@@ -154,11 +169,15 @@ func NewServer(cfg ServerConfig) *Server {
 	// and cached per-user.
 	sharedBackends := make(map[string]*config.MCPClientConfig)
 	userBackends := make(map[string]*config.MCPClientConfig)
+	var localBackends []string
 	for name, conf := range cfg.Backends {
 		if conf.RequiresUserToken {
 			userBackends[name] = conf
-		} else {
-			sharedBackends[name] = conf
+			continue
+		}
+		sharedBackends[name] = conf
+		if isLoopbackBackend(conf) {
+			localBackends = append(localBackends, name)
 		}
 	}
 
@@ -167,6 +186,7 @@ func NewServer(cfg ServerConfig) *Server {
 		backends:            cfg.Backends,
 		sharedBackends:      sharedBackends,
 		userBackends:        userBackends,
+		localBackends:       localBackends,
 		discovery:           cfg.Discovery,
 		delimiter:           delimiter,
 		streamlineResponses: cfg.StreamlineResponses,
@@ -176,12 +196,14 @@ func NewServer(cfg ServerConfig) *Server {
 		baseURL:             cfg.BaseURL,
 		userCache:           make(map[string]*cachedTools),
 		lastGood:            make(map[lastGoodKey]*backendTools),
+		partialSessions:     make(map[string]struct{}),
 		conns:               make(map[connKey]*conn),
 		stopCleanup:         make(chan struct{}),
 	}
 
 	hooks := &mcpserver.Hooks{}
 	hooks.AddOnRegisterSession(s.onRegisterSession)
+	hooks.AddOnUnregisterSession(s.onUnregisterSession)
 	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcp.ListToolsRequest) {
 		s.populateToolsFromContext(ctx)
 	})
@@ -298,7 +320,8 @@ func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.Clien
 		})
 		return
 	}
-	if len(sessionWithTools.GetSessionTools()) > 0 {
+	existing := sessionWithTools.GetSessionTools()
+	if len(existing) > 0 && !s.isPartialSession(session.SessionID()) {
 		return
 	}
 
@@ -311,7 +334,7 @@ func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.Clien
 		})
 	}
 
-	tools, err := s.getTools(ctx, userEmail)
+	tools, complete, err := s.discoverTools(ctx, userEmail)
 	if err != nil {
 		log.LogErrorWithFields("aggregate", "Tool discovery failed", map[string]any{
 			"server": s.name,
@@ -338,7 +361,23 @@ func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.Clien
 			}
 		}
 	}
+	if len(existing) > 0 {
+		if !complete && len(sessionTools) == len(existing) {
+			return
+		}
+		sessionWithTools.SetSessionTools(sessionTools)
+		s.setPartialSession(session.SessionID(), !complete)
+		log.LogInfoWithFields("aggregate", "Session tools refreshed", map[string]any{
+			"server":            s.name,
+			"sessionID":         session.SessionID(),
+			"user":              userEmail,
+			"toolCount":         len(sessionTools),
+			"previousToolCount": len(existing),
+		})
+		return
+	}
 	sessionWithTools.SetSessionTools(sessionTools)
+	s.setPartialSession(session.SessionID(), !complete)
 
 	log.LogInfoWithFields("aggregate", "Session registered", map[string]any{
 		"server":    s.name,
@@ -346,6 +385,80 @@ func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.Clien
 		"user":      userEmail,
 		"toolCount": len(sessionTools),
 	})
+}
+
+func (s *Server) onUnregisterSession(_ context.Context, session mcpserver.ClientSession) {
+	s.setPartialSession(session.SessionID(), false)
+}
+
+func (s *Server) setPartialSession(sessionID string, partial bool) {
+	s.partialMu.Lock()
+	defer s.partialMu.Unlock()
+	if partial {
+		s.partialSessions[sessionID] = struct{}{}
+		return
+	}
+	delete(s.partialSessions, sessionID)
+}
+
+func (s *Server) isPartialSession(sessionID string) bool {
+	s.partialMu.Lock()
+	defer s.partialMu.Unlock()
+	_, ok := s.partialSessions[sessionID]
+	return ok
+}
+
+// Ready reports whether every loopback backend has been discovered once. The
+// load balancer routes to a pod as soon as the process answers /health, before
+// the sidecars beside it are listening. Remote backends are left out so an
+// outage there stays partial instead of pulling every pod from rotation.
+// Sticky: a sidecar that restarts later is covered by session refresh.
+func (s *Server) Ready(ctx context.Context) bool {
+	if s.ready.Load() {
+		return true
+	}
+	if len(s.localBackends) > 0 {
+		if _, _, err := s.getSharedTools(ctx, readinessIdentity); err != nil {
+			return false
+		}
+		if !s.localBackendsDiscovered() {
+			return false
+		}
+	}
+	if s.ready.CompareAndSwap(false, true) {
+		log.LogInfoWithFields("aggregate", "Aggregate ready", map[string]any{
+			"server":   s.name,
+			"backends": len(s.localBackends),
+		})
+	}
+	return true
+}
+
+func (s *Server) localBackendsDiscovered() bool {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	for _, name := range s.localBackends {
+		if _, ok := s.lastGood[lastGoodKey{backendName: name}]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func isLoopbackBackend(conf *config.MCPClientConfig) bool {
+	if conf == nil || conf.URL == "" {
+		return false
+	}
+	u, err := url.Parse(conf.URL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) populateToolsFromContext(ctx context.Context) {
@@ -366,13 +479,19 @@ func (s *Server) discoveryCacheTTL(complete bool) time.Duration {
 // user's token-gated backends, merged. Shared backends are discovered once and
 // cached for everyone; token-gated backends are discovered and cached per-user.
 func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
-	shared, err := s.getSharedTools(ctx, userEmail)
+	tools, _, err := s.discoverTools(ctx, userEmail)
+	return tools, err
+}
+
+// discoverTools is getTools plus whether every backend answered.
+func (s *Server) discoverTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, bool, error) {
+	shared, sharedComplete, err := s.getSharedTools(ctx, userEmail)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	user, err := s.getUserTools(ctx, userEmail)
+	user, userComplete, err := s.getUserTools(ctx, userEmail)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Shared and token-gated backend names are disjoint, so the union is
@@ -380,7 +499,7 @@ func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]m
 	merged := make(map[string][]mcp.Tool, len(shared)+len(user))
 	maps.Copy(merged, shared)
 	maps.Copy(merged, user)
-	return merged, nil
+	return merged, sharedComplete && userComplete, nil
 }
 
 // getSharedTools returns tools for backends that need no user token. Their
@@ -388,12 +507,12 @@ func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]m
 // userEmail is used only to open connections during discovery (connections are
 // pooled per-user); a run where every shared backend fails is an error, since
 // it means shared infrastructure is down.
-func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, bool, error) {
 	s.cacheMu.RLock()
 	if s.sharedCache != nil && time.Now().Before(s.sharedCache.expires) {
-		tools := s.sharedCache.tools
+		cached := s.sharedCache
 		s.cacheMu.RUnlock()
-		return tools, nil
+		return cached.tools, cached.complete, nil
 	}
 	s.cacheMu.RUnlock()
 
@@ -401,9 +520,9 @@ func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[stri
 		// Double-check inside singleflight.
 		s.cacheMu.RLock()
 		if s.sharedCache != nil && time.Now().Before(s.sharedCache.expires) {
-			tools := s.sharedCache.tools
+			cached := s.sharedCache
 			s.cacheMu.RUnlock()
-			return tools, nil
+			return cached, nil
 		}
 		s.cacheMu.RUnlock()
 
@@ -417,34 +536,36 @@ func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[stri
 			return nil, err
 		}
 
-		s.cacheMu.Lock()
-		s.sharedCache = &cachedTools{
-			tools:   tools,
-			expires: time.Now().Add(s.discoveryCacheTTL(complete)),
+		cached := &cachedTools{
+			tools:    tools,
+			expires:  time.Now().Add(s.discoveryCacheTTL(complete)),
+			complete: complete,
 		}
+		s.cacheMu.Lock()
+		s.sharedCache = cached
 		s.cacheMu.Unlock()
-		return tools, nil
+		return cached, nil
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return v.(map[string][]mcp.Tool), nil
+	cached := v.(*cachedTools)
+	return cached.tools, cached.complete, nil
 }
 
 // getUserTools returns tools for the token-gated backends the user has a token
 // for. The result is cached per-user. A user with no configured tokens gets an
 // empty set — that is expected, not an error.
-func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, bool, error) {
 	if len(s.userBackends) == 0 {
-		return map[string][]mcp.Tool{}, nil
+		return map[string][]mcp.Tool{}, true, nil
 	}
 
 	s.cacheMu.RLock()
 	if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
-		tools := cached.tools
 		s.cacheMu.RUnlock()
-		return tools, nil
+		return cached.tools, cached.complete, nil
 	}
 	s.cacheMu.RUnlock()
 
@@ -452,9 +573,8 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string
 		// Double-check inside singleflight.
 		s.cacheMu.RLock()
 		if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
-			tools := cached.tools
 			s.cacheMu.RUnlock()
-			return tools, nil
+			return cached, nil
 		}
 		s.cacheMu.RUnlock()
 
@@ -467,19 +587,22 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string
 			return nil, err
 		}
 
-		s.cacheMu.Lock()
-		s.userCache[userEmail] = &cachedTools{
-			tools:   tools,
-			expires: time.Now().Add(s.discoveryCacheTTL(complete)),
+		cached := &cachedTools{
+			tools:    tools,
+			expires:  time.Now().Add(s.discoveryCacheTTL(complete)),
+			complete: complete,
 		}
+		s.cacheMu.Lock()
+		s.userCache[userEmail] = cached
 		s.cacheMu.Unlock()
-		return tools, nil
+		return cached, nil
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return v.(map[string][]mcp.Tool), nil
+	cached := v.(*cachedTools)
+	return cached.tools, cached.complete, nil
 }
 
 // backendsWithUserToken returns the subset of token-gated backends for which

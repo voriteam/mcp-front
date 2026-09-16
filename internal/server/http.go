@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -34,6 +35,39 @@ func NewHealthHandler() *HealthHandler {
 // ServeHTTP implements http.Handler for health checks
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// ReadinessCheck holds a pod out of rotation until it can serve.
+type ReadinessCheck interface {
+	Name() string
+	Ready(ctx context.Context) bool
+}
+
+// ReadyHandler answers 503 until every check passes, so the load balancer and
+// kubelet keep traffic off a pod whose dependencies are still starting.
+type ReadyHandler struct {
+	checks []ReadinessCheck
+}
+
+func NewReadyHandler(checks []ReadinessCheck) *ReadyHandler {
+	return &ReadyHandler{checks: checks}
+}
+
+func (h *ReadyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var waiting []string
+	for _, check := range h.checks {
+		if !check.Ready(r.Context()) {
+			waiting = append(waiting, check.Name())
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if len(waiting) > 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "starting", "waiting": waiting})
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }

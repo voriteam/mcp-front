@@ -406,6 +406,7 @@ func buildHTTPHandler(
 
 	sseServers := make(map[string]*mcpserver.SSEServer)
 	var aggregates []*aggregate.Server
+	var readiness []server.ReadinessCheck
 
 	backendTokenSources, err := buildBackendTokenSources(context.Background(), cfg.MCPServers)
 	if err != nil {
@@ -516,6 +517,7 @@ func buildHTTPHandler(
 		})
 		agg.Start()
 		aggregates = append(aggregates, agg)
+		readiness = append(readiness, agg)
 
 		// CORS must wrap the auth chain so OPTIONS preflights short-circuit
 		// with 200 instead of being rejected as unauthenticated by the
@@ -549,6 +551,10 @@ func buildHTTPHandler(
 	}
 
 	log.LogInfoWithFields("server", "MCP proxy server initialized", nil)
+	// Bare like /health: the probes hit this every few seconds and would
+	// otherwise fill the request log.
+	mux.Handle("/ready", server.NewReadyHandler(readiness))
+
 	return mux, aggregates, nil
 }
 
