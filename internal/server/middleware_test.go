@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 	"github.com/stainless-api/mcp-front/internal/servicecontext"
+	"github.com/stainless-api/mcp-front/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -336,4 +339,58 @@ func TestServiceAuthMiddleware_BasicTimingEqualized(t *testing.T) {
 	assert.Less(t, gap, knownMed/2,
 		"timing gap %v between known-user and unknown-user must be << bcrypt cost (known median %v, unknown median %v) — dummy-hash equalization regressed?",
 		gap, knownMed, unknownMed)
+}
+
+func TestLoggerMiddlewareCarriesARecordedToolCall(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.True(t, reqlog.RecordTool(r.Context(), reqlog.ToolCall{
+			Backend:    "postgres",
+			Name:       "query",
+			SessionID:  "mcp-session-abc",
+			DurationMS: 12,
+		}))
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway-streamable", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "query", records[0]["mcp.tool.name"])
+	assert.Equal(t, "postgres", records[0]["mcp.backend.name"])
+	assert.Equal(t, "mcp-session-abc", records[0]["mcp.session.id"])
+	assert.Equal(t, float64(12), records[0]["mcp.tool.duration_ms"])
+	assert.Equal(t, false, records[0]["mcp.tool.is_error"])
+}
+
+func TestLoggerMiddlewareOmitsToolFieldsForOtherRequests(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.NotContains(t, records[0], "mcp.tool.name")
+}
+
+func TestLoggerMiddlewareRecordsTheAuthenticatedUser(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/gateway-streamable", nil)
+	req = req.WithContext(context.WithValue(req.Context(), oauth.GetUserContextKey(), "user@vori.com"))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "user@vori.com", records[0]["enduser.id"])
 }

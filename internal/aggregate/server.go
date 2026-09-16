@@ -18,6 +18,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 	"github.com/stainless-api/mcp-front/internal/storage"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
@@ -680,17 +681,58 @@ func (s *Server) makeToolHandler(userEmail, backendName string) mcpserver.ToolHa
 		}
 		request.Params.Name = originalName
 
+		start := time.Now()
 		var result *mcp.CallToolResult
 		err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
 			var callErr error
 			result, callErr = c.client.CallTool(ctx, request)
 			return callErr
 		})
+		s.recordToolCall(ctx, userEmail, backendName, originalName, start, result, err)
+
 		if err != nil {
 			return nil, fmt.Errorf("backend %s: %w", backendName, err)
 		}
 		return result, nil
 	}
+}
+
+// recordToolCall reports a finished call, successful or not, so tool usage can
+// be counted from the logs. It sits outside withConnRetry so a retried call is
+// still reported once.
+func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, toolName string, start time.Time, result *mcp.CallToolResult, err error) {
+	var sessionID string
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		sessionID = session.SessionID()
+	}
+
+	// A tool that reports its own failure does so in the result; only transport
+	// and protocol failures come back as err.
+	call := reqlog.ToolCall{
+		Backend:    backendName,
+		Name:       toolName,
+		SessionID:  sessionID,
+		DurationMS: time.Since(start).Milliseconds(),
+		Failed:     err != nil || (result != nil && result.IsError),
+	}
+
+	if reqlog.RecordTool(ctx, call) {
+		return
+	}
+
+	fields := map[string]any{
+		"server":               s.name,
+		"user":                 userEmail,
+		"mcp.tool.name":        call.Name,
+		"mcp.backend.name":     call.Backend,
+		"mcp.session.id":       call.SessionID,
+		"mcp.tool.duration_ms": call.DurationMS,
+		"mcp.tool.is_error":    call.Failed,
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	log.LogInfoWithFields("aggregate", "Tool call", fields)
 }
 
 // withConnRetry runs fn against the pooled connection for (userEmail, backendName).
