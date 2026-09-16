@@ -221,7 +221,7 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 				fields["http.request.body.size"] = len(body)
 				if bodyComplete {
 					maps.Copy(fields, rpcFields(body))
-					requestBody, _ = reqlog.RedactedRPCBody(body)
+					requestBody, _ = reqlog.RPCBody(body)
 				}
 			}
 

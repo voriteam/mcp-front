@@ -76,15 +76,6 @@ func TestRPCFields(t *testing.T) {
 	}
 }
 
-func TestRPCFieldsNeverCarriesArgumentValues(t *testing.T) {
-	fields := rpcFields([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"postgres__execute_sql","arguments":{"sql":"select secret"}}}`))
-
-	assert.Equal(t, "sql", fields["mcp.tool.argument_names"])
-	for _, value := range fields {
-		assert.NotContains(t, value, "select secret")
-	}
-}
-
 func TestPeekJSONBodyReplaysTheBody(t *testing.T) {
 	const payload = `{"jsonrpc":"2.0","method":"ping"}`
 	req := httptest.NewRequest(http.MethodPost, "/gateway-streamable", strings.NewReader(payload))

@@ -1918,7 +1918,7 @@ func TestToolCallIsLoggedWithoutARequestLogContext(t *testing.T) {
 	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call postgres.query succeeded in \d+ms$`, lines[0]["msg"])
 }
 
-func TestToolCallLineCarriesARedactedRequestBody(t *testing.T) {
+func TestToolCallLineCarriesTheRequestBody(t *testing.T) {
 	srv := newTestServer(t, map[string]*mockTransport{
 		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
 	})
@@ -1935,7 +1935,7 @@ func TestToolCallLineCarriesARedactedRequestBody(t *testing.T) {
 
 	lines := toolCallLines(readLogs())
 	require.Len(t, lines, 1)
-	assert.JSONEq(t, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"postgres.query","arguments":{"sql":"[string]"}}}`, lines[0]["request_body"].(string))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"postgres.query","arguments":{"sql":"select * from customers"}}}`, lines[0]["request_body"].(string))
 }
 
 func TestFailedToolCallLineSaysWhy(t *testing.T) {

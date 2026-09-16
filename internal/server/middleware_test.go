@@ -471,7 +471,7 @@ func TestCanonicalLineNamesTheToolCall(t *testing.T) {
 	}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"secret"}}}`))
 
 	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call github__get_me 200 in \d+ms$`, record["msg"])
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"[string]"}}}`, record["request_body"].(string))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"secret"}}}`, record["request_body"].(string))
 	assert.Equal(t, true, record["succeeded"])
 	assert.Contains(t, record, "responseTime")
 }

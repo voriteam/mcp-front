@@ -21,9 +21,8 @@ const maxInspectedBodyBytes = 1 << 20
 
 const maxLoggedErrorBytes = 256
 
-// rpcRequest names only envelope fields. Of the tool arguments, only their
-// names are ever logged; the values would put query text and customer data
-// into long-retention logs.
+// rpcRequest names the envelope fields lifted into their own attributes. The
+// whole message, arguments included, is logged separately as request_body.
 type rpcRequest struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`

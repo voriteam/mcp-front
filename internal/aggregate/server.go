@@ -739,14 +739,14 @@ func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, req
 		"mcp.tool.duration_ms": call.DurationMS,
 		"mcp.tool.is_error":    call.Failed,
 	}
-	if raw, marshalErr := json.Marshal(map[string]any{
+	params := request.Params
+	params.Name = requestedName
+	if body, marshalErr := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "tools/call",
-		"params":  map[string]any{"name": requestedName, "arguments": request.Params.Arguments},
+		"params":  params,
 	}); marshalErr == nil {
-		if body, ok := reqlog.RedactedRPCBody(raw); ok {
-			fields["request_body"] = body
-		}
+		fields["request_body"] = string(body)
 	}
 
 	outcome := "succeeded"
