@@ -13,10 +13,11 @@ import (
 type Handler func(ctx context.Context, userEmail string, args json.RawMessage) (*mcp.CallToolResult, error)
 
 type Tool struct {
-	Name        string
-	Description string
-	InputSchema json.RawMessage
-	Handler     Handler
+	Name         string
+	Description  string
+	InputSchema  json.RawMessage
+	OutputSchema json.RawMessage
+	Handler      Handler
 }
 
 type Client struct {
@@ -57,9 +58,10 @@ func (c *Client) ListTools(context.Context, mcp.ListToolsRequest) (*mcp.ListTool
 	for _, name := range c.order {
 		t := c.tools[name]
 		out = append(out, mcp.Tool{
-			Name:           t.Name,
-			Description:    t.Description,
-			RawInputSchema: t.InputSchema,
+			Name:            t.Name,
+			Description:     t.Description,
+			RawInputSchema:  t.InputSchema,
+			RawOutputSchema: t.OutputSchema,
 		})
 	}
 	// Empty NextCursor terminates discoverBackendTools' pagination loop.
