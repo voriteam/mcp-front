@@ -62,6 +62,21 @@ const onboardingSchemaFormat = `{
   "additionalProperties": false
 }`
 
+const onboardingOutputSchema = `{
+  "type": "object",
+  "properties": {
+    "url":       {"type": "string", "format": "uri", "description": "Short onboarding link to send to the recipient."},
+    "expiresAt": {"type": "string", "format": "date-time", "description": "When the link stops working, RFC 3339 in UTC."}
+  },
+  "required": ["url", "expiresAt"],
+  "additionalProperties": false
+}`
+
+type onboardingLink struct {
+	URL       string `json:"url"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
 // OnboardingTools returns an error naming every field left empty. A blank
 // signing key would otherwise mint links that look right and fail only when
 // their recipient redeems them.
@@ -91,10 +106,11 @@ func OnboardingTools(cfg OnboardingConfig) ([]Tool, error) {
 
 	return []Tool{{
 		Name:        "create_onboarding_link",
-		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient.",
+		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Returns the link and the moment it expires.",
 		InputSchema: json.RawMessage(fmt.Sprintf(onboardingSchemaFormat,
 			maxOnboardingTTLDays, int(cfg.DefaultTokenTTL/(24*time.Hour)))),
-		Handler: cfg.createLink,
+		OutputSchema: json.RawMessage(onboardingOutputSchema),
+		Handler:      cfg.createLink,
 	}}, nil
 }
 
@@ -118,6 +134,7 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 
 	now := time.Now()
 	expires := now.Add(ttl)
+	expiresAt := expires.UTC().Format(time.RFC3339)
 
 	// Claim names are fixed by the backend's InvitationTokensService.verify:
 	// anything else is rejected as InvalidInvitationTokenError.
@@ -143,10 +160,10 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 		"issuedBy":  userEmail,
 		"dealId":    args.HubspotDealID,
 		"recipient": args.RecipientEmail,
-		"expiresAt": expires.UTC().Format(time.RFC3339),
+		"expiresAt": expiresAt,
 	})
 
-	return mcp.NewToolResultText(short), nil
+	return mcp.NewToolResultJSON(onboardingLink{URL: short, ExpiresAt: expiresAt})
 }
 
 func (cfg OnboardingConfig) shorten(ctx context.Context, long string) (string, error) {

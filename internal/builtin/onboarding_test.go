@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,9 +84,48 @@ func TestCreateLink_TokenShape(t *testing.T) {
 	exp, ok := claims["exp"].(float64)
 	require.True(t, ok)
 	assert.Equal(t, float64(7*24*time.Hour/time.Second), exp-iat)
+
+	link := linkResult(t, res)
+	assert.Equal(t, "https://link.vori.io/abc123", link.URL)
+	assertExpiresAtMatchesToken(t, link, claims)
 }
 
-func keysOf(m map[string]any) []string {
+// Clients read either the structured content or the text block, so the two
+// must carry the same object.
+func linkResult(t *testing.T, res *mcp.CallToolResult) onboardingLink {
+	t.Helper()
+	require.NotNil(t, res)
+	require.False(t, res.IsError)
+
+	link, ok := res.StructuredContent.(onboardingLink)
+	require.True(t, ok, "structured content is %T", res.StructuredContent)
+
+	require.Len(t, res.Content, 1)
+	text, ok := res.Content[0].(mcp.TextContent)
+	require.True(t, ok, "content is %T", res.Content[0])
+
+	var fromText map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text.Text), &fromText))
+	raw, err := json.Marshal(link)
+	require.NoError(t, err)
+	var fromStructured map[string]any
+	require.NoError(t, json.Unmarshal(raw, &fromStructured))
+	assert.Equal(t, fromStructured, fromText)
+	assert.ElementsMatch(t, []string{"url", "expiresAt"}, keysOf(fromText))
+	return link
+}
+
+func assertExpiresAtMatchesToken(t *testing.T, link onboardingLink, claims map[string]any) {
+	t.Helper()
+	assert.True(t, strings.HasSuffix(link.ExpiresAt, "Z"), "expiresAt %q must be UTC", link.ExpiresAt)
+	expiresAt, err := time.Parse(time.RFC3339, link.ExpiresAt)
+	require.NoError(t, err)
+	exp, ok := claims["exp"].(float64)
+	require.True(t, ok)
+	assert.Equal(t, int64(exp), expiresAt.Unix())
+}
+
+func keysOf[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -140,22 +180,24 @@ func claimsFromLink(t *testing.T, long string) map[string]any {
 func TestCreateLink_ExpiryInDays(t *testing.T) {
 	t.Run("defaults when the caller names none", func(t *testing.T) {
 		tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
-		_, err := tool.Handler(context.Background(), "ae@vori.com",
+		res, err := tool.Handler(context.Background(), "ae@vori.com",
 			json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example"}`))
 		require.NoError(t, err)
 
 		claims := claimsFromLink(t, *long)
 		assert.Equal(t, float64(7*24*60*60), claims["exp"].(float64)-claims["iat"].(float64))
+		assertExpiresAtMatchesToken(t, linkResult(t, res), claims)
 	})
 
 	t.Run("honours a caller-supplied expiry", func(t *testing.T) {
 		tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
-		_, err := tool.Handler(context.Background(), "ae@vori.com",
+		res, err := tool.Handler(context.Background(), "ae@vori.com",
 			json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":14}`))
 		require.NoError(t, err)
 
 		claims := claimsFromLink(t, *long)
 		assert.Equal(t, float64(14*24*60*60), claims["exp"].(float64)-claims["iat"].(float64))
+		assertExpiresAtMatchesToken(t, linkResult(t, res), claims)
 	})
 
 	t.Run("rejects out-of-range expiries", func(t *testing.T) {
@@ -195,6 +237,21 @@ func TestOnboardingSchema_AdvertisesDefaultAndCeiling(t *testing.T) {
 	assert.Equal(t, maxOnboardingTTLDays, schema.Properties.ExpiresInDays.Maximum)
 	assert.Contains(t, schema.Properties.ExpiresInDays.Description, "7 days",
 		"the advertised default must track DefaultTokenTTL")
+}
+
+func TestOnboardingSchema_DeclaresOutput(t *testing.T) {
+	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+
+	var schema struct {
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	require.NoError(t, json.Unmarshal(tool.OutputSchema, &schema))
+
+	assert.Equal(t, "object", schema.Type)
+	assert.ElementsMatch(t, []string{"url", "expiresAt"}, schema.Required)
+	assert.ElementsMatch(t, []string{"url", "expiresAt"}, keysOf(schema.Properties))
 }
 
 func TestCreateLink_RejectsBadArguments(t *testing.T) {

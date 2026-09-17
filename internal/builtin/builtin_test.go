@@ -26,8 +26,10 @@ func echoTool(name string, seen *json.RawMessage, caller *string) Tool {
 func TestListTools(t *testing.T) {
 	var seen json.RawMessage
 	var caller string
+	first := echoTool("first", &seen, &caller)
+	first.OutputSchema = json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)
 	c := NewClient("gtm", "ae@vori.com", []Tool{
-		echoTool("first", &seen, &caller),
+		first,
 		echoTool("second", &seen, &caller),
 	})
 
@@ -41,11 +43,17 @@ func TestListTools(t *testing.T) {
 	assert.JSONEq(t,
 		`{"type":"object","properties":{"q":{"type":"string"}}}`,
 		string(res.Tools[0].RawInputSchema))
+	assert.JSONEq(t,
+		`{"type":"object","properties":{"a":{"type":"string"}}}`,
+		string(res.Tools[0].RawOutputSchema))
+	assert.Nil(t, res.Tools[1].RawOutputSchema, "a tool without an output schema advertises none")
 	assert.Empty(t, res.NextCursor, "empty cursor ends the aggregate's pagination loop")
 
 	// A tool carrying both schemas fails to marshal in mcp-go.
 	assert.Empty(t, res.Tools[0].InputSchema.Type)
 	_, err = json.Marshal(res.Tools[0])
+	require.NoError(t, err)
+	_, err = json.Marshal(res.Tools[1])
 	require.NoError(t, err)
 }
 
