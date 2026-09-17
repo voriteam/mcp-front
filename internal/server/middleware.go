@@ -2,11 +2,16 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,8 +22,10 @@ import (
 	jsonwriter "github.com/stainless-api/mcp-front/internal/json"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 	"github.com/stainless-api/mcp-front/internal/servicecontext"
 	"github.com/stainless-api/mcp-front/internal/session"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -80,6 +87,7 @@ type responseWriterDelegator struct {
 	status      int
 	written     int
 	wroteHeader bool
+	errorBody   []byte
 }
 
 func wrapResponseWriter(w http.ResponseWriter) *responseWriterDelegator {
@@ -112,7 +120,14 @@ func (r *responseWriterDelegator) Write(b []byte) (int, error) {
 	}
 	n, err := r.ResponseWriter.Write(b)
 	r.written += n
+	if r.status >= 400 && len(r.errorBody) < maxLoggedErrorBytes {
+		r.errorBody = append(r.errorBody, b[:min(n, maxLoggedErrorBytes-len(r.errorBody))]...)
+	}
 	return n, err
+}
+
+func (r *responseWriterDelegator) ErrorMessage() string {
+	return errorText(r.errorBody)
 }
 
 // Unwrap returns the underlying ResponseWriter for interface detection
@@ -133,31 +148,144 @@ func (r *responseWriterDelegator) Flush() {
 var _ http.ResponseWriter = (*responseWriterDelegator)(nil)
 var _ http.Flusher = (*responseWriterDelegator)(nil)
 
-// loggerMiddleware adds request/response logging
+func fallbackTraceID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// NewLoggerMiddleware emits one canonical log line per request. It injects a
+// reqlog.Context so handlers below it can attach fields that are captured here
+// once the handler returns.
 func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			wrapped := wrapResponseWriter(w)
 
-			next.ServeHTTP(wrapped, r)
+			body, bodyComplete := peekJSONBody(r)
 
-			// Log request with response details
+			ctx, rc := reqlog.Inject(r.Context())
+			traceID := fallbackTraceID()
+			if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+				traceID = sc.TraceID().String()
+			}
+			next.ServeHTTP(wrapped, r.WithContext(ctx))
+
+			duration := time.Since(start)
+			status := wrapped.Status()
+
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+
+			serverAddr := r.Host
+			var serverPort int
+			if host, portStr, err := net.SplitHostPort(r.Host); err == nil {
+				serverAddr = host
+				serverPort, _ = strconv.Atoi(portStr)
+			}
+
 			fields := map[string]any{
-				"method":      r.Method,
-				"path":        r.URL.Path,
-				"status":      wrapped.Status(),
-				"duration_ms": time.Since(start).Milliseconds(),
-				"bytes":       wrapped.BytesWritten(),
-				"remote_addr": r.RemoteAddr,
+				"responseTime":              duration.Milliseconds(),
+				"http.request.method":       r.Method,
+				"url.path":                  r.URL.Path,
+				"url.scheme":                scheme,
+				"http.response.status_code": status,
+				"http.response.body.size":   wrapped.BytesWritten(),
+				"client.address":            r.RemoteAddr,
+				"user_agent.original":       r.Header.Get("User-Agent"),
+				"trace_id":                  traceID,
+				"is_canonical":              true,
 			}
 
-			// Add query string if present
+			if proto := strings.TrimPrefix(r.Proto, "HTTP/"); proto != "" {
+				fields["network.protocol.version"] = proto
+			}
+
+			if serverAddr != "" {
+				fields["server.address"] = serverAddr
+			}
+
+			if serverPort != 0 {
+				fields["server.port"] = serverPort
+			}
+
 			if r.URL.RawQuery != "" {
-				fields["query"] = r.URL.RawQuery
+				fields["url.query"] = r.URL.RawQuery
 			}
 
-			log.LogInfoWithFields(prefix, "request", fields)
+			var requestBody string
+			if body != nil {
+				fields["http.request.body.size"] = len(body)
+				if bodyComplete {
+					maps.Copy(fields, rpcFields(body))
+					requestBody, _ = reqlog.RPCBody(body)
+				}
+			}
+
+			if sessionID := r.Header.Get("Mcp-Session-Id"); sessionID != "" {
+				fields["mcp.session.id"] = sessionID
+			} else if sessionID := r.URL.Query().Get("sessionId"); sessionID != "" {
+				fields["mcp.session.id"] = sessionID
+			}
+			if _, ok := fields["mcp.protocol.version"]; !ok {
+				setIfPresent(fields, "mcp.protocol.version", r.Header.Get("Mcp-Protocol-Version"))
+			}
+
+			errorMessage := ""
+			if status >= 400 {
+				errorMessage = wrapped.ErrorMessage()
+				fields["error.type"] = strconv.Itoa(status)
+				setIfPresent(fields, "error.message", errorMessage)
+			}
+
+			// This middleware is chained innermost, so the auth middlewares that
+			// establish identity have already run and their context values are
+			// visible here.
+			if user, ok := oauth.GetUserFromContext(ctx); ok && user != "" {
+				fields["enduser.id"] = user
+			} else if info, ok := servicecontext.GetAuthInfo(ctx); ok {
+				fields["enduser.id"] = info.ServiceName
+			}
+
+			tool, toolRecorded := rc.TakeTool()
+			if toolRecorded {
+				fields["mcp.tool.name"] = tool.Name
+				fields["mcp.backend.name"] = tool.Backend
+				fields["mcp.session.id"] = tool.SessionID
+				fields["mcp.tool.duration_ms"] = tool.DurationMS
+				fields["mcp.tool.is_error"] = tool.Failed
+			}
+
+			// The SSE transport accepts a tool call and runs it after this
+			// response, and the aggregate logs the outcome with its own
+			// request_body. Carrying the body here too would count the call twice.
+			deferred := fields["mcp.method.name"] == "tools/call" && status == http.StatusAccepted && !toolRecorded
+			if deferred {
+				fields["mcp.call.deferred"] = true
+			} else {
+				setIfPresent(fields, "request_body", requestBody)
+				fields["succeeded"] = status < 400 && !(toolRecorded && tool.Failed)
+			}
+
+			msg := canonicalMessage(fields, r, status, duration, errorMessage)
+			if toolRecorded && tool.Failed {
+				msg += " (tool error)"
+			}
+			if deferred {
+				msg += " (deferred)"
+			}
+
+			switch {
+			case status >= 500, toolRecorded && tool.Failed:
+				log.LogErrorWithFields(prefix, msg, fields)
+			case status >= 400:
+				log.LogWarnWithFields(prefix, msg, fields)
+			default:
+				log.LogInfoWithFields(prefix, msg, fields)
+			}
 		})
 	}
 }

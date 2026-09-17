@@ -15,6 +15,8 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
+	"github.com/stainless-api/mcp-front/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
@@ -1791,4 +1793,192 @@ func TestUserEmailHeaderAppliedToBackendConfig(t *testing.T) {
 		defer mu.Unlock()
 		assert.NotContains(t, seen, "caura", "no transport is opened without an identity")
 	})
+}
+
+func toolCallLines(records []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, record := range records {
+		if record["mcp.method.name"] == "tools/call" {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func TestToolCallRecordedOnTheRequestLogContext(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	})
+
+	ctx, rc := reqlog.Inject(context.Background())
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.NoError(t, err)
+
+	tool, ok := rc.TakeTool()
+	require.True(t, ok)
+	assert.Equal(t, "query", tool.Name)
+	assert.Equal(t, "postgres", tool.Backend)
+	assert.False(t, tool.Failed)
+}
+
+func TestToolCallReportsAToolReportedFailure(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {
+			tools: []mcp.Tool{{Name: "query"}},
+			callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{IsError: true}, nil
+			},
+		},
+	})
+
+	ctx, rc := reqlog.Inject(context.Background())
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.NoError(t, err)
+
+	tool, ok := rc.TakeTool()
+	require.True(t, ok)
+	assert.True(t, tool.Failed)
+}
+
+func TestToolCallReportsATransportFailure(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {
+			tools: []mcp.Tool{{Name: "query"}},
+			callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, fmt.Errorf("connection refused")
+			},
+		},
+	})
+
+	ctx, rc := reqlog.Inject(context.Background())
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.Error(t, err)
+
+	tool, ok := rc.TakeTool()
+	require.True(t, ok)
+	assert.True(t, tool.Failed)
+	assert.Equal(t, "query", tool.Name)
+}
+
+func TestRetriedToolCallIsReportedOnce(t *testing.T) {
+	var calls int
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {
+			tools: []mcp.Tool{{Name: "query"}},
+			callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				calls++
+				if calls == 1 {
+					return nil, fmt.Errorf("Invalid session ID")
+				}
+				return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+			},
+		},
+	})
+
+	readLogs := testutil.CaptureLogs(t)
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, calls, "the session error should have been retried")
+	assert.Len(t, toolCallLines(readLogs()), 1)
+}
+
+func TestToolCallIsLoggedWithoutARequestLogContext(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	})
+
+	readLogs := testutil.CaptureLogs(t)
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.NoError(t, err)
+
+	lines := toolCallLines(readLogs())
+	require.Len(t, lines, 1)
+	assert.Equal(t, "query", lines[0]["mcp.tool.name"])
+	assert.Equal(t, "postgres", lines[0]["mcp.backend.name"])
+	assert.Equal(t, "user@test.com", lines[0]["enduser.id"])
+	assert.Equal(t, false, lines[0]["mcp.tool.is_error"])
+	assert.Equal(t, true, lines[0]["succeeded"])
+	assert.Equal(t, "INFO", lines[0]["level"])
+	assert.Equal(t, true, lines[0]["is_canonical"])
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call postgres.query succeeded in \d+ms$`, lines[0]["msg"])
+}
+
+func TestToolCallLineCarriesTheRequestBody(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	})
+
+	readLogs := testutil.CaptureLogs(t)
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "postgres" + srv.delimiter + "query",
+			Arguments: map[string]any{"sql": "select * from customers"},
+		},
+	})
+	require.NoError(t, err)
+
+	lines := toolCallLines(readLogs())
+	require.Len(t, lines, 1)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"postgres.query","arguments":{"sql":"select * from customers"}}}`, lines[0]["request_body"].(string))
+}
+
+func TestFailedToolCallLineSaysWhy(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {
+			tools: []mcp.Tool{{Name: "query"}},
+			callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, fmt.Errorf("connection refused")
+			},
+		},
+	})
+
+	readLogs := testutil.CaptureLogs(t)
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.Error(t, err)
+
+	lines := toolCallLines(readLogs())
+	require.Len(t, lines, 1)
+	assert.Equal(t, false, lines[0]["succeeded"])
+	assert.Equal(t, "ERROR", lines[0]["level"])
+	assert.Equal(t, "connection refused", lines[0]["error.message"])
+	assert.Contains(t, lines[0]["msg"], "tools/call postgres.query failed in")
+}
+
+func TestToolCallCarriesTheSessionID(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
+	})
+
+	session := &fakeSessionWithTools{id: "mcp-session-abc"}
+	ctx, rc := reqlog.Inject(srv.mcpServer.WithContext(context.Background(), session))
+
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	_, err := handler(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
+	})
+	require.NoError(t, err)
+
+	tool, ok := rc.TakeTool()
+	require.True(t, ok)
+	assert.Equal(t, "mcp-session-abc", tool.SessionID)
 }

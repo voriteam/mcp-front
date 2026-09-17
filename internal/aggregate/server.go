@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 	"github.com/stainless-api/mcp-front/internal/storage"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
@@ -674,23 +676,93 @@ func (s *Server) discoverBackendTools(ctx context.Context, userEmail, backendNam
 
 func (s *Server) makeToolHandler(userEmail, backendName string) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		_, originalName, ok := ParseToolName(request.Params.Name, s.delimiter)
+		requestedName := request.Params.Name
+		_, originalName, ok := ParseToolName(requestedName, s.delimiter)
 		if !ok {
-			return nil, fmt.Errorf("invalid namespaced tool name: %s", request.Params.Name)
+			return nil, fmt.Errorf("invalid namespaced tool name: %s", requestedName)
 		}
 		request.Params.Name = originalName
 
+		start := time.Now()
 		var result *mcp.CallToolResult
 		err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
 			var callErr error
 			result, callErr = c.client.CallTool(ctx, request)
 			return callErr
 		})
+		s.recordToolCall(ctx, userEmail, backendName, requestedName, request, start, result, err)
+
 		if err != nil {
 			return nil, fmt.Errorf("backend %s: %w", backendName, err)
 		}
 		return result, nil
 	}
+}
+
+// recordToolCall reports a finished call, successful or not, so tool usage can
+// be counted from the logs. It sits outside withConnRetry so a retried call is
+// still reported once.
+func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, requestedName string, request mcp.CallToolRequest, start time.Time, result *mcp.CallToolResult, err error) {
+	var sessionID string
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		sessionID = session.SessionID()
+	}
+
+	duration := time.Since(start)
+	// A tool that reports its own failure does so in the result; only transport
+	// and protocol failures come back as err.
+	call := reqlog.ToolCall{
+		Backend:    backendName,
+		Name:       request.Params.Name,
+		SessionID:  sessionID,
+		DurationMS: duration.Milliseconds(),
+		Failed:     err != nil || (result != nil && result.IsError),
+	}
+
+	if reqlog.RecordTool(ctx, call) {
+		return
+	}
+
+	// Same keys as the canonical request line, so one query finds calls from
+	// either transport.
+	fields := map[string]any{
+		"is_canonical":         true,
+		"server":               s.name,
+		"enduser.id":           userEmail,
+		"responseTime":         call.DurationMS,
+		"succeeded":            !call.Failed,
+		"mcp.method.name":      "tools/call",
+		"gen_ai.tool.name":     requestedName,
+		"mcp.tool.name":        call.Name,
+		"mcp.backend.name":     call.Backend,
+		"mcp.session.id":       call.SessionID,
+		"mcp.tool.duration_ms": call.DurationMS,
+		"mcp.tool.is_error":    call.Failed,
+	}
+	params := request.Params
+	params.Name = requestedName
+	if body, marshalErr := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "tools/call",
+		"params":  params,
+	}); marshalErr == nil {
+		fields["request_body"] = string(body)
+	}
+
+	outcome := "succeeded"
+	if call.Failed {
+		outcome = "failed"
+	}
+	msg := fmt.Sprintf("[CANONICAL-REQUEST-LOG] tools/call %s %s in %s", requestedName, outcome, reqlog.FormatDuration(duration))
+	if err != nil {
+		fields["error.message"] = err.Error()
+		msg += ": " + err.Error()
+	}
+	if call.Failed {
+		log.LogErrorWithFields("aggregate", msg, fields)
+		return
+	}
+	log.LogInfoWithFields("aggregate", msg, fields)
 }
 
 // withConnRetry runs fn against the pooled connection for (userEmail, backendName).

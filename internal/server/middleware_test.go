@@ -1,16 +1,22 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/oauth"
+	"github.com/stainless-api/mcp-front/internal/reqlog"
 	"github.com/stainless-api/mcp-front/internal/servicecontext"
+	"github.com/stainless-api/mcp-front/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -336,4 +342,208 @@ func TestServiceAuthMiddleware_BasicTimingEqualized(t *testing.T) {
 	assert.Less(t, gap, knownMed/2,
 		"timing gap %v between known-user and unknown-user must be << bcrypt cost (known median %v, unknown median %v) — dummy-hash equalization regressed?",
 		gap, knownMed, unknownMed)
+}
+
+func TestLoggerMiddlewareCarriesARecordedToolCall(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.True(t, reqlog.RecordTool(r.Context(), reqlog.ToolCall{
+			Backend:    "postgres",
+			Name:       "query",
+			SessionID:  "mcp-session-abc",
+			DurationMS: 12,
+		}))
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway-streamable", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "query", records[0]["mcp.tool.name"])
+	assert.Equal(t, "postgres", records[0]["mcp.backend.name"])
+	assert.Equal(t, "mcp-session-abc", records[0]["mcp.session.id"])
+	assert.Equal(t, float64(12), records[0]["mcp.tool.duration_ms"])
+	assert.Equal(t, false, records[0]["mcp.tool.is_error"])
+}
+
+func TestLoggerMiddlewareOmitsToolFieldsForOtherRequests(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.NotContains(t, records[0], "mcp.tool.name")
+}
+
+func TestLoggerMiddlewareRecordsTheAuthenticatedUser(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/gateway-streamable", nil)
+	req = req.WithContext(context.WithValue(req.Context(), oauth.GetUserContextKey(), "user@vori.com"))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "user@vori.com", records[0]["enduser.id"])
+}
+
+func TestLoggerMiddlewareDescribesTheRPCRequest(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "tools/list", "the handler must still see the whole body")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/gateway-streamable", strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", "mcp-session-xyz")
+	req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "tools/list", records[0]["mcp.method.name"])
+	assert.Equal(t, "3", records[0]["jsonrpc.request.id"])
+	assert.Equal(t, "mcp-session-xyz", records[0]["mcp.session.id"])
+	assert.Equal(t, "2025-06-18", records[0]["mcp.protocol.version"])
+}
+
+func TestLoggerMiddlewareRecordsWhyARequestFailed(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Invalid session ID", http.StatusNotFound)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway-streamable", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "Invalid session ID", records[0]["error.message"])
+}
+
+func TestLoggerMiddlewareTakesTheSSESessionFromTheQuery(t *testing.T) {
+	readLogs := testutil.CaptureLogs(t)
+
+	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/gateway/message?sessionId=abc", nil))
+
+	records := readLogs()
+	require.Len(t, records, 1)
+	assert.Equal(t, "abc", records[0]["mcp.session.id"])
+}
+
+func serveLogged(t *testing.T, handler http.HandlerFunc, req *http.Request) map[string]any {
+	t.Helper()
+	readLogs := testutil.CaptureLogs(t)
+	NewLoggerMiddleware("mcp")(handler).ServeHTTP(httptest.NewRecorder(), req)
+	records := readLogs()
+	require.Len(t, records, 1)
+	return records[0]
+}
+
+func jsonRequest(path, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestCanonicalLineNamesTheToolCall(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		reqlog.RecordTool(r.Context(), reqlog.ToolCall{Backend: "github", Name: "get_me"})
+		w.WriteHeader(http.StatusOK)
+	}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"secret"}}}`))
+
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call github__get_me 200 in \d+ms$`, record["msg"])
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"github__get_me","arguments":{"q":"secret"}}}`, record["request_body"].(string))
+	assert.Equal(t, true, record["succeeded"])
+	assert.Contains(t, record, "responseTime")
+}
+
+func TestCanonicalLineMarksAToolReportedFailure(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		reqlog.RecordTool(r.Context(), reqlog.ToolCall{Backend: "gke", Name: "get_k8s_version", Failed: true})
+		w.WriteHeader(http.StatusOK)
+	}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"gke__get_k8s_version"}}`))
+
+	assert.Equal(t, false, record["succeeded"])
+	assert.Regexp(t, `\(tool error\)$`, record["msg"])
+	assert.Equal(t, "ERROR", record["level"])
+}
+
+func TestCanonicalLineLevelFollowsTheOutcome(t *testing.T) {
+	tests := []struct {
+		status int
+		level  string
+	}{
+		{http.StatusOK, "INFO"},
+		{http.StatusNotFound, "WARN"},
+		{http.StatusBadGateway, "ERROR"},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.status), func(t *testing.T) {
+			record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+			}, jsonRequest("/gateway-streamable", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+
+			assert.Equal(t, tt.level, record["level"])
+		})
+	}
+}
+
+func TestCanonicalLineDefersAnSSEToolCallToTheAggregate(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}, jsonRequest("/gateway/message?sessionId=abc", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"github__get_me"}}`))
+
+	assert.Equal(t, true, record["mcp.call.deferred"])
+	assert.NotContains(t, record, "request_body")
+	assert.NotContains(t, record, "succeeded")
+	assert.Regexp(t, `\(deferred\)$`, record["msg"])
+}
+
+func TestCanonicalLineForARequestWithoutABody(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}, httptest.NewRequest(http.MethodGet, "/gateway-streamable", nil))
+
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] GET /gateway-streamable 200 in \d+ms$`, record["msg"])
+	assert.NotContains(t, record, "request_body")
+}
+
+func TestCanonicalLineUnwrapsAJSONRPCErrorReply(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"Invalid session ID"}}`))
+	}, jsonRequest("/gateway/message?sessionId=old", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+
+	assert.Equal(t, "Invalid session ID", record["error.message"])
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] initialize 400 in \d+ms: Invalid session ID$`, record["msg"])
+	assert.Equal(t, false, record["succeeded"])
+}
+
+func TestCanonicalLineLeavesNonRPCBodiesOut(t *testing.T) {
+	record := serveLogged(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}, jsonRequest("/register", `{"client_name":"x","redirect_uris":["https://a"]}`))
+
+	assert.NotContains(t, record, "request_body")
+	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] POST /register 201 in \d+ms$`, record["msg"])
 }
