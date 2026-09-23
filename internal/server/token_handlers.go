@@ -1,8 +1,10 @@
 package server
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -118,6 +120,8 @@ func (h *TokenHandlers) ListTokensHandler(w http.ResponseWriter, r *http.Request
 		services = append(services, service)
 	}
 
+	sortTokenServices(services)
+
 	// Generate CSRF token
 	csrfToken, err := h.csrf.Generate()
 	if err != nil {
@@ -146,6 +150,23 @@ func (h *TokenHandlers) ListTokensHandler(w http.ResponseWriter, r *http.Request
 		})
 		jsonwriter.WriteInternalServerError(w, "Internal server error")
 	}
+}
+
+// sortTokenServices lists OAuth services first, since they are the ones a user
+// has to act on, then orders each group alphabetically by display name.
+func sortTokenServices(services []ServiceTokenData) {
+	slices.SortFunc(services, func(a, b ServiceTokenData) int {
+		if a.SupportsOAuth != b.SupportsOAuth {
+			if a.SupportsOAuth {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Or(
+			cmp.Compare(strings.ToLower(a.DisplayName), strings.ToLower(b.DisplayName)),
+			cmp.Compare(a.Name, b.Name),
+		)
+	})
 }
 
 // SetTokenHandler handles token submission
