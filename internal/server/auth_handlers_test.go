@@ -824,3 +824,45 @@ func TestValidateAccess(t *testing.T) {
 		})
 	}
 }
+
+func TestListTokensOrdersOAuthFirstThenAlphabetically(t *testing.T) {
+	oauthServer := func(displayName string) *config.MCPClientConfig {
+		return &config.MCPClientConfig{
+			RequiresUserToken:  true,
+			UserAuthentication: &config.UserAuthentication{Type: config.UserAuthTypeOAuth, DisplayName: displayName},
+		}
+	}
+	manualServer := func(displayName string) *config.MCPClientConfig {
+		return &config.MCPClientConfig{
+			RequiresUserToken:  true,
+			UserAuthentication: &config.UserAuthentication{Type: config.UserAuthTypeManual, DisplayName: displayName},
+		}
+	}
+	mcpServers := map[string]*config.MCPClientConfig{
+		"zoho":     oauthServer("Zoho"),
+		"linear":   oauthServer("Linear"),
+		"hubspot":  oauthServer("HubSpot"),
+		"notion":   manualServer("Notion"),
+		"coder":    manualServer("Coder"),
+		"postgres": {},
+		"bigquery": {},
+	}
+
+	handlers := NewTokenHandlers(storage.NewMemoryStorage(), mcpServers, nil, []byte(strings.Repeat("k", 32)))
+	ctx := context.WithValue(context.Background(), oauth.GetUserContextKey(), "user@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/my/tokens", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handlers.ListTokensHandler(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	body := rec.Body.String()
+	want := []string{"HubSpot", "Linear", "Zoho", "bigquery", "Coder", "Notion", "postgres"}
+	last := -1
+	for _, name := range want {
+		i := strings.Index(body, "<h2>"+name+"</h2>")
+		require.NotEqual(t, -1, i, "%s not rendered", name)
+		assert.Greater(t, i, last, "%s out of order", name)
+		last = i
+	}
+}
