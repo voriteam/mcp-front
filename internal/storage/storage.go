@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/stainless-api/mcp-front/internal/oauth"
@@ -51,6 +53,32 @@ type UserTokenStore interface {
 	ListUserServices(ctx context.Context, userEmail string) ([]string, error)
 }
 
+// UserTokenMetadata is shown to every signed-in user, so it must never gain a
+// field that can carry token material.
+type UserTokenMetadata struct {
+	UserEmail       string
+	Service         string
+	Type            TokenType
+	UpdatedAt       time.Time
+	ExpiresAt       time.Time
+	HasRefreshToken bool
+}
+
+// ConnectionDirectory results are sorted. Implementations must not read token
+// values to produce them.
+type ConnectionDirectory interface {
+	// ListUserTokenMetadata includes tokens for services no longer in config.
+	ListUserTokenMetadata(ctx context.Context) ([]UserTokenMetadata, error)
+	// ListIdentityTokenUsers returns everyone who has signed in to the gateway.
+	ListIdentityTokenUsers(ctx context.Context) ([]string, error)
+}
+
+func sortUserTokenMetadata(metadata []UserTokenMetadata) {
+	slices.SortFunc(metadata, func(a, b UserTokenMetadata) int {
+		return cmp.Or(cmp.Compare(a.UserEmail, b.UserEmail), cmp.Compare(a.Service, b.Service))
+	})
+}
+
 type ServiceRegistration struct {
 	ServiceName  string    `json:"service_name"`
 	ClientID     string    `json:"client_id"`
@@ -91,6 +119,9 @@ type Storage interface {
 
 	// Identity provider refresh tokens (for disabled-account enforcement)
 	IdentityTokenStore
+
+	// Connection metadata across all users (for the connections page)
+	ConnectionDirectory
 
 	// Session tracking
 	TrackSession(ctx context.Context, session ActiveSession) error

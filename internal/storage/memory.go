@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -170,6 +171,38 @@ func (s *MemoryStorage) ListUserServices(ctx context.Context, userEmail string) 
 		}
 	}
 	return services, nil
+}
+
+func (s *MemoryStorage) ListUserTokenMetadata(ctx context.Context) ([]UserTokenMetadata, error) {
+	s.userTokensMutex.RLock()
+	defer s.userTokensMutex.RUnlock()
+
+	metadata := make([]UserTokenMetadata, 0, len(s.userTokens))
+	for key, token := range s.userTokens {
+		userEmail, service, _ := strings.Cut(key, ":")
+		m := UserTokenMetadata{
+			UserEmail: userEmail,
+			Service:   service,
+			Type:      token.Type,
+			UpdatedAt: token.UpdatedAt,
+		}
+		if token.OAuthData != nil {
+			m.ExpiresAt = token.OAuthData.ExpiresAt
+			m.HasRefreshToken = token.OAuthData.RefreshToken != ""
+		}
+		metadata = append(metadata, m)
+	}
+	sortUserTokenMetadata(metadata)
+	return metadata, nil
+}
+
+func (s *MemoryStorage) ListIdentityTokenUsers(ctx context.Context) ([]string, error) {
+	s.identityTokensMu.RLock()
+	defer s.identityTokensMu.RUnlock()
+
+	users := slices.Collect(maps.Keys(s.identityTokens))
+	slices.Sort(users)
+	return users, nil
 }
 
 func (s *MemoryStorage) TrackSession(ctx context.Context, session ActiveSession) error {

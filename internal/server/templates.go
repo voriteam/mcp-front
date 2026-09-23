@@ -14,6 +14,9 @@ var servicesPageTemplateHTML string
 //go:embed templates/tools.html
 var toolsPageTemplateHTML string
 
+//go:embed templates/connections.html
+var connectionsPageTemplateHTML string
+
 var toolsFuncMap = template.FuncMap{
 	"isTrue": func(b *bool) bool { return b != nil && *b },
 }
@@ -21,6 +24,7 @@ var toolsFuncMap = template.FuncMap{
 var tokenPageTemplate = template.Must(template.New("tokens").Parse(tokenPageTemplateHTML))
 var servicesPageTemplate = template.Must(template.New("services").Parse(servicesPageTemplateHTML))
 var toolsPageTemplate = template.Must(template.New("tools").Funcs(toolsFuncMap).Parse(toolsPageTemplateHTML))
+var connectionsPageTemplate = template.Must(template.New("connections").Parse(connectionsPageTemplateHTML))
 
 // TokenPageData represents the data for the token management page
 type TokenPageData struct {
@@ -63,4 +67,39 @@ type ServiceSelectionData struct {
 	Status      string // "not_connected", "connected", "expired", "error"
 	ErrorMsg    string
 	ConnectURL  string // Pre-generated OAuth connect URL
+}
+
+// ConnectionsPageData is shown to every signed-in user, so it and its parts
+// must never hold a token value.
+type ConnectionsPageData struct {
+	ViewerEmail string
+	Filter      string
+	Columns     []ConnectionColumnData
+	Rows        []ConnectionRowData
+	Orphans     []OrphanedConnectionData
+	TotalUsers  int
+}
+
+// ConnectionColumnData is one MCP that needs a per-user connection
+type ConnectionColumnData struct {
+	Name           string
+	DisplayName    string
+	ConnectedCount int
+}
+
+type ConnectionRowData struct {
+	UserEmail string
+	Cells     []ConnectionCellData
+}
+
+type ConnectionCellData struct {
+	Connected   bool
+	Expired     bool
+	Refreshable bool
+}
+
+// OrphanedConnectionData is a stored connection for an MCP no longer in config
+type OrphanedConnectionData struct {
+	UserEmail string
+	Service   string
 }
