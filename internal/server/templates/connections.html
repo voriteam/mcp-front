@@ -108,11 +108,18 @@
         }
 
         th, td {
-            padding: 8px 12px;
+            padding: 6px 8px;
             border-bottom: 1px solid #eee;
             text-align: left;
-            vertical-align: top;
             white-space: nowrap;
+        }
+
+        td.cell, th.mcp {
+            text-align: center;
+        }
+
+        tbody tr:hover {
+            background-color: #f8f9fa;
         }
 
         thead th {
@@ -128,32 +135,8 @@
             font-size: 12px;
         }
 
-        .status {
-            display: inline-block;
-            font-size: 12px;
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-weight: 500;
-        }
-
-        .status.connected {
-            background-color: #d4f4dd;
-            color: #2e7d32;
-        }
-
-        .status.not-connected {
-            background-color: #f1f1f1;
-            color: #888;
-        }
-
-        .status.expired {
-            background-color: #ffebee;
-            color: #c62828;
-        }
-
-        .status.refreshable {
-            background-color: #fff4e5;
-            color: #b26a00;
+        .not-connected {
+            color: #ccc;
         }
 
         .empty {
@@ -176,7 +159,7 @@
                 {{if .Filter}}<a href="?">Clear</a>{{end}}
             </form>
 
-            <div class="summary">Showing {{len .Rows}} of {{.TotalUsers}} users</div>
+            <div class="summary">Showing {{len .Rows}} of {{.TotalUsers}} users · ✅ connected · 🔄 expired, refreshes on next use · ⚠️ expired, needs reconnect</div>
 
             {{if .Columns}}
             <div class="table-wrap">
@@ -185,7 +168,7 @@
                         <tr>
                             <th>User</th>
                             {{range .Columns}}
-                            <th>{{.DisplayName}}<span class="total">{{.ConnectedCount}} connected</span></th>
+                            <th class="mcp">{{.DisplayName}}<span class="total">{{.ConnectedCount}}</span></th>
                             {{end}}
                         </tr>
                     </thead>
@@ -194,19 +177,7 @@
                         <tr>
                             <td>{{.UserEmail}}</td>
                             {{range .Cells}}
-                            <td>
-                                {{if .Connected}}
-                                    {{if .Refreshable}}
-                                    <span class="status refreshable">Expired, refreshable</span>
-                                    {{else if .Expired}}
-                                    <span class="status expired">Expired</span>
-                                    {{else}}
-                                    <span class="status connected">Connected</span>
-                                    {{end}}
-                                {{else}}
-                                    <span class="status not-connected">Not connected</span>
-                                {{end}}
-                            </td>
+                            <td class="cell">{{if .Connected}}{{if .Refreshable}}<span title="Expired, refreshable">🔄</span>{{else if .Expired}}<span title="Expired, needs reconnect">⚠️</span>{{else}}<span title="Connected">✅</span>{{end}}{{else}}<span class="not-connected" title="Not connected">·</span>{{end}}</td>
                             {{end}}
                         </tr>
                         {{else}}

@@ -96,7 +96,7 @@ func TestConnectionsHandlerShowsEveryUser(t *testing.T) {
 	assert.Contains(t, body, "c@example.com", "user who signed in but connected nothing")
 	assert.Contains(t, body, "d@example.com", "user whose only token is orphaned")
 	assert.Contains(t, body, "Showing 4 of 4 users")
-	assert.Contains(t, body, "Expired, refreshable")
+	assert.Contains(t, body, `title="Expired, refreshable"`)
 }
 
 func TestConnectionsHandlerNeverRendersTokenValues(t *testing.T) {
@@ -112,10 +112,10 @@ func TestConnectionsHandlerColumnsFollowConfig(t *testing.T) {
 
 	servers := connectionsTestServers()
 	body := getConnections(t, NewConnectionsHandler(store, servers), "a@example.com", "").Body.String()
-	assert.Contains(t, body, "<th>Linear")
-	assert.Contains(t, body, "<th>Notion")
-	assert.NotContains(t, body, "<th>postgres", "servers without per-user tokens get no column")
-	assert.NotContains(t, body, "<th>Zoho")
+	assert.Contains(t, body, `<th class="mcp">Linear`)
+	assert.Contains(t, body, `<th class="mcp">Notion`)
+	assert.NotContains(t, body, `<th class="mcp">postgres`, "servers without per-user tokens get no column")
+	assert.NotContains(t, body, `<th class="mcp">Zoho`)
 
 	servers["zoho"] = &config.MCPClientConfig{
 		URL:               "http://zoho:8080",
@@ -126,7 +126,7 @@ func TestConnectionsHandlerColumnsFollowConfig(t *testing.T) {
 		},
 	}
 	body = getConnections(t, NewConnectionsHandler(store, servers), "a@example.com", "").Body.String()
-	assert.Contains(t, body, "<th>Zoho<span class=\"total\">0 connected</span>")
+	assert.Contains(t, body, `<th class="mcp">Zoho<span class="total">0</span>`)
 }
 
 func TestConnectionsHandlerListsOrphans(t *testing.T) {
