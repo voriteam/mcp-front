@@ -2,10 +2,14 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/stainless-api/mcp-front/internal/crypto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFirestoreStorageConfig(t *testing.T) {
@@ -44,4 +48,25 @@ func TestFirestoreStorageConfig(t *testing.T) {
 		assert.Error(t, err, "Expected error when collection is empty")
 		assert.Contains(t, err.Error(), "collection is required")
 	})
+}
+
+// TestFirestoreConnectionDirectory needs the Firestore emulator, e.g.
+// `firebase emulators:start --only firestore` with FIRESTORE_EMULATOR_HOST set.
+func TestFirestoreConnectionDirectory(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST not set")
+	}
+
+	ctx := context.Background()
+	encryptor, err := crypto.NewEncryptor([]byte("test-encryption-key-32-bytes-ok!"))
+	require.NoError(t, err)
+
+	projectID := fmt.Sprintf("demo-connections-%d", time.Now().UnixNano())
+	s, err := NewFirestoreStorage(ctx, projectID, "(default)", "mcp_front_oauth_clients", encryptor)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	expiresAt := time.Now().Add(time.Hour).Truncate(time.Microsecond)
+	seedConnectionDirectory(t, ctx, s, expiresAt)
+	assertConnectionDirectory(t, ctx, s, expiresAt)
 }

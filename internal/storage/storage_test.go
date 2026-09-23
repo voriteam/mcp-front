@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -219,4 +221,97 @@ func TestMemoryStorageSessions(t *testing.T) {
 		err := store.RevokeSession(ctx, "nonexistent")
 		require.NoError(t, err)
 	})
+}
+
+func TestUserTokenMetadataCarriesNoTokenValue(t *testing.T) {
+	allowed := map[string]reflect.Type{
+		"UserEmail":       reflect.TypeFor[string](),
+		"Service":         reflect.TypeFor[string](),
+		"Type":            reflect.TypeFor[TokenType](),
+		"UpdatedAt":       reflect.TypeFor[time.Time](),
+		"ExpiresAt":       reflect.TypeFor[time.Time](),
+		"HasRefreshToken": reflect.TypeFor[bool](),
+	}
+
+	fields := map[string]reflect.Type{}
+	typ := reflect.TypeFor[UserTokenMetadata]()
+	for i := range typ.NumField() {
+		fields[typ.Field(i).Name] = typ.Field(i).Type
+	}
+	assert.Equal(t, allowed, fields, "UserTokenMetadata is shown to every signed-in user; a new field must not be able to carry a token value")
+}
+
+// seedConnectionDirectory stores tokens whose values all contain "SECRET", so
+// callers can assert no value leaks into what the directory returns.
+func seedConnectionDirectory(t *testing.T, ctx context.Context, s Storage, expiresAt time.Time) {
+	t.Helper()
+	require.NoError(t, s.SetUserToken(ctx, "a@example.com", "linear", &StoredToken{
+		Type: TokenTypeOAuth,
+		OAuthData: &OAuthTokenData{
+			AccessToken:  "access-SECRET-a",
+			RefreshToken: "refresh-SECRET-a",
+			ExpiresAt:    expiresAt,
+		},
+		UpdatedAt: time.Now(),
+	}))
+	require.NoError(t, s.SetUserToken(ctx, "b@example.com", "linear", &StoredToken{
+		Type: TokenTypeOAuth,
+		OAuthData: &OAuthTokenData{
+			AccessToken: "access-SECRET-b",
+			ExpiresAt:   expiresAt,
+		},
+		UpdatedAt: time.Now(),
+	}))
+	require.NoError(t, s.SetUserToken(ctx, "a@example.com", "notion", &StoredToken{
+		Type:      TokenTypeManual,
+		Value:     "manual-SECRET-a",
+		UpdatedAt: time.Now(),
+	}))
+	require.NoError(t, s.SetUserToken(ctx, "d@example.com", "github", &StoredToken{
+		Type:      TokenTypeManual,
+		Value:     "manual-SECRET-d",
+		UpdatedAt: time.Now(),
+	}))
+	require.NoError(t, s.SetIdentityToken(ctx, "a@example.com", "idp-SECRET-a"))
+	require.NoError(t, s.SetIdentityToken(ctx, "c@example.com", "idp-SECRET-c"))
+}
+
+func assertConnectionDirectory(t *testing.T, ctx context.Context, s Storage, expiresAt time.Time) {
+	t.Helper()
+
+	metadata, err := s.ListUserTokenMetadata(ctx)
+	require.NoError(t, err)
+	require.Len(t, metadata, 4)
+
+	type key struct{ email, service string }
+	byKey := map[key]UserTokenMetadata{}
+	for _, m := range metadata {
+		byKey[key{m.UserEmail, m.Service}] = m
+		assert.False(t, m.UpdatedAt.IsZero(), "updated_at for %s/%s", m.UserEmail, m.Service)
+	}
+
+	withRefresh := byKey[key{"a@example.com", "linear"}]
+	assert.Equal(t, TokenTypeOAuth, withRefresh.Type)
+	assert.True(t, withRefresh.HasRefreshToken)
+	assert.True(t, expiresAt.Equal(withRefresh.ExpiresAt), "expires_at %v != %v", withRefresh.ExpiresAt, expiresAt)
+
+	withoutRefresh := byKey[key{"b@example.com", "linear"}]
+	assert.Equal(t, TokenTypeOAuth, withoutRefresh.Type)
+	assert.False(t, withoutRefresh.HasRefreshToken)
+	assert.True(t, expiresAt.Equal(withoutRefresh.ExpiresAt))
+
+	manual := byKey[key{"a@example.com", "notion"}]
+	assert.Equal(t, TokenTypeManual, manual.Type)
+	assert.False(t, manual.HasRefreshToken)
+	assert.True(t, manual.ExpiresAt.IsZero())
+
+	orphan, ok := byKey[key{"d@example.com", "github"}]
+	assert.True(t, ok, "token for an unconfigured service must still be listed")
+	assert.Equal(t, TokenTypeManual, orphan.Type)
+
+	assert.NotContains(t, fmt.Sprintf("%+v", metadata), "SECRET")
+
+	users, err := s.ListIdentityTokenUsers(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a@example.com", "c@example.com"}, users)
 }

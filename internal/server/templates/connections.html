@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Connections</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header, .panel {
+            background-color: #fff;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        h2 {
+            font-size: 20px;
+            margin-bottom: 15px;
+        }
+
+        .user-info {
+            color: #666;
+            font-size: 14px;
+        }
+
+        a {
+            color: #1976d2;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        input[type="search"] {
+            flex: 1;
+            max-width: 400px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        input[type="search"]:focus {
+            outline: none;
+            border-color: #1976d2;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            background-color: #1976d2;
+            color: white;
+        }
+
+        button:hover {
+            background-color: #1565c0;
+        }
+
+        .summary {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 14px;
+        }
+
+        th, td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+            vertical-align: top;
+            white-space: nowrap;
+        }
+
+        thead th {
+            background-color: #f8f9fa;
+            position: sticky;
+            top: 0;
+        }
+
+        .total {
+            display: block;
+            color: #666;
+            font-weight: normal;
+            font-size: 12px;
+        }
+
+        .status {
+            display: inline-block;
+            font-size: 12px;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+
+        .status.connected {
+            background-color: #d4f4dd;
+            color: #2e7d32;
+        }
+
+        .status.not-connected {
+            background-color: #f1f1f1;
+            color: #888;
+        }
+
+        .status.expired {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+
+        .status.refreshable {
+            background-color: #fff4e5;
+            color: #b26a00;
+        }
+
+        .detail {
+            display: block;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .empty {
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>MCP Connections</h1>
+            <div class="user-info">Logged in as: {{.ViewerEmail}} · <a href="/my/tokens">Manage your tokens</a></div>
+        </header>
+
+        <div class="panel">
+            <form method="get" action="">
+                <input type="search" name="q" value="{{.Filter}}" placeholder="Filter by email" aria-label="Filter by email">
+                <button type="submit">Filter</button>
+                {{if .Filter}}<a href="?">Clear</a>{{end}}
+            </form>
+
+            <div class="summary">Showing {{len .Rows}} of {{.TotalUsers}} users</div>
+
+            {{if .Columns}}
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>User</th>
+                            {{range .Columns}}
+                            <th>{{.DisplayName}}<span class="total">{{.ConnectedCount}} connected</span></th>
+                            {{end}}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Rows}}
+                        <tr>
+                            <td>{{.UserEmail}}</td>
+                            {{range .Cells}}
+                            <td>
+                                {{if .Connected}}
+                                    {{if .Refreshable}}
+                                    <span class="status refreshable">Expired, refreshable</span>
+                                    {{else if .Expired}}
+                                    <span class="status expired">Expired</span>
+                                    {{else}}
+                                    <span class="status connected">Connected</span>
+                                    {{end}}
+                                    <span class="detail">{{.Type}}{{if .UpdatedAt}} · {{.UpdatedAt}}{{end}}</span>
+                                {{else}}
+                                    <span class="status not-connected">Not connected</span>
+                                {{end}}
+                            </td>
+                            {{end}}
+                        </tr>
+                        {{else}}
+                        <tr><td class="empty">No users match.</td></tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <p class="empty">No configured MCP needs a per-user connection.</p>
+            {{end}}
+        </div>
+
+        <div class="panel">
+            <h2>Orphaned connections</h2>
+            <p class="summary">Stored connections for MCPs that are no longer configured.</p>
+            {{if .Orphans}}
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>User</th>
+                            <th>MCP</th>
+                            <th>Type</th>
+                            <th>Last updated</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Orphans}}
+                        <tr>
+                            <td>{{.UserEmail}}</td>
+                            <td>{{.Service}}</td>
+                            <td>{{.Type}}</td>
+                            <td>{{.UpdatedAt}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <p class="empty">None.</p>
+            {{end}}
+        </div>
+    </div>
+</body>
+</html>

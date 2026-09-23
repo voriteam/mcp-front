@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -48,4 +49,13 @@ func TestMemoryStorageRevokeUserSessions(t *testing.T) {
 	assert.False(t, aStillThere)
 	_, bStillThere := s.sessions["s3"]
 	assert.True(t, bStillThere)
+}
+
+func TestMemoryStorageConnectionDirectory(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStorage()
+	expiresAt := time.Now().Add(time.Hour).Truncate(time.Microsecond)
+
+	seedConnectionDirectory(t, ctx, s, expiresAt)
+	assertConnectionDirectory(t, ctx, s, expiresAt)
 }

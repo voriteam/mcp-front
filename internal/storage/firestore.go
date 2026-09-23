@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -527,6 +528,106 @@ func (s *FirestoreStorage) ListUserServices(ctx context.Context, userEmail strin
 	}
 
 	return services, nil
+}
+
+// userTokenMetadataDoc mirrors the metadata subset of UserTokenDoc. oauth_data
+// subfields use Go field names because OAuthTokenData has no firestore tags.
+type userTokenMetadataDoc struct {
+	UserEmail string    `firestore:"user_email"`
+	Service   string    `firestore:"service"`
+	Type      TokenType `firestore:"type"`
+	UpdatedAt time.Time `firestore:"updated_at"`
+	OAuthData *struct {
+		ExpiresAt time.Time `firestore:"ExpiresAt"`
+	} `firestore:"oauth_data"`
+}
+
+func (s *FirestoreStorage) ListUserTokenMetadata(ctx context.Context) ([]UserTokenMetadata, error) {
+	withRefresh, err := s.userTokenIDsWithRefreshToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	iter := s.client.Collection(s.tokenCollection).
+		Select("user_email", "service", "type", "updated_at", "oauth_data.ExpiresAt").
+		Documents(ctx)
+	defer iter.Stop()
+
+	var metadata []UserTokenMetadata
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate user tokens: %w", err)
+		}
+
+		var tokenDoc userTokenMetadataDoc
+		if err := doc.DataTo(&tokenDoc); err != nil {
+			log.LogError("Failed to unmarshal user token metadata (doc_id: %s): %v", doc.Ref.ID, err)
+			continue
+		}
+
+		m := UserTokenMetadata{
+			UserEmail:       tokenDoc.UserEmail,
+			Service:         tokenDoc.Service,
+			Type:            tokenDoc.Type,
+			UpdatedAt:       tokenDoc.UpdatedAt,
+			HasRefreshToken: withRefresh[doc.Ref.ID],
+		}
+		if tokenDoc.OAuthData != nil {
+			m.ExpiresAt = tokenDoc.OAuthData.ExpiresAt
+		}
+		metadata = append(metadata, m)
+	}
+
+	sortUserTokenMetadata(metadata)
+	return metadata, nil
+}
+
+// userTokenIDsWithRefreshToken learns which tokens have a refresh token
+// without reading it: a field mask can only return the value, so the filter
+// runs server-side and the empty Select returns document IDs alone.
+func (s *FirestoreStorage) userTokenIDsWithRefreshToken(ctx context.Context) (map[string]bool, error) {
+	iter := s.client.Collection(s.tokenCollection).
+		Where("oauth_data.RefreshToken", "!=", "").
+		Select().
+		Documents(ctx)
+	defer iter.Stop()
+
+	ids := make(map[string]bool)
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to query user tokens with refresh tokens: %w", err)
+		}
+		ids[doc.Ref.ID] = true
+	}
+	return ids, nil
+}
+
+func (s *FirestoreStorage) ListIdentityTokenUsers(ctx context.Context) ([]string, error) {
+	iter := s.client.Collection(identityTokensCollection).Select().Documents(ctx)
+	defer iter.Stop()
+
+	var users []string
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate identity tokens: %w", err)
+		}
+		users = append(users, doc.Ref.ID)
+	}
+
+	slices.Sort(users)
+	return users, nil
 }
 
 type SessionDoc struct {
