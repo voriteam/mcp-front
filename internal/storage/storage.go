@@ -53,9 +53,8 @@ type UserTokenStore interface {
 	ListUserServices(ctx context.Context, userEmail string) ([]string, error)
 }
 
-// UserTokenMetadata describes a stored user token without its value. It is
-// shown to every signed-in user, so it must never gain a field that can carry
-// token material.
+// UserTokenMetadata is shown to every signed-in user, so it must never gain a
+// field that can carry token material.
 type UserTokenMetadata struct {
 	UserEmail       string
 	Service         string
@@ -65,11 +64,10 @@ type UserTokenMetadata struct {
 	HasRefreshToken bool
 }
 
-// ConnectionDirectory lists connection metadata across all users. Results are
-// sorted, and implementations must not read token values to produce them.
+// ConnectionDirectory results are sorted. Implementations must not read token
+// values to produce them.
 type ConnectionDirectory interface {
-	// ListUserTokenMetadata returns one entry per stored user token, including
-	// tokens for services that are no longer configured.
+	// ListUserTokenMetadata includes tokens for services no longer in config.
 	ListUserTokenMetadata(ctx context.Context) ([]UserTokenMetadata, error)
 	// ListIdentityTokenUsers returns everyone who has signed in to the gateway.
 	ListIdentityTokenUsers(ctx context.Context) ([]string, error)

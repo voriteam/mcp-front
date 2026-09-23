@@ -157,12 +157,12 @@ func TestConnectionsHandlerRejectsNonGet(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
 
-func TestConnectionsUnauthenticatedMatchesMyTokens(t *testing.T) {
+func TestConnectionsSessionAuth(t *testing.T) {
 	store := seedConnectionsStore(t)
 	servers := connectionsTestServers()
 	encKey := []byte(strings.Repeat("b", 32))
 
-	t.Run("no user in context", func(t *testing.T) {
+	t.Run("no user in context responds like /my/tokens", func(t *testing.T) {
 		tokensRec := httptest.NewRecorder()
 		NewTokenHandlers(store, servers, nil, encKey).ListTokensHandler(tokensRec, httptest.NewRequest(http.MethodGet, "/my/tokens", nil))
 
@@ -212,7 +212,7 @@ func TestConnectionsUnauthenticatedMatchesMyTokens(t *testing.T) {
 		return u.String()
 	}
 
-	t.Run("no session cookie", func(t *testing.T) {
+	t.Run("no session cookie redirects like /my/tokens", func(t *testing.T) {
 		tokens := get(t, "/my/tokens", nil)
 		conn := get(t, "/connections", nil)
 
@@ -221,7 +221,7 @@ func TestConnectionsUnauthenticatedMatchesMyTokens(t *testing.T) {
 		assert.Equal(t, withoutState(t, tokens.Header.Get("Location")), withoutState(t, conn.Header.Get("Location")))
 	})
 
-	t.Run("invalid session cookie", func(t *testing.T) {
+	t.Run("invalid session cookie redirects like /my/tokens", func(t *testing.T) {
 		bad := &http.Cookie{Name: "mcp_session", Value: "not-a-valid-session"}
 		tokens := get(t, "/my/tokens", bad)
 		conn := get(t, "/connections", bad)

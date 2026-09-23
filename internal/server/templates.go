@@ -69,8 +69,8 @@ type ServiceSelectionData struct {
 	ConnectURL  string // Pre-generated OAuth connect URL
 }
 
-// ConnectionsPageData represents the data for the all-users connections page.
-// It is shown to every signed-in user, so it holds connection metadata only.
+// ConnectionsPageData is shown to every signed-in user, so it and its parts
+// must never hold a token value.
 type ConnectionsPageData struct {
 	ViewerEmail string
 	Filter      string
@@ -87,13 +87,11 @@ type ConnectionColumnData struct {
 	ConnectedCount int
 }
 
-// ConnectionRowData is one user, with a cell per column
 type ConnectionRowData struct {
 	UserEmail string
 	Cells     []ConnectionCellData
 }
 
-// ConnectionCellData is one user's connection to one MCP
 type ConnectionCellData struct {
 	Connected   bool
 	Expired     bool

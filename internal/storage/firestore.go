@@ -530,8 +530,8 @@ func (s *FirestoreStorage) ListUserServices(ctx context.Context, userEmail strin
 	return services, nil
 }
 
-// userTokenMetadataDoc mirrors the metadata subset of UserTokenDoc. oauth_data
-// subfields use Go field names because OAuthTokenData has no firestore tags.
+// Field names must match UserTokenDoc. oauth_data subfields are Go field names
+// because OAuthTokenData has no firestore tags.
 type userTokenMetadataDoc struct {
 	UserEmail string    `firestore:"user_email"`
 	Service   string    `firestore:"service"`
@@ -586,9 +586,8 @@ func (s *FirestoreStorage) ListUserTokenMetadata(ctx context.Context) ([]UserTok
 	return metadata, nil
 }
 
-// userTokenIDsWithRefreshToken learns which tokens have a refresh token
-// without reading it: a field mask can only return the value, so the filter
-// runs server-side and the empty Select returns document IDs alone.
+// A field mask cannot report presence without returning the value, so this
+// filters server-side and selects document IDs only.
 func (s *FirestoreStorage) userTokenIDsWithRefreshToken(ctx context.Context) (map[string]bool, error) {
 	iter := s.client.Collection(s.tokenCollection).
 		Where("oauth_data.RefreshToken", "!=", "").

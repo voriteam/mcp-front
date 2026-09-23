@@ -19,8 +19,7 @@ type connectionDirectory interface {
 	ListIdentityTokenUsers(ctx context.Context) ([]string, error)
 }
 
-// ConnectionsHandler renders every user's connection status for each MCP that
-// needs a per-user connection. Any signed-in user may view it.
+// ConnectionsHandler is deliberately open to every signed-in user.
 type ConnectionsHandler struct {
 	store   connectionDirectory
 	columns []connectionColumn
@@ -100,8 +99,7 @@ func (h *ConnectionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// buildConnectionsPage computes per-MCP totals over every user; the email
-// filter narrows only the rows and orphans shown.
+// Totals count every user; the filter narrows only the rows and orphans.
 func buildConnectionsPage(columns []connectionColumn, identityUsers []string, tokens []storage.UserTokenMetadata, now time.Time, filter string) ConnectionsPageData {
 	columnIndex := make(map[string]int, len(columns))
 	data := ConnectionsPageData{Filter: filter}
