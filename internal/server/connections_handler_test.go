@@ -280,16 +280,16 @@ func TestBuildConnectionsPage(t *testing.T) {
 		return ConnectionCellData{}
 	}
 
-	assert.Equal(t, ConnectionCellData{Connected: true, Type: "oauth", UpdatedAt: "2026-09-22 12:00 UTC", Expired: true, Refreshable: true}, cell("a@example.com", 0))
-	assert.Equal(t, ConnectionCellData{Connected: true, Type: "oauth", UpdatedAt: "2026-09-22 12:00 UTC", Expired: true}, cell("b@example.com", 0))
-	assert.Equal(t, ConnectionCellData{Connected: true, Type: "oauth", UpdatedAt: "2026-09-22 12:00 UTC"}, cell("c@example.com", 0))
-	assert.Equal(t, ConnectionCellData{Connected: true, Type: "manual", UpdatedAt: "2026-09-22 12:00 UTC"}, cell("c@example.com", 1))
+	assert.Equal(t, ConnectionCellData{Connected: true, Expired: true, Refreshable: true}, cell("a@example.com", 0))
+	assert.Equal(t, ConnectionCellData{Connected: true, Expired: true}, cell("b@example.com", 0))
+	assert.Equal(t, ConnectionCellData{Connected: true}, cell("c@example.com", 0))
+	assert.Equal(t, ConnectionCellData{Connected: true}, cell("c@example.com", 1))
 	assert.False(t, cell("d@example.com", 0).Expired, "zero expiry never expires")
 	assert.Equal(t, ConnectionCellData{}, cell("z@example.com", 0))
 	assert.Equal(t, ConnectionCellData{}, cell("e@example.com", 0))
 
 	require.Len(t, page.Orphans, 1)
-	assert.Equal(t, OrphanedConnectionData{UserEmail: "e@example.com", Service: "github", Type: "manual", UpdatedAt: "2026-09-22 12:00 UTC"}, page.Orphans[0])
+	assert.Equal(t, OrphanedConnectionData{UserEmail: "e@example.com", Service: "github"}, page.Orphans[0])
 
 	var emails []string
 	for _, row := range page.Rows {

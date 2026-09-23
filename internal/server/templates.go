@@ -96,8 +96,6 @@ type ConnectionRowData struct {
 // ConnectionCellData is one user's connection to one MCP
 type ConnectionCellData struct {
 	Connected   bool
-	Type        string // "oauth" or "manual"
-	UpdatedAt   string
 	Expired     bool
 	Refreshable bool
 }
@@ -106,6 +104,4 @@ type ConnectionCellData struct {
 type OrphanedConnectionData struct {
 	UserEmail string
 	Service   string
-	Type      string
-	UpdatedAt string
 }

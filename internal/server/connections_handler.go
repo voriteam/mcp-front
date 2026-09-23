@@ -100,8 +100,6 @@ func (h *ConnectionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-const connectionTimeFormat = "2006-01-02 15:04 MST"
-
 // buildConnectionsPage computes per-MCP totals over every user; the email
 // filter narrows only the rows and orphans shown.
 func buildConnectionsPage(columns []connectionColumn, identityUsers []string, tokens []storage.UserTokenMetadata, now time.Time, filter string) ConnectionsPageData {
@@ -138,8 +136,6 @@ func buildConnectionsPage(columns []connectionColumn, identityUsers []string, to
 				data.Orphans = append(data.Orphans, OrphanedConnectionData{
 					UserEmail: t.UserEmail,
 					Service:   t.Service,
-					Type:      string(t.Type),
-					UpdatedAt: formatConnectionTime(t.UpdatedAt),
 				})
 			}
 			continue
@@ -148,8 +144,6 @@ func buildConnectionsPage(columns []connectionColumn, identityUsers []string, to
 		expired := t.Type == storage.TokenTypeOAuth && !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt)
 		cells[i] = ConnectionCellData{
 			Connected:   true,
-			Type:        string(t.Type),
-			UpdatedAt:   formatConnectionTime(t.UpdatedAt),
 			Expired:     expired,
 			Refreshable: expired && t.HasRefreshToken,
 		}
@@ -171,11 +165,4 @@ func buildConnectionsPage(columns []connectionColumn, identityUsers []string, to
 	data.TotalUsers = len(cellsByUser)
 
 	return data
-}
-
-func formatConnectionTime(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.UTC().Format(connectionTimeFormat)
 }
