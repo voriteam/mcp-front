@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1220,15 +1221,19 @@ func (s staticTokenSource) Token() (*oauth2.Token, error) {
 }
 
 type fakeSessionWithTools struct {
-	id    string
-	mu    sync.Mutex
-	tools map[string]mcpserver.ServerTool
+	id            string
+	mu            sync.Mutex
+	tools         map[string]mcpserver.ServerTool
+	notifications chan mcp.JSONRPCNotification
 }
 
 func (f *fakeSessionWithTools) Initialize()       {}
 func (f *fakeSessionWithTools) Initialized() bool { return true }
 func (f *fakeSessionWithTools) NotificationChannel() chan<- mcp.JSONRPCNotification {
-	return make(chan<- mcp.JSONRPCNotification, 1)
+	if f.notifications == nil {
+		return make(chan<- mcp.JSONRPCNotification, 1)
+	}
+	return f.notifications
 }
 func (f *fakeSessionWithTools) SessionID() string { return f.id }
 func (f *fakeSessionWithTools) GetSessionTools() map[string]mcpserver.ServerTool {
@@ -1267,6 +1272,113 @@ func TestEnsureSessionToolsRehydratesAfterRestart(t *testing.T) {
 	require.NotEmpty(t, tools, "tools should be repopulated for stale session")
 	_, ok := tools["postgres"+srv.delimiter+"query"]
 	assert.True(t, ok, "expected namespaced tool to be present after rehydration")
+}
+
+func newSessionSyncTestServer(t *testing.T, backends map[string]*mockTransport) *Server {
+	t.Helper()
+	backendConfigs := make(map[string]*config.MCPClientConfig, len(backends))
+	for name := range backends {
+		backendConfigs[name] = &config.MCPClientConfig{
+			TransportType: config.MCPClientTypeSSE,
+			URL:           "http://localhost/" + name,
+		}
+	}
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends:      backendConfigs,
+		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 50 * time.Millisecond},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			return "", nil
+		},
+		CreateTransport: func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+			for name, mock := range backends {
+				if conf.URL == "http://localhost/"+name {
+					return mock, nil
+				}
+			}
+			return nil, fmt.Errorf("unknown backend")
+		},
+		BaseURL:   "http://localhost:8080",
+		Delimiter: "__",
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	return srv
+}
+
+func registerSyncTestSession(t *testing.T, srv *Server, id string) (*fakeSessionWithTools, context.Context) {
+	t.Helper()
+	session := &fakeSessionWithTools{id: id, notifications: make(chan mcp.JSONRPCNotification, 4)}
+	ctx := srv.mcpServer.WithContext(context.Background(), session)
+	require.NoError(t, srv.mcpServer.RegisterSession(ctx, session))
+	return session, ctx
+}
+
+func sessionToolNames(session *fakeSessionWithTools) []string {
+	names := make([]string, 0)
+	for name := range session.GetSessionTools() {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestSessionPicksUpToolsAddedAfterItConnected(t *testing.T) {
+	zoho := &mockTransport{tools: []mcp.Tool{{Name: "Get_an_Item"}}}
+	srv := newSessionSyncTestServer(t, map[string]*mockTransport{"zoho": zoho})
+	session, ctx := registerSyncTestSession(t, srv, "long-lived")
+	require.Equal(t, []string{"zoho__Get_an_Item"}, sessionToolNames(session))
+
+	zoho.mu.Lock()
+	zoho.tools = []mcp.Tool{{Name: "Get_an_Item"}, {Name: "List_all_Items"}}
+	zoho.mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+
+	srv.queueSessionRefresh(ctx)
+
+	select {
+	case n := <-session.notifications:
+		assert.Equal(t, mcp.MethodNotificationToolsListChanged, n.Method)
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected a tools/list_changed notification")
+	}
+	assert.Equal(t, []string{"zoho__Get_an_Item", "zoho__List_all_Items"}, sessionToolNames(session))
+}
+
+func TestSessionSyncWithUnchangedToolsSendsNoNotification(t *testing.T) {
+	zoho := &mockTransport{tools: []mcp.Tool{{Name: "Get_an_Item"}}}
+	srv := newSessionSyncTestServer(t, map[string]*mockTransport{"zoho": zoho})
+	session, ctx := registerSyncTestSession(t, srv, "unchanged")
+	time.Sleep(100 * time.Millisecond)
+
+	srv.syncSessionTools(ctx, session)
+
+	assert.Empty(t, session.notifications)
+	assert.Equal(t, []string{"zoho__Get_an_Item"}, sessionToolNames(session))
+}
+
+func TestSessionSyncKeepsToolsOfABackendMissingFromDiscovery(t *testing.T) {
+	zoho := &mockTransport{tools: []mcp.Tool{{Name: "Get_an_Item"}}}
+	hubspot := &mockTransport{tools: []mcp.Tool{{Name: "search"}}}
+	srv := newSessionSyncTestServer(t, map[string]*mockTransport{"zoho": zoho, "hubspot": hubspot})
+	session, ctx := registerSyncTestSession(t, srv, "partial")
+	require.Equal(t, []string{"hubspot__search", "zoho__Get_an_Item"}, sessionToolNames(session))
+
+	zoho.mu.Lock()
+	zoho.listToolsErr = errors.New("authorization required")
+	zoho.mu.Unlock()
+	hubspot.mu.Lock()
+	hubspot.tools = []mcp.Tool{{Name: "search"}, {Name: "get"}}
+	hubspot.mu.Unlock()
+	srv.cacheMu.Lock()
+	srv.sharedCache = nil
+	clear(srv.lastGood)
+	srv.cacheMu.Unlock()
+
+	srv.syncSessionTools(ctx, session)
+
+	assert.Equal(t, []string{"hubspot__get", "hubspot__search", "zoho__Get_an_Item"}, sessionToolNames(session))
 }
 
 func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
