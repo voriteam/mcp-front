@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,8 @@ const (
 	// maxBackendDiscoveryTimeout caps the per-backend discovery deadline however
 	// long the backend configures its own timeout.
 	maxBackendDiscoveryTimeout = 30 * time.Second
+
+	sessionRefreshQueueSize = 256
 )
 
 var ErrUserConnLimitExceeded = fmt.Errorf("user connection limit exceeded")
@@ -125,9 +128,15 @@ type Server struct {
 	mcpServer *mcpserver.MCPServer
 	transport mcpTransport
 
+	refreshCh    chan sessionRefresh
 	stopCleanup  chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
+}
+
+type sessionRefresh struct {
+	ctx     context.Context
+	session mcpserver.ClientSession
 }
 
 type ServerConfig struct {
@@ -177,16 +186,20 @@ func NewServer(cfg ServerConfig) *Server {
 		userCache:           make(map[string]*cachedTools),
 		lastGood:            make(map[lastGoodKey]*backendTools),
 		conns:               make(map[connKey]*conn),
+		refreshCh:           make(chan sessionRefresh, sessionRefreshQueueSize),
 		stopCleanup:         make(chan struct{}),
 	}
 
 	hooks := &mcpserver.Hooks{}
 	hooks.AddOnRegisterSession(s.onRegisterSession)
 	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcp.ListToolsRequest) {
-		s.populateToolsFromContext(ctx)
+		if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+			s.syncSessionTools(ctx, session)
+		}
 	})
 	hooks.AddBeforeCallTool(func(ctx context.Context, _ any, _ *mcp.CallToolRequest) {
 		s.populateToolsFromContext(ctx)
+		s.queueSessionRefresh(ctx)
 	})
 
 	s.mcpServer = mcpserver.NewMCPServer(cfg.Name, "1.0.0",
@@ -225,8 +238,9 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) Start() {
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.cleanupLoop()
+	go s.refreshLoop()
 }
 
 func (s *Server) Handler() http.Handler {
@@ -280,25 +294,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) onRegisterSession(ctx context.Context, session mcpserver.ClientSession) {
-	s.ensureSessionTools(ctx, session)
+	s.syncSessionTools(ctx, session)
 }
 
-// ensureSessionTools populates per-session tools if they are missing. It is
-// called from OnRegisterSession (when a client runs `initialize`) and from
-// the tools/list and tools/call before-hooks so that ephemeral sessions
-// created for requests carrying a stale session ID (e.g. after a pod restart)
-// transparently get their tool list rebuilt from the aggregate's cached
+// ensureSessionTools populates per-session tools if they are missing, so
+// ephemeral sessions created for requests carrying a stale session ID (e.g.
+// after a pod restart) get their tool list rebuilt from the aggregate's cached
 // discovery instead of appearing empty.
 func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.ClientSession) {
+	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
+	if ok && len(sessionWithTools.GetSessionTools()) > 0 {
+		return
+	}
+	s.syncSessionTools(ctx, session)
+}
+
+func (s *Server) syncSessionTools(ctx context.Context, session mcpserver.ClientSession) {
 	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
 	if !ok {
 		log.LogErrorWithFields("aggregate", "Session does not support per-session tools", map[string]any{
 			"server":    s.name,
 			"sessionID": session.SessionID(),
 		})
-		return
-	}
-	if len(sessionWithTools.GetSessionTools()) > 0 {
 		return
 	}
 
@@ -321,6 +338,56 @@ func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.Clien
 		return
 	}
 
+	current := sessionWithTools.GetSessionTools()
+	fresh := s.buildSessionTools(userEmail, tools)
+	for name, tool := range current {
+		backendName, _, ok := ParseToolName(name, s.delimiter)
+		if !ok {
+			continue
+		}
+		if _, discovered := tools[backendName]; !discovered {
+			fresh[name] = tool
+		}
+	}
+
+	added, removed, changed := diffSessionTools(current, fresh)
+	if added == 0 && removed == 0 && changed == 0 {
+		return
+	}
+	sessionWithTools.SetSessionTools(fresh)
+
+	if len(current) == 0 {
+		log.LogInfoWithFields("aggregate", "Session registered", map[string]any{
+			"server":    s.name,
+			"sessionID": session.SessionID(),
+			"user":      userEmail,
+			"toolCount": len(fresh),
+		})
+		return
+	}
+
+	log.LogInfoWithFields("aggregate", "Session tools changed", map[string]any{
+		"server":    s.name,
+		"sessionID": session.SessionID(),
+		"user":      userEmail,
+		"toolCount": len(fresh),
+		"added":     added,
+		"removed":   removed,
+		"changed":   changed,
+	})
+	if !session.Initialized() {
+		return
+	}
+	if err := s.mcpServer.SendNotificationToSpecificClient(session.SessionID(), mcp.MethodNotificationToolsListChanged, nil); err != nil {
+		log.LogDebugWithFields("aggregate", "Could not notify session of tool list change", map[string]any{
+			"server":    s.name,
+			"sessionID": session.SessionID(),
+			"error":     err.Error(),
+		})
+	}
+}
+
+func (s *Server) buildSessionTools(userEmail string, tools map[string][]mcp.Tool) map[string]mcpserver.ServerTool {
 	sessionTools := make(map[string]mcpserver.ServerTool)
 	for backendName, backendTools := range tools {
 		for _, tool := range backendTools {
@@ -338,14 +405,48 @@ func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.Clien
 			}
 		}
 	}
-	sessionWithTools.SetSessionTools(sessionTools)
+	return sessionTools
+}
 
-	log.LogInfoWithFields("aggregate", "Session registered", map[string]any{
-		"server":    s.name,
-		"sessionID": session.SessionID(),
-		"user":      userEmail,
-		"toolCount": len(sessionTools),
-	})
+func diffSessionTools(current, fresh map[string]mcpserver.ServerTool) (added, removed, changed int) {
+	for name, tool := range fresh {
+		prev, ok := current[name]
+		switch {
+		case !ok:
+			added++
+		case !reflect.DeepEqual(prev.Tool, tool.Tool):
+			changed++
+		}
+	}
+	for name := range current {
+		if _, ok := fresh[name]; !ok {
+			removed++
+		}
+	}
+	return added, removed, changed
+}
+
+func (s *Server) queueSessionRefresh(ctx context.Context) {
+	session := mcpserver.ClientSessionFromContext(ctx)
+	if session == nil {
+		return
+	}
+	select {
+	case s.refreshCh <- sessionRefresh{ctx: context.WithoutCancel(ctx), session: session}:
+	default:
+	}
+}
+
+func (s *Server) refreshLoop() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.stopCleanup:
+			return
+		case req := <-s.refreshCh:
+			s.syncSessionTools(req.ctx, req.session)
+		}
+	}
 }
 
 func (s *Server) populateToolsFromContext(ctx context.Context) {
