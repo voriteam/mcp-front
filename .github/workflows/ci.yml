@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   lint:
@@ -98,3 +97,19 @@ jobs:
           TEST_TIMER_RESET_WAIT_TIME: 15s
           TEST_MULTI_USER_WAIT_TIME: 15s
         run: ./scripts/test
+
+  build-image:
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: read
+      packages: write
+
+  all-checks:
+    name: All checks
+    if: always()
+    needs: [lint, test, build-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
