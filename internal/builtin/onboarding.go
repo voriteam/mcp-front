@@ -18,14 +18,23 @@ import (
 const (
 	tinyURLCreateEndpoint = "https://api.tinyurl.com/create"
 
-	// Must match InvitationType.Signing in backend
-	// shared/nest/libs/invitations/enum.ts.
-	invitationTypeSigning = "signing"
-
 	// A link is a bearer credential; the ceiling turns a mistyped expiry into a
 	// tool error rather than a year-long invitation.
 	maxOnboardingTTLDays = 90
 )
+
+// Must match InvitationType in backend shared/nest/libs/invitations/enum.ts.
+type invitationType string
+
+const (
+	invitationTypeSigning                     invitationType = "signing"
+	invitationTypeMerchantProcessingAgreement invitationType = "merchant_processing_agreement"
+)
+
+var invitationTypes = map[invitationType]bool{
+	invitationTypeSigning:                     true,
+	invitationTypeMerchantProcessingAgreement: true,
+}
 
 type OnboardingConfig struct {
 	// Secret Manager: invitation-signing-secret. The same secret the backend's
@@ -44,8 +53,9 @@ type OnboardingConfig struct {
 }
 
 type onboardingArgs struct {
-	HubspotDealID  string `json:"hubspotDealId"`
-	RecipientEmail string `json:"recipientEmail"`
+	InvitationType invitationType `json:"invitationType,omitempty"`
+	HubspotDealID  string         `json:"hubspotDealId"`
+	RecipientEmail string         `json:"recipientEmail"`
 	// Absent means fall back to DefaultTokenTTL; a pointer keeps that
 	// distinguishable from an explicit zero, which is an error.
 	ExpiresInDays    *int   `json:"expiresInDays,omitempty"`
@@ -55,6 +65,7 @@ type onboardingArgs struct {
 const onboardingSchemaFormat = `{
   "type": "object",
   "properties": {
+    "invitationType": {"type": "string", "enum": ["signing", "merchant_processing_agreement"], "default": "signing", "description": "Which agreement the recipient signs. Defaults to signing. signing: a new customer signing the full Vori agreement. merchant_processing_agreement: an existing customer with a Vori master agreement adding a store, signing only the merchant processing agreement."},
     "hubspotDealId":  {"type": "string", "description": "HubSpot deal the onboarding link is for."},
     "recipientEmail": {"type": "string", "description": "Address that will receive the link and complete signup."},
     "expiresInDays":  {"type": "integer", "minimum": 1, "maximum": %d, "description": "How long the link stays valid. Defaults to %d days."},
@@ -108,7 +119,7 @@ func OnboardingTools(cfg OnboardingConfig) ([]Tool, error) {
 
 	return []Tool{{
 		Name:        "create_onboarding_link",
-		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Pass the deal's primary contact ID as hubspotContactId whenever the deal has one. Returns the link and the moment it expires.",
+		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Use invitationType signing for a new customer signing the full Vori agreement, and merchant_processing_agreement for an existing customer adding a store who signs only the merchant processing agreement. Pass the deal's primary contact ID as hubspotContactId whenever the deal has one. Returns the link and the moment it expires.",
 		InputSchema: json.RawMessage(fmt.Sprintf(onboardingSchemaFormat,
 			maxOnboardingTTLDays, int(cfg.DefaultTokenTTL/(24*time.Hour)))),
 		OutputSchema: json.RawMessage(onboardingOutputSchema),
@@ -123,6 +134,12 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 	}
 	if args.HubspotDealID == "" || args.RecipientEmail == "" {
 		return mcp.NewToolResultError("hubspotDealId and recipientEmail are both required"), nil
+	}
+	if args.InvitationType == "" {
+		args.InvitationType = invitationTypeSigning
+	}
+	if !invitationTypes[args.InvitationType] {
+		return mcp.NewToolResultError("invitationType must be signing or merchant_processing_agreement"), nil
 	}
 
 	ttl := cfg.DefaultTokenTTL
@@ -140,7 +157,7 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 
 	// Claim names must match the backend's InvitationTokensService.verify.
 	claims := map[string]any{
-		"invitation_type": invitationTypeSigning,
+		"invitation_type": string(args.InvitationType),
 		"hubspot_deal_id": args.HubspotDealID,
 		"email":           args.RecipientEmail,
 		"iss":             cfg.Issuer,
@@ -162,10 +179,11 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 	}
 
 	fields := map[string]any{
-		"issuedBy":  userEmail,
-		"dealId":    args.HubspotDealID,
-		"recipient": args.RecipientEmail,
-		"expiresAt": expiresAt,
+		"issuedBy":       userEmail,
+		"invitationType": string(args.InvitationType),
+		"dealId":         args.HubspotDealID,
+		"recipient":      args.RecipientEmail,
+		"expiresAt":      expiresAt,
 	}
 	if args.HubspotContactID != "" {
 		fields["contactId"] = args.HubspotContactID
