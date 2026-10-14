@@ -28,66 +28,77 @@ func decodeClaims(t *testing.T, token string) map[string]any {
 	return claims
 }
 
-// The backend's InvitationTokensService.verify rejects anything else, so this
-// asserts the exact claim set rather than a subset.
+// Pins the exact claim set rather than a subset, so a stray claim fails here
+// instead of surprising the backend's InvitationTokensService.verify.
 func TestCreateLink_TokenShape(t *testing.T) {
-	var captured string
-	shortener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		captured = body["url"]
-		_, _ = io.WriteString(w, `{"data":{"tiny_url":"https://link.vori.io/abc123"}}`)
-	}))
-	defer shortener.Close()
-
-	cfg := OnboardingConfig{
-		SigningKey:      []byte("invitation-signing-secret-value-32b"),
-		DefaultTokenTTL: 7 * 24 * time.Hour,
-		AppRootURL:      "https://app.vori.com",
-		Issuer:          "https://jwt.vori.com",
-		HTTPClient:      shortener.Client(),
+	baseClaims := []string{"invitation_type", "hubspot_deal_id", "email", "iss", "iat", "exp"}
+	cases := []struct {
+		name       string
+		args       string
+		wantClaims []string
+		contactID  any
+	}{
+		{
+			name:       "without a contact",
+			args:       `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
+			wantClaims: baseClaims,
+		},
+		{
+			name:       "with a contact",
+			args:       `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example","hubspotContactId":"67890"}`,
+			wantClaims: append(append([]string{}, baseClaims...), "hubspot_contact_id"),
+			contactID:  "67890",
+		},
 	}
-	cfg.endpoint = shortener.URL
-	cfg.TinyURLAPIKey = "tinyurl-key"
-	cfg.ShortenerDomain = "link.vori.io"
-	tools, err := OnboardingTools(cfg)
-	require.NoError(t, err)
-	require.Len(t, tools, 1)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+			res, err := tool.Handler(context.Background(), "ae@vori.com", json.RawMessage(tc.args))
+			require.NoError(t, err)
+			require.NotNil(t, res)
 
-	args := json.RawMessage(`{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`)
-	res, err := tools[0].Handler(context.Background(), "ae@vori.com", args)
-	require.NoError(t, err)
-	require.NotNil(t, res)
+			parsed, err := url.Parse(*long)
+			require.NoError(t, err)
+			assert.Equal(t, "https", parsed.Scheme)
+			assert.Equal(t, "app.vori.com", parsed.Host)
+			assert.Equal(t, "/welcome", parsed.Path)
 
-	parsed, err := url.Parse(captured)
-	require.NoError(t, err)
-	assert.Equal(t, "https", parsed.Scheme)
-	assert.Equal(t, "app.vori.com", parsed.Host)
-	assert.Equal(t, "/welcome", parsed.Path)
+			claims := claimsFromLink(t, *long)
+			assert.Equal(t, "signing", claims["invitation_type"])
+			assert.Equal(t, "12345", claims["hubspot_deal_id"])
+			assert.Equal(t, "buyer@grocer.example", claims["email"])
+			assert.Equal(t, "https://jwt.vori.com", claims["iss"])
+			assert.Equal(t, tc.contactID, claims["hubspot_contact_id"])
 
-	token := parsed.Query().Get("token")
-	require.NotEmpty(t, token)
+			assert.ElementsMatch(t, tc.wantClaims, keysOf(claims), "claim set must be exactly this")
 
-	claims := decodeClaims(t, token)
-	assert.Equal(t, "signing", claims["invitation_type"])
-	assert.Equal(t, "12345", claims["hubspot_deal_id"])
-	assert.Equal(t, "buyer@grocer.example", claims["email"])
-	assert.Equal(t, "https://jwt.vori.com", claims["iss"])
+			iat, ok := claims["iat"].(float64)
+			require.True(t, ok)
+			exp, ok := claims["exp"].(float64)
+			require.True(t, ok)
+			assert.Equal(t, float64(7*24*time.Hour/time.Second), exp-iat)
 
-	assert.ElementsMatch(t,
-		[]string{"invitation_type", "hubspot_deal_id", "email", "iss", "iat", "exp"},
-		keysOf(claims),
-		"claim set must match the backend verifier exactly")
+			link := linkResult(t, res)
+			assert.Equal(t, "https://link.vori.io/abc123", link.URL)
+			assertExpiresAtMatchesToken(t, link, claims)
+		})
+	}
+}
 
-	iat, ok := claims["iat"].(float64)
-	require.True(t, ok)
-	exp, ok := claims["exp"].(float64)
-	require.True(t, ok)
-	assert.Equal(t, float64(7*24*time.Hour/time.Second), exp-iat)
+func TestOnboardingSchema_ContactIsOptional(t *testing.T) {
+	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 
-	link := linkResult(t, res)
-	assert.Equal(t, "https://link.vori.io/abc123", link.URL)
-	assertExpiresAtMatchesToken(t, link, claims)
+	var schema struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	require.NoError(t, json.Unmarshal(tool.InputSchema, &schema))
+
+	require.Contains(t, schema.Properties, "hubspotContactId")
+	assert.Equal(t, "string", schema.Properties["hubspotContactId"].Type)
+	assert.NotContains(t, schema.Required, "hubspotContactId")
 }
 
 // Clients read either the structured content or the text block, so the two

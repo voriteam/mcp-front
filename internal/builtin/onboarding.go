@@ -48,7 +48,8 @@ type onboardingArgs struct {
 	RecipientEmail string `json:"recipientEmail"`
 	// Absent means fall back to DefaultTokenTTL; a pointer keeps that
 	// distinguishable from an explicit zero, which is an error.
-	ExpiresInDays *int `json:"expiresInDays,omitempty"`
+	ExpiresInDays    *int   `json:"expiresInDays,omitempty"`
+	HubspotContactID string `json:"hubspotContactId,omitempty"`
 }
 
 const onboardingSchemaFormat = `{
@@ -56,7 +57,8 @@ const onboardingSchemaFormat = `{
   "properties": {
     "hubspotDealId":  {"type": "string", "description": "HubSpot deal the onboarding link is for."},
     "recipientEmail": {"type": "string", "description": "Address that will receive the link and complete signup."},
-    "expiresInDays":  {"type": "integer", "minimum": 1, "maximum": %d, "description": "How long the link stays valid. Defaults to %d days."}
+    "expiresInDays":  {"type": "integer", "minimum": 1, "maximum": %d, "description": "How long the link stays valid. Defaults to %d days."},
+    "hubspotContactId": {"type": "string", "description": "HubSpot ID of the deal's primary contact, when known. Lets the welcome page greet the recipient by name."}
   },
   "required": ["hubspotDealId", "recipientEmail"],
   "additionalProperties": false
@@ -106,7 +108,7 @@ func OnboardingTools(cfg OnboardingConfig) ([]Tool, error) {
 
 	return []Tool{{
 		Name:        "create_onboarding_link",
-		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Returns the link and the moment it expires.",
+		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Pass the deal's primary contact ID as hubspotContactId whenever the deal has one. Returns the link and the moment it expires.",
 		InputSchema: json.RawMessage(fmt.Sprintf(onboardingSchemaFormat,
 			maxOnboardingTTLDays, int(cfg.DefaultTokenTTL/(24*time.Hour)))),
 		OutputSchema: json.RawMessage(onboardingOutputSchema),
@@ -136,16 +138,19 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 	expires := now.Add(ttl)
 	expiresAt := expires.UTC().Format(time.RFC3339)
 
-	// Claim names are fixed by the backend's InvitationTokensService.verify:
-	// anything else is rejected as InvalidInvitationTokenError.
-	signed, err := crypto.SignHS256(cfg.SigningKey, map[string]any{
+	// Claim names must match the backend's InvitationTokensService.verify.
+	claims := map[string]any{
 		"invitation_type": invitationTypeSigning,
 		"hubspot_deal_id": args.HubspotDealID,
 		"email":           args.RecipientEmail,
 		"iss":             cfg.Issuer,
 		"iat":             now.Unix(),
 		"exp":             expires.Unix(),
-	})
+	}
+	if args.HubspotContactID != "" {
+		claims["hubspot_contact_id"] = args.HubspotContactID
+	}
+	signed, err := crypto.SignHS256(cfg.SigningKey, claims)
 	if err != nil {
 		return nil, fmt.Errorf("signing invitation token: %w", err)
 	}
@@ -156,12 +161,16 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 		return nil, fmt.Errorf("shortening onboarding url: %w", err)
 	}
 
-	log.LogInfoWithFields("builtin", "Onboarding link issued", map[string]any{
+	fields := map[string]any{
 		"issuedBy":  userEmail,
 		"dealId":    args.HubspotDealID,
 		"recipient": args.RecipientEmail,
 		"expiresAt": expiresAt,
-	})
+	}
+	if args.HubspotContactID != "" {
+		fields["contactId"] = args.HubspotContactID
+	}
+	log.LogInfoWithFields("builtin", "Onboarding link issued", fields)
 
 	return mcp.NewToolResultJSON(onboardingLink{URL: short, ExpiresAt: expiresAt})
 }
