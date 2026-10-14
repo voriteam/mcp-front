@@ -33,21 +33,37 @@ func decodeClaims(t *testing.T, token string) map[string]any {
 func TestCreateLink_TokenShape(t *testing.T) {
 	baseClaims := []string{"invitation_type", "hubspot_deal_id", "email", "iss", "iat", "exp"}
 	cases := []struct {
-		name       string
-		args       string
-		wantClaims []string
-		contactID  any
+		name           string
+		args           string
+		invitationType string
+		wantClaims     []string
+		contactID      any
 	}{
 		{
-			name:       "without a contact",
-			args:       `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
-			wantClaims: baseClaims,
+			name:           "signing without a contact",
+			args:           `{"invitationType":"signing","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
+			invitationType: "signing",
+			wantClaims:     baseClaims,
 		},
 		{
-			name:       "with a contact",
-			args:       `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example","hubspotContactId":"67890"}`,
-			wantClaims: append(append([]string{}, baseClaims...), "hubspot_contact_id"),
-			contactID:  "67890",
+			name:           "signing with a contact",
+			args:           `{"invitationType":"signing","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example","hubspotContactId":"67890"}`,
+			invitationType: "signing",
+			wantClaims:     append(append([]string{}, baseClaims...), "hubspot_contact_id"),
+			contactID:      "67890",
+		},
+		{
+			name:           "merchant processing agreement without a contact",
+			args:           `{"invitationType":"merchant_processing_agreement","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
+			invitationType: "merchant_processing_agreement",
+			wantClaims:     baseClaims,
+		},
+		{
+			name:           "merchant processing agreement with a contact",
+			args:           `{"invitationType":"merchant_processing_agreement","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example","hubspotContactId":"67890"}`,
+			invitationType: "merchant_processing_agreement",
+			wantClaims:     append(append([]string{}, baseClaims...), "hubspot_contact_id"),
+			contactID:      "67890",
 		},
 	}
 	for _, tc := range cases {
@@ -64,7 +80,7 @@ func TestCreateLink_TokenShape(t *testing.T) {
 			assert.Equal(t, "/welcome", parsed.Path)
 
 			claims := claimsFromLink(t, *long)
-			assert.Equal(t, "signing", claims["invitation_type"])
+			assert.Equal(t, tc.invitationType, claims["invitation_type"])
 			assert.Equal(t, "12345", claims["hubspot_deal_id"])
 			assert.Equal(t, "buyer@grocer.example", claims["email"])
 			assert.Equal(t, "https://jwt.vori.com", claims["iss"])
@@ -99,6 +115,32 @@ func TestOnboardingSchema_ContactIsOptional(t *testing.T) {
 	require.Contains(t, schema.Properties, "hubspotContactId")
 	assert.Equal(t, "string", schema.Properties["hubspotContactId"].Type)
 	assert.NotContains(t, schema.Required, "hubspotContactId")
+}
+
+func TestOnboardingSchema_InvitationTypeIsRequiredEnum(t *testing.T) {
+	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+
+	var schema struct {
+		Properties map[string]struct {
+			Type    string   `json:"type"`
+			Enum    []string `json:"enum"`
+			Default any      `json:"default"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	require.NoError(t, json.Unmarshal(tool.InputSchema, &schema))
+
+	require.Contains(t, schema.Properties, "invitationType")
+	prop := schema.Properties["invitationType"]
+	assert.Equal(t, "string", prop.Type)
+	assert.Nil(t, prop.Default)
+	assert.Contains(t, schema.Required, "invitationType")
+
+	want := make([]string, 0, len(invitationTypes))
+	for it := range invitationTypes {
+		want = append(want, string(it))
+	}
+	assert.ElementsMatch(t, want, prop.Enum, "the schema enum must match the accepted invitation types")
 }
 
 // Clients read either the structured content or the text block, so the two
@@ -192,7 +234,7 @@ func TestCreateLink_ExpiryInDays(t *testing.T) {
 	t.Run("defaults when the caller names none", func(t *testing.T) {
 		tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 		res, err := tool.Handler(context.Background(), "ae@vori.com",
-			json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example"}`))
+			json.RawMessage(`{"invitationType":"signing","hubspotDealId":"1","recipientEmail":"b@g.example"}`))
 		require.NoError(t, err)
 
 		claims := claimsFromLink(t, *long)
@@ -203,7 +245,7 @@ func TestCreateLink_ExpiryInDays(t *testing.T) {
 	t.Run("honours a caller-supplied expiry", func(t *testing.T) {
 		tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 		res, err := tool.Handler(context.Background(), "ae@vori.com",
-			json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":14}`))
+			json.RawMessage(`{"invitationType":"signing","hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":14}`))
 		require.NoError(t, err)
 
 		claims := claimsFromLink(t, *long)
@@ -215,7 +257,7 @@ func TestCreateLink_ExpiryInDays(t *testing.T) {
 		tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 		for _, days := range []string{"0", "-1", "91"} {
 			res, err := tool.Handler(context.Background(), "ae@vori.com",
-				json.RawMessage(`{"hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":`+days+`}`))
+				json.RawMessage(`{"invitationType":"signing","hubspotDealId":"1","recipientEmail":"b@g.example","expiresInDays":`+days+`}`))
 			require.NoError(t, err, "a bad expiry is a tool error, not a Go error")
 			assert.True(t, res.IsError, "expiresInDays=%s must be rejected", days)
 		}
@@ -271,8 +313,11 @@ func TestCreateLink_RejectsBadArguments(t *testing.T) {
 		name string
 		args string
 	}{
-		{"no deal", `{"recipientEmail":"buyer@grocer.example"}`},
-		{"no email", `{"hubspotDealId":"12345"}`},
+		{"no deal", `{"invitationType":"signing","recipientEmail":"buyer@grocer.example"}`},
+		{"no email", `{"invitationType":"signing","hubspotDealId":"12345"}`},
+		{"no invitation type", `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
+		{"empty invitation type", `{"invitationType":"","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
+		{"unknown invitation type", `{"invitationType":"onboarding","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
 		{"malformed", `{`},
 	}
 	for _, tc := range cases {
