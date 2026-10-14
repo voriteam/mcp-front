@@ -53,6 +53,12 @@ func TestCreateLink_TokenShape(t *testing.T) {
 			contactID:      "67890",
 		},
 		{
+			name:           "defaults to signing",
+			args:           `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
+			invitationType: "signing",
+			wantClaims:     baseClaims,
+		},
+		{
 			name:           "merchant processing agreement without a contact",
 			args:           `{"invitationType":"merchant_processing_agreement","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
 			invitationType: "merchant_processing_agreement",
@@ -117,7 +123,7 @@ func TestOnboardingSchema_ContactIsOptional(t *testing.T) {
 	assert.NotContains(t, schema.Required, "hubspotContactId")
 }
 
-func TestOnboardingSchema_InvitationTypeIsRequiredEnum(t *testing.T) {
+func TestOnboardingSchema_InvitationTypeIsOptionalEnumDefaultingToSigning(t *testing.T) {
 	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 
 	var schema struct {
@@ -133,8 +139,8 @@ func TestOnboardingSchema_InvitationTypeIsRequiredEnum(t *testing.T) {
 	require.Contains(t, schema.Properties, "invitationType")
 	prop := schema.Properties["invitationType"]
 	assert.Equal(t, "string", prop.Type)
-	assert.Nil(t, prop.Default)
-	assert.Contains(t, schema.Required, "invitationType")
+	assert.Equal(t, "signing", prop.Default)
+	assert.NotContains(t, schema.Required, "invitationType")
 
 	want := make([]string, 0, len(invitationTypes))
 	for it := range invitationTypes {
@@ -315,8 +321,6 @@ func TestCreateLink_RejectsBadArguments(t *testing.T) {
 	}{
 		{"no deal", `{"invitationType":"signing","recipientEmail":"buyer@grocer.example"}`},
 		{"no email", `{"invitationType":"signing","hubspotDealId":"12345"}`},
-		{"no invitation type", `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
-		{"empty invitation type", `{"invitationType":"","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
 		{"unknown invitation type", `{"invitationType":"onboarding","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
 		{"malformed", `{`},
 	}

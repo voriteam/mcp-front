@@ -53,7 +53,7 @@ type OnboardingConfig struct {
 }
 
 type onboardingArgs struct {
-	InvitationType invitationType `json:"invitationType"`
+	InvitationType invitationType `json:"invitationType,omitempty"`
 	HubspotDealID  string         `json:"hubspotDealId"`
 	RecipientEmail string         `json:"recipientEmail"`
 	// Absent means fall back to DefaultTokenTTL; a pointer keeps that
@@ -65,13 +65,13 @@ type onboardingArgs struct {
 const onboardingSchemaFormat = `{
   "type": "object",
   "properties": {
-    "invitationType": {"type": "string", "enum": ["signing", "merchant_processing_agreement"], "description": "Which agreement the recipient signs. signing: a new customer signing the full Vori agreement. merchant_processing_agreement: an existing customer with a Vori master agreement adding a store, signing only the merchant processing agreement."},
+    "invitationType": {"type": "string", "enum": ["signing", "merchant_processing_agreement"], "default": "signing", "description": "Which agreement the recipient signs. Defaults to signing. signing: a new customer signing the full Vori agreement. merchant_processing_agreement: an existing customer with a Vori master agreement adding a store, signing only the merchant processing agreement."},
     "hubspotDealId":  {"type": "string", "description": "HubSpot deal the onboarding link is for."},
     "recipientEmail": {"type": "string", "description": "Address that will receive the link and complete signup."},
     "expiresInDays":  {"type": "integer", "minimum": 1, "maximum": %d, "description": "How long the link stays valid. Defaults to %d days."},
     "hubspotContactId": {"type": "string", "description": "HubSpot ID of the deal's primary contact, when known. Lets the welcome page greet the recipient by name."}
   },
-  "required": ["invitationType", "hubspotDealId", "recipientEmail"],
+  "required": ["hubspotDealId", "recipientEmail"],
   "additionalProperties": false
 }`
 
@@ -134,6 +134,9 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 	}
 	if args.HubspotDealID == "" || args.RecipientEmail == "" {
 		return mcp.NewToolResultError("hubspotDealId and recipientEmail are both required"), nil
+	}
+	if args.InvitationType == "" {
+		args.InvitationType = invitationTypeSigning
 	}
 	if !invitationTypes[args.InvitationType] {
 		return mcp.NewToolResultError("invitationType must be signing or merchant_processing_agreement"), nil
