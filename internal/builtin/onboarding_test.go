@@ -65,6 +65,19 @@ func TestCreateLink_TokenShape(t *testing.T) {
 			wantClaims:     append(append([]string{}, baseClaims...), "hubspot_contact_id"),
 			contactID:      "67890",
 		},
+		{
+			name:           "financing application without a contact",
+			args:           `{"invitationType":"financing_application","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
+			invitationType: "financing_application",
+			wantClaims:     baseClaims,
+		},
+		{
+			name:           "financing application with a contact",
+			args:           `{"invitationType":"financing_application","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example","hubspotContactId":"67890"}`,
+			invitationType: "financing_application",
+			wantClaims:     append(append([]string{}, baseClaims...), "hubspot_contact_id"),
+			contactID:      "67890",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -308,7 +321,7 @@ func TestOnboardingSchema_DeclaresOutput(t *testing.T) {
 }
 
 func TestCreateLink_RejectsBadArguments(t *testing.T) {
-	const invitationTypeErr = "invitationType is required and must be signing or merchant_processing_agreement"
+	const invitationTypeErr = "invitationType is required and must be signing, merchant_processing_agreement or financing_application"
 	cases := []struct {
 		name    string
 		args    string

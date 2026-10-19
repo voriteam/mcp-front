@@ -29,11 +29,13 @@ type invitationType string
 const (
 	invitationTypeSigning                     invitationType = "signing"
 	invitationTypeMerchantProcessingAgreement invitationType = "merchant_processing_agreement"
+	invitationTypeFinancingApplication        invitationType = "financing_application"
 )
 
 var invitationTypes = map[invitationType]bool{
 	invitationTypeSigning:                     true,
 	invitationTypeMerchantProcessingAgreement: true,
+	invitationTypeFinancingApplication:        true,
 }
 
 type OnboardingConfig struct {
@@ -65,7 +67,7 @@ type onboardingArgs struct {
 const onboardingSchemaFormat = `{
   "type": "object",
   "properties": {
-    "invitationType": {"type": "string", "enum": ["signing", "merchant_processing_agreement"], "description": "Which agreement the recipient signs. signing: a new customer signing the full Vori agreement. merchant_processing_agreement: an existing customer with a Vori master agreement adding a store, signing only the merchant processing agreement."},
+    "invitationType": {"type": "string", "enum": ["signing", "merchant_processing_agreement", "financing_application"], "description": "Which agreement the recipient signs. signing: a new customer signing the full Vori agreement. merchant_processing_agreement: an existing customer with a Vori master agreement adding a store, signing only the merchant processing agreement. financing_application: a grocer whose Vori agreement on this deal is already signed, applying for hardware financing on its own and signing only the credit application."},
     "hubspotDealId":  {"type": "string", "description": "HubSpot deal the onboarding link is for."},
     "recipientEmail": {"type": "string", "description": "Address that will receive the link and complete signup."},
     "expiresInDays":  {"type": "integer", "minimum": 1, "maximum": %d, "description": "How long the link stays valid. Defaults to %d days."},
@@ -119,7 +121,7 @@ func OnboardingTools(cfg OnboardingConfig) ([]Tool, error) {
 
 	return []Tool{{
 		Name:        "create_onboarding_link",
-		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Always pass invitationType: signing for a new customer signing the full Vori agreement, or merchant_processing_agreement for an existing customer adding a store who signs only the merchant processing agreement. Pass the deal's primary contact ID as hubspotContactId whenever the deal has one. Returns the link and the moment it expires.",
+		Description: "Generate a short onboarding URL for a HubSpot deal, to be sent to the named recipient. Always pass invitationType: signing for a new customer signing the full Vori agreement, merchant_processing_agreement for an existing customer adding a store who signs only the merchant processing agreement, or financing_application for a grocer whose Vori agreement on this deal is already signed and who is applying for hardware financing on its own. Pass the deal's primary contact ID as hubspotContactId whenever the deal has one. Returns the link and the moment it expires.",
 		InputSchema: json.RawMessage(fmt.Sprintf(onboardingSchemaFormat,
 			maxOnboardingTTLDays, int(cfg.DefaultTokenTTL/(24*time.Hour)))),
 		OutputSchema: json.RawMessage(onboardingOutputSchema),
@@ -136,7 +138,7 @@ func (cfg OnboardingConfig) createLink(ctx context.Context, userEmail string, ra
 		return mcp.NewToolResultError("hubspotDealId and recipientEmail are both required"), nil
 	}
 	if !invitationTypes[args.InvitationType] {
-		return mcp.NewToolResultError("invitationType is required and must be signing or merchant_processing_agreement"), nil
+		return mcp.NewToolResultError("invitationType is required and must be signing, merchant_processing_agreement or financing_application"), nil
 	}
 
 	ttl := cfg.DefaultTokenTTL
