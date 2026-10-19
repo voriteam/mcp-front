@@ -53,12 +53,6 @@ func TestCreateLink_TokenShape(t *testing.T) {
 			contactID:      "67890",
 		},
 		{
-			name:           "defaults to signing",
-			args:           `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
-			invitationType: "signing",
-			wantClaims:     baseClaims,
-		},
-		{
 			name:           "merchant processing agreement without a contact",
 			args:           `{"invitationType":"merchant_processing_agreement","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`,
 			invitationType: "merchant_processing_agreement",
@@ -123,7 +117,7 @@ func TestOnboardingSchema_ContactIsOptional(t *testing.T) {
 	assert.NotContains(t, schema.Required, "hubspotContactId")
 }
 
-func TestOnboardingSchema_InvitationTypeIsOptionalEnumDefaultingToSigning(t *testing.T) {
+func TestOnboardingSchema_InvitationTypeIsRequiredEnum(t *testing.T) {
 	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 
 	var schema struct {
@@ -139,8 +133,8 @@ func TestOnboardingSchema_InvitationTypeIsOptionalEnumDefaultingToSigning(t *tes
 	require.Contains(t, schema.Properties, "invitationType")
 	prop := schema.Properties["invitationType"]
 	assert.Equal(t, "string", prop.Type)
-	assert.Equal(t, "signing", prop.Default)
-	assert.NotContains(t, schema.Required, "invitationType")
+	assert.Nil(t, prop.Default)
+	assert.Contains(t, schema.Required, "invitationType")
 
 	want := make([]string, 0, len(invitationTypes))
 	for it := range invitationTypes {
@@ -314,22 +308,30 @@ func TestOnboardingSchema_DeclaresOutput(t *testing.T) {
 }
 
 func TestCreateLink_RejectsBadArguments(t *testing.T) {
-	tool, _ := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
+	const invitationTypeErr = "invitationType is required and must be signing or merchant_processing_agreement"
 	cases := []struct {
-		name string
-		args string
+		name    string
+		args    string
+		wantErr string
 	}{
-		{"no deal", `{"invitationType":"signing","recipientEmail":"buyer@grocer.example"}`},
-		{"no email", `{"invitationType":"signing","hubspotDealId":"12345"}`},
-		{"unknown invitation type", `{"invitationType":"onboarding","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`},
-		{"malformed", `{`},
+		{"no deal", `{"invitationType":"signing","recipientEmail":"buyer@grocer.example"}`, "hubspotDealId and recipientEmail are both required"},
+		{"no email", `{"invitationType":"signing","hubspotDealId":"12345"}`, "hubspotDealId and recipientEmail are both required"},
+		{"no invitation type", `{"hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`, invitationTypeErr},
+		{"unknown invitation type", `{"invitationType":"onboarding","hubspotDealId":"12345","recipientEmail":"buyer@grocer.example"}`, invitationTypeErr},
+		{"malformed", `{`, "invalid arguments: unexpected end of JSON input"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			tool, long := newLinkTool(t, OnboardingConfig{DefaultTokenTTL: 7 * 24 * time.Hour})
 			res, err := tool.Handler(context.Background(), "ae@vori.com", json.RawMessage(tc.args))
 			require.NoError(t, err, "bad input is a tool error, not a Go error")
 			require.NotNil(t, res)
 			assert.True(t, res.IsError)
+			require.Len(t, res.Content, 1)
+			text, ok := res.Content[0].(mcp.TextContent)
+			require.True(t, ok, "content is %T", res.Content[0])
+			assert.Equal(t, tc.wantErr, text.Text)
+			assert.Empty(t, *long, "no link is minted")
 		})
 	}
 }
