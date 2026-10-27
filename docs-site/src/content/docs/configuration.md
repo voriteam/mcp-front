@@ -230,6 +230,29 @@ Enforcement is eventual by design: an access token already issued keeps working 
 
 `enabled` turns it on (default: `false`). It requires `idp.provider` `"google"` (the only provider that currently supports the refresh probe) and, for the stored tokens to survive restarts, `storage` `"firestore"`. There is no other configuration and nothing to provision outside MCP Front.
 
+### `auth.gcpServiceAccounts`
+
+An MCP client that runs as a Google Cloud service account can authenticate with a GCP access token instead of signing in through the identity provider. MCP Front checks the token against Google's tokeninfo endpoint and accepts it only when the service account holds the custom IAM role named in `callerRole`. The token works as a bearer token on MCP requests, and as the `subject_token` of a token-exchange grant (`urn:ietf:params:oauth:grant-type:token-exchange`) at `/token`, which returns an MCP Front token for that service account.
+
+```json
+{
+  "auth": {
+    "gcpServiceAccounts": {
+      "callerRole": "projects/my-project/roles/mcpGatewayCaller",
+      "impersonatorRole": "projects/my-project/roles/mcpGatewayImpersonator"
+    }
+  }
+}
+```
+
+A service account that also holds `impersonatorRole` can send an `X-On-Behalf-Of` header with a user's email on an MCP request. MCP Front then handles the request as that user, including which of the user's stored tokens it sends to backends. When `allowedDomains` is set, the user's email must be in one of those domains. Any other service account that sends the header gets `403 Forbidden`. Tokens from the token-exchange grant cannot impersonate.
+
+Granting or revoking access is an IAM change and needs no MCP Front restart. MCP Front reads the project's IAM policy with its own credentials, so its service account needs `resourcemanager.projects.getIamPolicy` on that project. It caches the policy for a minute, and if a read fails it keeps using the last policy for up to ten minutes.
+
+Only a direct, unconditional binding of the role on the project counts. Grants inherited from a folder or organization, and bindings with a condition, do not, and neither do broad roles such as Owner, because MCP Front checks for the role itself rather than for a permission. The roles exist only to be bound, so they can carry any harmless permission. Google requires at least one.
+
+Each value must be a custom project role name, and `impersonatorRole` requires `callerRole`. When `callerRole` is empty or `gcpServiceAccounts` is absent, MCP Front rejects every GCP access token.
+
 ## MCP server configuration
 
 Each server needs at least a `transportType`. See [Server Types](/mcp-front/server-types/) for transport-specific documentation.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -725,6 +726,152 @@ func TestUpstreamOAuthStatePreservesPKCE(t *testing.T) {
 	assert.Equal(t, identity.Email, restored.Identity.Email)
 	assert.Equal(t, *params, restored.Params,
 		"all AuthorizeParams fields must survive the upstream OAuth state round-trip")
+}
+
+type fakeRoles map[string][]string
+
+func (f fakeRoles) HasRole(_ context.Context, role, serviceAccount string) (bool, error) {
+	return slices.Contains(f[role], serviceAccount), nil
+}
+
+func TestGCPAccessTokens_AllowOnlyServiceAccountsWithTheCallerRole(t *testing.T) {
+	const (
+		issuer          = "https://test.example.com"
+		callerRole      = "projects/example-project/roles/mcpGatewayCaller"
+		allowedAccount  = "opsbot@example-project.iam.gserviceaccount.com"
+		outsiderAccount = "outsider@other-project.iam.gserviceaccount.com"
+	)
+
+	emails := map[string]string{
+		"allowed-token":  allowedAccount,
+		"outsider-token": outsiderAccount,
+	}
+	tokenInfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]string{
+			"email":          emails[r.URL.Query().Get("access_token")],
+			"email_verified": "true",
+			"expires_in":     "3600",
+		}))
+	}))
+	t.Cleanup(tokenInfo.Close)
+
+	oauthConfig := config.OAuthAuthConfig{
+		Issuer:        issuer,
+		JWTSecret:     config.Secret(strings.Repeat("a", 32)),
+		EncryptionKey: config.Secret(strings.Repeat("b", 32)),
+		TokenTTL:      time.Hour,
+	}
+	store := storage.NewMemoryStorage()
+	_, err := store.CreateClient(context.Background(), "test-client", []string{"http://localhost/callback"}, []string{"openid"}, issuer)
+	require.NoError(t, err)
+
+	deploy := func(allowed ...string) (*AuthHandlers, *oauth.AuthorizationServer) {
+		gcpValidator := oauth.NewGCPAccessTokenValidator(oauth.GCPAccessTokenValidatorConfig{
+			TokenInfoURL: tokenInfo.URL,
+			Roles:        fakeRoles{callerRole: allowed},
+			CallerRole:   callerRole,
+		})
+		authServer, err := oauth.NewAuthorizationServer(oauth.AuthorizationServerConfig{
+			JWTSecret:      []byte(oauthConfig.JWTSecret),
+			Issuer:         issuer,
+			AccessTokenTTL: oauthConfig.TokenTTL,
+			GCPValidator:   gcpValidator,
+		})
+		require.NoError(t, err)
+		sessionEncryptor, err := oauth.NewSessionEncryptor([]byte(oauthConfig.EncryptionKey))
+		require.NoError(t, err)
+		return NewAuthHandlers(authServer, oauthConfig, &mockIDPProvider{}, store, sessionEncryptor, map[string]*config.MCPClientConfig{}, nil, gcpValidator), authServer
+	}
+
+	type tokenResponse struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		Error        string `json:"error"`
+	}
+	postToken := func(handlers *AuthHandlers, form url.Values) (*httptest.ResponseRecorder, tokenResponse) {
+		form.Set("client_id", "test-client")
+		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handlers.TokenHandler(rec, req)
+		var resp tokenResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), rec.Body.String())
+		return rec, resp
+	}
+	exchange := func(handlers *AuthHandlers, subjectToken string) (*httptest.ResponseRecorder, tokenResponse) {
+		return postToken(handlers, url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		})
+	}
+	refresh := func(handlers *AuthHandlers, refreshToken string) (*httptest.ResponseRecorder, tokenResponse) {
+		return postToken(handlers, url.Values{
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {refreshToken},
+		})
+	}
+
+	t.Run("service account with the caller role gets tokens for itself", func(t *testing.T) {
+		handlers, authServer := deploy(allowedAccount)
+		rec, resp := exchange(handlers, "allowed-token")
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		claims, err := authServer.ValidateAccessToken(resp.AccessToken)
+		require.NoError(t, err)
+		assert.Equal(t, allowedAccount, claims.Identity.Email)
+	})
+
+	t.Run("service account without the caller role is rejected", func(t *testing.T) {
+		handlers, _ := deploy(allowedAccount)
+		rec, resp := exchange(handlers, "outsider-token")
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Equal(t, "invalid_grant", resp.Error)
+		assert.NotContains(t, rec.Body.String(), "@")
+	})
+
+	t.Run("MCP request from a service account without the caller role gets a 401", func(t *testing.T) {
+		handlers, authServer := deploy(allowedAccount)
+		chain := oauth.NewValidateTokenMiddleware(authServer, issuer, false, handlers.gcpValidator, []string{"example.com"})(
+			NewRequireAuthMiddleware(true, issuer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("unauthenticated request reached the handler")
+			})),
+		)
+		req := httptest.NewRequest(http.MethodPost, "/gateway/mcp", nil)
+		req.Header.Set("Authorization", "Bearer outsider-token")
+		req.Header.Set("X-On-Behalf-Of", "alice@example.com")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+		assert.NotContains(t, rec.Body.String(), "@")
+	})
+
+	t.Run("refresh is accepted while the account holds the caller role", func(t *testing.T) {
+		handlers, authServer := deploy(allowedAccount)
+		_, exchanged := exchange(handlers, "allowed-token")
+		require.NotEmpty(t, exchanged.RefreshToken)
+
+		rec, resp := refresh(handlers, exchanged.RefreshToken)
+		require.Equal(t, http.StatusOK, rec.Code)
+		claims, err := authServer.ValidateAccessToken(resp.AccessToken)
+		require.NoError(t, err)
+		assert.Equal(t, allowedAccount, claims.Identity.Email)
+	})
+
+	t.Run("refresh is refused once the account loses the caller role", func(t *testing.T) {
+		before, _ := deploy(allowedAccount)
+		_, exchanged := exchange(before, "allowed-token")
+		require.NotEmpty(t, exchanged.RefreshToken)
+
+		after, _ := deploy()
+		rec, resp := refresh(after, exchanged.RefreshToken)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Equal(t, "invalid_grant", resp.Error)
+		assert.Empty(t, resp.AccessToken)
+		assert.NotContains(t, rec.Body.String(), "@")
+	})
 }
 
 func TestValidateAccess(t *testing.T) {

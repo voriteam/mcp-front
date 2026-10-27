@@ -288,6 +288,25 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		log.LogWarn("Development mode enabled - OAuth security checks relaxed (state parameter entropy: %d)", minEntropy)
 	}
 
+	gcpAccounts := oauthAuth.GCPServiceAccounts
+	var gcpRoles oauth.RoleChecker
+	if gcpAccounts.CallerRole != "" {
+		roles, err := oauth.NewProjectIAMRoles(ctx)
+		if err != nil {
+			return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("setting up GCP service account access: %w", err)
+		}
+		gcpRoles = roles
+	}
+	gcpValidator := oauth.NewGCPAccessTokenValidator(oauth.GCPAccessTokenValidatorConfig{
+		Roles:            gcpRoles,
+		CallerRole:       gcpAccounts.CallerRole,
+		ImpersonatorRole: gcpAccounts.ImpersonatorRole,
+	})
+	log.LogInfoWithFields("mcpfront", "GCP service account access configured", map[string]any{
+		"caller_role":       gcpAccounts.CallerRole,
+		"impersonator_role": gcpAccounts.ImpersonatorRole,
+	})
+
 	authServerCfg := oauth.AuthorizationServerConfig{
 		JWTSecret:            jwtSecret,
 		Issuer:               oauthAuth.Issuer,
@@ -296,6 +315,7 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		MinStateEntropy:      minEntropy,
 		RefreshTokenScopes:   oauthAuth.RefreshTokenScopes,
 		RequireResourceParam: !oauthAuth.DangerouslyAcceptIssuerAudience,
+		GCPValidator:         gcpValidator,
 	}
 	if rev := oauthAuth.WorkspaceRevocation; rev != nil && rev.Enabled {
 		if refresher, ok := idpProvider.(revocation.IdentityRefresher); ok {
@@ -311,7 +331,6 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 	}
 
 	serviceOAuthClient := auth.NewServiceOAuthClient(store, cfg.Proxy.BaseURL, encryptionKey)
-	gcpValidator := oauth.NewGCPAccessTokenValidator()
 
 	return authServer, idpProvider, sessionEncryptor, *oauthAuth, serviceOAuthClient, gcpValidator, nil
 }

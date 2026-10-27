@@ -32,6 +32,7 @@ type AuthorizationServer struct {
 	refreshTokenScopes   []string
 	requireResourceParam bool
 	revocationChecker    RevocationChecker
+	gcpValidator         *GCPAccessTokenValidator
 }
 
 type AuthorizationServerConfig struct {
@@ -45,6 +46,9 @@ type AuthorizationServerConfig struct {
 	RequireResourceParam bool
 	// RevocationChecker, when set, blocks refresh-token grants for revoked users.
 	RevocationChecker RevocationChecker
+	// GCPValidator decides whether a token-exchange identity may still refresh.
+	// When nil, those refreshes are refused.
+	GCPValidator *GCPAccessTokenValidator
 }
 
 func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer, error) {
@@ -73,6 +77,7 @@ func NewAuthorizationServer(cfg AuthorizationServerConfig) (*AuthorizationServer
 		refreshTokenScopes:   cfg.RefreshTokenScopes,
 		requireResourceParam: cfg.RequireResourceParam,
 		revocationChecker:    cfg.RevocationChecker,
+		gcpValidator:         cfg.GCPValidator,
 	}, nil
 }
 
@@ -215,6 +220,27 @@ func (s *AuthorizationServer) RefreshTokens(ctx context.Context, refreshToken st
 
 	if claims.ClientID != client.GetID() {
 		return nil, NewOAuthError(ErrInvalidGrant, "refresh token was issued to a different client")
+	}
+
+	if claims.Identity.ProviderType == GCPProviderType {
+		allowed := false
+		if s.gcpValidator != nil {
+			var err error
+			allowed, err = s.gcpValidator.IsAllowed(ctx, claims.Identity.Email)
+			if err != nil {
+				log.LogErrorWithFields("oauth", "Could not check a GCP account's role before refresh", map[string]any{
+					"email": claims.Identity.Email,
+					"error": err.Error(),
+				})
+				return nil, NewOAuthError(ErrServerError, "failed to verify account access")
+			}
+		}
+		if !allowed {
+			log.LogWarnWithFields("oauth", "Refused refresh for a GCP account that is no longer allowed", map[string]any{
+				"email": claims.Identity.Email,
+			})
+			return nil, NewOAuthError(ErrInvalidGrant, "account is not an allowed service account")
+		}
 	}
 
 	if s.revocationChecker != nil {

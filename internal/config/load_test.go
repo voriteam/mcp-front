@@ -813,6 +813,53 @@ func TestValidateOAuthConfig_RedirectURIHostPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateOAuthConfig_GCPServiceAccounts(t *testing.T) {
+	const (
+		caller       = "projects/p/roles/mcpGatewayCaller"
+		impersonator = "projects/p/roles/mcpGatewayImpersonator"
+	)
+
+	tests := []struct {
+		name        string
+		accounts    GCPServiceAccountsConfig
+		errContains string
+	}{
+		{name: "absent passes", accounts: GCPServiceAccountsConfig{}},
+		{name: "caller and impersonator roles pass", accounts: GCPServiceAccountsConfig{CallerRole: caller, ImpersonatorRole: impersonator}},
+		{name: "rejects a predefined role", accounts: GCPServiceAccountsConfig{CallerRole: "roles/viewer"}, errContains: "callerRole"},
+		{name: "rejects a malformed impersonator role", accounts: GCPServiceAccountsConfig{CallerRole: caller, ImpersonatorRole: "mcpGatewayImpersonator"}, errContains: "impersonatorRole"},
+		{name: "rejects an impersonator role without a caller role", accounts: GCPServiceAccountsConfig{ImpersonatorRole: impersonator}, errContains: "requires gcpServiceAccounts.callerRole"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &OAuthAuthConfig{
+				Kind:   AuthKindOAuth,
+				Issuer: "https://test.example.com",
+				IDP: IDPConfig{
+					Provider:     "google",
+					ClientID:     "client",
+					ClientSecret: "secret",
+					RedirectURI:  "https://test.example.com/callback",
+				},
+				JWTSecret:               "test-jwt-secret-must-be-32-bytes-long",
+				AllowedDomains:          []string{"example.com"},
+				AllowAnyRedirectURIHost: true,
+				TokenTTL:                time.Hour,
+				RefreshTokenTTL:         30 * 24 * time.Hour,
+				GCPServiceAccounts:      tt.accounts,
+			}
+
+			err := validateOAuthConfig(cfg)
+			if tt.errContains == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tt.errContains)
+		})
+	}
+}
+
 // The gateway rejected a valid builtin at startup because validateConfig has
 // its own transport switch, separate from the one ValidateFile walks.
 func TestValidateConfig_BuiltinServer(t *testing.T) {

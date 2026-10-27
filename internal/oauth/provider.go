@@ -108,6 +108,23 @@ func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, 
 				ctx = context.WithValue(ctx, authTokenContextKey, token)
 
 				if onBehalf := r.Header.Get("X-On-Behalf-Of"); onBehalf != "" {
+					canImpersonate, err := gcpValidator.CanImpersonate(ctx, gcpEmail)
+					if err != nil {
+						log.LogErrorWithFields("oauth", "Could not check the service account's impersonator role", map[string]any{
+							"service_account": gcpEmail,
+							"error":           err.Error(),
+						})
+						jsonwriter.WriteServiceUnavailable(w, "Could not verify impersonation access")
+						return
+					}
+					if !canImpersonate {
+						log.LogWarnWithFields("oauth", "GCP service account not allowed to impersonate users", map[string]any{
+							"service_account": gcpEmail,
+							"on_behalf_of":    onBehalf,
+						})
+						jsonwriter.WriteForbidden(w, "Service account is not allowed to impersonate users")
+						return
+					}
 					domain := emailutil.ExtractDomain(onBehalf)
 					if domain == "" || (len(allowedDomains) > 0 && !slices.Contains(allowedDomains, domain)) {
 						jsonwriter.WriteForbidden(w, "Impersonation target not in allowed domains")

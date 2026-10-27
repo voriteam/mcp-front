@@ -306,6 +306,10 @@ func validateOAuthConfig(oauth *OAuthAuthConfig) error {
 		return err
 	}
 
+	if err := validateGCPServiceAccounts(oauth.GCPServiceAccounts); err != nil {
+		return err
+	}
+
 	if oauth.Storage == "firestore" {
 		if oauth.GCPProject == "" {
 			return fmt.Errorf("gcpProject is required when using firestore storage")
@@ -349,6 +353,24 @@ func validateRedirectURIHostPolicy(oauth *OAuthAuthConfig) error {
 		if u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("allowedRedirectURIHosts[%d] %q must not include a query or fragment", i, entry)
 		}
+	}
+	return nil
+}
+
+var projectRoleName = regexp.MustCompile(`^projects/[^/]+/roles/[^/]+$`)
+
+func validateGCPServiceAccounts(accounts GCPServiceAccountsConfig) error {
+	roles := []struct{ field, name string }{
+		{"callerRole", accounts.CallerRole},
+		{"impersonatorRole", accounts.ImpersonatorRole},
+	}
+	for _, role := range roles {
+		if role.name != "" && !projectRoleName.MatchString(role.name) {
+			return fmt.Errorf("gcpServiceAccounts.%s %q must be a custom project role name like projects/<project>/roles/<role>", role.field, role.name)
+		}
+	}
+	if accounts.ImpersonatorRole != "" && accounts.CallerRole == "" {
+		return fmt.Errorf("gcpServiceAccounts.impersonatorRole requires gcpServiceAccounts.callerRole")
 	}
 	return nil
 }

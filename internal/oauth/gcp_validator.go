@@ -18,25 +18,88 @@ const (
 	maxCacheTTL         = 5 * time.Minute
 )
 
+// GCPProviderType marks identities issued through the token-exchange grant.
+const GCPProviderType = "gcp"
+
 type cachedTokenInfo struct {
 	email     string
 	expiresAt time.Time
 }
 
-type GCPAccessTokenValidator struct {
-	tokenInfoURL string
-	httpClient   *http.Client
-	cache        sync.Map
+type GCPAccessTokenValidatorConfig struct {
+	TokenInfoURL string
+	// Roles is required when CallerRole is set.
+	Roles            RoleChecker
+	CallerRole       string
+	ImpersonatorRole string
 }
 
-func NewGCPAccessTokenValidator() *GCPAccessTokenValidator {
+type GCPAccessTokenValidator struct {
+	tokenInfoURL     string
+	roles            RoleChecker
+	callerRole       string
+	impersonatorRole string
+	httpClient       *http.Client
+	cache            sync.Map
+}
+
+func NewGCPAccessTokenValidator(cfg GCPAccessTokenValidatorConfig) *GCPAccessTokenValidator {
+	tokenInfoURL := cfg.TokenInfoURL
+	if tokenInfoURL == "" {
+		tokenInfoURL = defaultTokenInfoURL
+	}
 	return &GCPAccessTokenValidator{
-		tokenInfoURL: defaultTokenInfoURL,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		tokenInfoURL:     tokenInfoURL,
+		roles:            cfg.Roles,
+		callerRole:       cfg.CallerRole,
+		impersonatorRole: cfg.ImpersonatorRole,
+		httpClient:       &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
+// IsAllowed reports whether the service account holds the caller role. It is
+// checked on every request, so removing the binding takes effect within the
+// IAM policy cache's lifetime.
+func (v *GCPAccessTokenValidator) IsAllowed(ctx context.Context, email string) (bool, error) {
+	return v.hasRole(ctx, v.callerRole, email)
+}
+
+func (v *GCPAccessTokenValidator) CanImpersonate(ctx context.Context, email string) (bool, error) {
+	return v.hasRole(ctx, v.impersonatorRole, email)
+}
+
+func (v *GCPAccessTokenValidator) hasRole(ctx context.Context, role, email string) (bool, error) {
+	if role == "" || v.roles == nil {
+		return false, nil
+	}
+	return v.roles.HasRole(ctx, role, email)
+}
+
 func (v *GCPAccessTokenValidator) Validate(ctx context.Context, token string) (string, error) {
+	email, err := v.tokenEmail(ctx, token)
+	if err != nil {
+		return "", err
+	}
+
+	allowed, err := v.IsAllowed(ctx, email)
+	if err != nil {
+		log.LogErrorWithFields("gcp_auth", "Could not check the service account's IAM role", map[string]any{
+			"email": email,
+			"error": err.Error(),
+		})
+		return "", fmt.Errorf("checking service account access failed")
+	}
+	if !allowed {
+		log.LogWarnWithFields("gcp_auth", "Rejected access token from an account without the caller role", map[string]any{
+			"email": email,
+			"role":  v.callerRole,
+		})
+		return "", fmt.Errorf("GCP account is not an allowed service account")
+	}
+	return email, nil
+}
+
+func (v *GCPAccessTokenValidator) tokenEmail(ctx context.Context, token string) (string, error) {
 	if cached, ok := v.cache.Load(token); ok {
 		info := cached.(*cachedTokenInfo)
 		if time.Now().Before(info.expiresAt) {

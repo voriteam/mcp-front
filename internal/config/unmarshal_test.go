@@ -341,7 +341,11 @@ func TestOAuthAuthConfig_UnmarshalJSON(t *testing.T) {
 			"redirectUri": "https://example.com/callback"
 		},
 		"jwtSecret": {"$env": "JWT_SECRET"},
-		"encryptionKey": {"$env": "ENCRYPTION_KEY"}
+		"encryptionKey": {"$env": "ENCRYPTION_KEY"},
+		"gcpServiceAccounts": {
+			"callerRole": "projects/p/roles/mcpGatewayCaller",
+			"impersonatorRole": "projects/p/roles/mcpGatewayImpersonator"
+		}
 	}`
 
 	var config OAuthAuthConfig
@@ -361,6 +365,10 @@ func TestOAuthAuthConfig_UnmarshalJSON(t *testing.T) {
 	assert.Equal(t, "https://example.com/callback", config.IDP.RedirectURI)
 	assert.Equal(t, Secret("this-is-a-very-long-jwt-secret-key"), config.JWTSecret)
 	assert.Equal(t, Secret("exactly-32-bytes-long-encryptkey"), config.EncryptionKey)
+	assert.Equal(t, GCPServiceAccountsConfig{
+		CallerRole:       "projects/p/roles/mcpGatewayCaller",
+		ImpersonatorRole: "projects/p/roles/mcpGatewayImpersonator",
+	}, config.GCPServiceAccounts)
 }
 
 func TestOAuthAuthConfig_UnmarshalJSON_AllowAnyRedirectUriHost(t *testing.T) {

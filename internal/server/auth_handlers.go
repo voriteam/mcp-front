@@ -575,7 +575,7 @@ func (h *AuthHandlers) TokenHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		identity := idp.Identity{
-			ProviderType:  "gcp",
+			ProviderType:  oauth.GCPProviderType,
 			Email:         gcpEmail,
 			EmailVerified: true,
 		}
