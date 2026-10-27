@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -727,9 +728,16 @@ func TestUpstreamOAuthStatePreservesPKCE(t *testing.T) {
 		"all AuthorizeParams fields must survive the upstream OAuth state round-trip")
 }
 
-func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
+type fakeRoles map[string][]string
+
+func (f fakeRoles) HasRole(_ context.Context, role, serviceAccount string) (bool, error) {
+	return slices.Contains(f[role], serviceAccount), nil
+}
+
+func TestGCPAccessTokens_AllowOnlyServiceAccountsWithTheCallerRole(t *testing.T) {
 	const (
 		issuer          = "https://test.example.com"
+		callerRole      = "projects/example-project/roles/mcpGatewayCaller"
 		allowedAccount  = "opsbot@example-project.iam.gserviceaccount.com"
 		outsiderAccount = "outsider@other-project.iam.gserviceaccount.com"
 	)
@@ -760,8 +768,9 @@ func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
 
 	deploy := func(allowed ...string) (*AuthHandlers, *oauth.AuthorizationServer) {
 		gcpValidator := oauth.NewGCPAccessTokenValidator(oauth.GCPAccessTokenValidatorConfig{
-			TokenInfoURL:           tokenInfo.URL,
-			AllowedServiceAccounts: allowed,
+			TokenInfoURL: tokenInfo.URL,
+			Roles:        fakeRoles{callerRole: allowed},
+			CallerRole:   callerRole,
 		})
 		authServer, err := oauth.NewAuthorizationServer(oauth.AuthorizationServerConfig{
 			JWTSecret:      []byte(oauthConfig.JWTSecret),
@@ -804,7 +813,7 @@ func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
 		})
 	}
 
-	t.Run("listed service account gets tokens for itself", func(t *testing.T) {
+	t.Run("service account with the caller role gets tokens for itself", func(t *testing.T) {
 		handlers, authServer := deploy(allowedAccount)
 		rec, resp := exchange(handlers, "allowed-token")
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -814,7 +823,7 @@ func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
 		assert.Equal(t, allowedAccount, claims.Identity.Email)
 	})
 
-	t.Run("unlisted service account is rejected", func(t *testing.T) {
+	t.Run("service account without the caller role is rejected", func(t *testing.T) {
 		handlers, _ := deploy(allowedAccount)
 		rec, resp := exchange(handlers, "outsider-token")
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -822,7 +831,7 @@ func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
 		assert.NotContains(t, rec.Body.String(), "@")
 	})
 
-	t.Run("MCP request from an unlisted service account gets a 401", func(t *testing.T) {
+	t.Run("MCP request from a service account without the caller role gets a 401", func(t *testing.T) {
 		handlers, authServer := deploy(allowedAccount)
 		chain := oauth.NewValidateTokenMiddleware(authServer, issuer, false, handlers.gcpValidator, []string{"example.com"})(
 			NewRequireAuthMiddleware(true, issuer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -839,7 +848,7 @@ func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
 		assert.NotContains(t, rec.Body.String(), "@")
 	})
 
-	t.Run("refresh is accepted while the account is allowed", func(t *testing.T) {
+	t.Run("refresh is accepted while the account holds the caller role", func(t *testing.T) {
 		handlers, authServer := deploy(allowedAccount)
 		_, exchanged := exchange(handlers, "allowed-token")
 		require.NotEmpty(t, exchanged.RefreshToken)
@@ -851,7 +860,7 @@ func TestGCPAccessTokens_AllowOnlyListedServiceAccounts(t *testing.T) {
 		assert.Equal(t, allowedAccount, claims.Identity.Email)
 	})
 
-	t.Run("refresh is refused once the account is no longer allowed", func(t *testing.T) {
+	t.Run("refresh is refused once the account loses the caller role", func(t *testing.T) {
 		before, _ := deploy(allowedAccount)
 		_, exchanged := exchange(before, "allowed-token")
 		require.NotEmpty(t, exchanged.RefreshToken)

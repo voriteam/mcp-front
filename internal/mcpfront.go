@@ -288,13 +288,23 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 		log.LogWarn("Development mode enabled - OAuth security checks relaxed (state parameter entropy: %d)", minEntropy)
 	}
 
+	gcpAccounts := oauthAuth.GCPServiceAccounts
+	var gcpRoles oauth.RoleChecker
+	if gcpAccounts.CallerRole != "" {
+		roles, err := oauth.NewProjectIAMRoles(ctx)
+		if err != nil {
+			return nil, nil, nil, config.OAuthAuthConfig{}, nil, nil, fmt.Errorf("setting up GCP service account access: %w", err)
+		}
+		gcpRoles = roles
+	}
 	gcpValidator := oauth.NewGCPAccessTokenValidator(oauth.GCPAccessTokenValidatorConfig{
-		AllowedServiceAccounts: oauthAuth.GCPServiceAccounts.Allowed,
-		Impersonators:          oauthAuth.GCPServiceAccounts.Impersonators,
+		Roles:            gcpRoles,
+		CallerRole:       gcpAccounts.CallerRole,
+		ImpersonatorRole: gcpAccounts.ImpersonatorRole,
 	})
 	log.LogInfoWithFields("mcpfront", "GCP service account access configured", map[string]any{
-		"allowed":       oauthAuth.GCPServiceAccounts.Allowed,
-		"impersonators": oauthAuth.GCPServiceAccounts.Impersonators,
+		"caller_role":       gcpAccounts.CallerRole,
+		"impersonator_role": gcpAccounts.ImpersonatorRole,
 	})
 
 	authServerCfg := oauth.AuthorizationServerConfig{

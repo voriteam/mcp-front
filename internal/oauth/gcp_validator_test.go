@@ -3,8 +3,10 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +17,23 @@ const (
 	opsbotServiceAccount   = "opsbot@example-project.iam.gserviceaccount.com"
 	coderServiceAccount    = "coder@example-project.iam.gserviceaccount.com"
 	outsiderServiceAccount = "outsider@other-project.iam.gserviceaccount.com"
+
+	callerRole       = "projects/example-project/roles/mcpGatewayCaller"
+	impersonatorRole = "projects/example-project/roles/mcpGatewayImpersonator"
 )
+
+// fakeRoles maps a role to the service accounts bound to it.
+type fakeRoles map[string][]string
+
+func (f fakeRoles) HasRole(_ context.Context, role, serviceAccount string) (bool, error) {
+	return slices.Contains(f[role], serviceAccount), nil
+}
+
+type failingRoles struct{}
+
+func (failingRoles) HasRole(context.Context, string, string) (bool, error) {
+	return false, errors.New("IAM unavailable")
+}
 
 func newFakeTokenInfo(t *testing.T, emails map[string]string) string {
 	t.Helper()
@@ -43,23 +61,28 @@ func TestGCPAccessTokenValidator_Validate(t *testing.T) {
 		"human-token":    "alice@example.com",
 	})
 
+	callers := fakeRoles{callerRole: {opsbotServiceAccount}}
+
 	cases := []struct {
-		name      string
-		allowed   []string
-		token     string
-		wantEmail string
+		name       string
+		roles      RoleChecker
+		callerRole string
+		token      string
+		wantEmail  string
 	}{
-		{name: "allowed service account", allowed: []string{opsbotServiceAccount}, token: "opsbot-token", wantEmail: opsbotServiceAccount},
-		{name: "service account not on the list", allowed: []string{opsbotServiceAccount}, token: "outsider-token"},
-		{name: "user account", allowed: []string{opsbotServiceAccount}, token: "human-token"},
-		{name: "empty list rejects every account", allowed: nil, token: "opsbot-token"},
+		{name: "service account with the caller role", roles: callers, callerRole: callerRole, token: "opsbot-token", wantEmail: opsbotServiceAccount},
+		{name: "service account without the caller role", roles: callers, callerRole: callerRole, token: "outsider-token"},
+		{name: "user account", roles: callers, callerRole: callerRole, token: "human-token"},
+		{name: "no caller role rejects every account", roles: callers, token: "opsbot-token"},
+		{name: "failed role check rejects", roles: failingRoles{}, callerRole: callerRole, token: "opsbot-token"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := NewGCPAccessTokenValidator(GCPAccessTokenValidatorConfig{
-				TokenInfoURL:           tokenInfoURL,
-				AllowedServiceAccounts: tc.allowed,
+				TokenInfoURL: tokenInfoURL,
+				Roles:        tc.roles,
+				CallerRole:   tc.callerRole,
 			})
 
 			email, err := v.Validate(context.Background(), tc.token)

@@ -261,7 +261,7 @@ func validateGCPServiceAccountsStructure(auth map[string]any, result *Validation
 	if err != nil {
 		result.Errors = append(result.Errors, ValidationError{
 			Path:    "proxy.auth.gcpServiceAccounts",
-			Message: "must be an object with \"allowed\" and \"impersonators\" arrays of service account emails",
+			Message: "must be an object with \"callerRole\" and \"impersonatorRole\" role names",
 		})
 		return
 	}

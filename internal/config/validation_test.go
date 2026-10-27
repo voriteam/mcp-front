@@ -624,9 +624,9 @@ func TestValidateFile_GCPServiceAccounts(t *testing.T) {
 		accounts string
 		wantErr  string
 	}{
-		{name: "valid lists pass", accounts: `{"allowed": ["opsbot@p.iam.gserviceaccount.com"], "impersonators": ["opsbot@p.iam.gserviceaccount.com"]}`},
-		{name: "impersonator missing from allowed errors", accounts: `{"allowed": [], "impersonators": ["opsbot@p.iam.gserviceaccount.com"]}`, wantErr: "must also be listed in gcpServiceAccounts.allowed"},
-		{name: "wrong shape errors", accounts: `{"allowed": "opsbot@p.iam.gserviceaccount.com"}`, wantErr: "must be an object"},
+		{name: "valid roles pass", accounts: `{"callerRole": "projects/p/roles/mcpGatewayCaller", "impersonatorRole": "projects/p/roles/mcpGatewayImpersonator"}`},
+		{name: "impersonator role without a caller role errors", accounts: `{"impersonatorRole": "projects/p/roles/mcpGatewayImpersonator"}`, wantErr: "requires gcpServiceAccounts.callerRole"},
+		{name: "wrong shape errors", accounts: `{"callerRole": ["projects/p/roles/mcpGatewayCaller"]}`, wantErr: "must be an object"},
 	}
 
 	for _, tt := range tests {

@@ -376,12 +376,15 @@ type OAuthAuthConfig struct {
 	GCPServiceAccounts  GCPServiceAccountsConfig   `json:"gcpServiceAccounts"`
 }
 
-// GCPServiceAccountsConfig lists the Google service accounts that may
-// authenticate with a GCP access token, and the subset that may act as a user
-// through X-On-Behalf-Of. An empty Allowed list rejects every GCP access token.
+// GCPServiceAccountsConfig names the custom IAM roles that grant service
+// accounts access. A service account may authenticate with a GCP access token
+// when it holds CallerRole, and may also act as a user through X-On-Behalf-Of
+// when it holds ImpersonatorRole. Each is a full role name such as
+// projects/my-project/roles/mcpGatewayCaller. An empty CallerRole rejects every
+// GCP access token.
 type GCPServiceAccountsConfig struct {
-	Allowed       []string `json:"allowed"`
-	Impersonators []string `json:"impersonators"`
+	CallerRole       string `json:"callerRole"`
+	ImpersonatorRole string `json:"impersonatorRole"`
 }
 
 // WorkspaceRevocationConfig configures account-revocation enforcement: at token

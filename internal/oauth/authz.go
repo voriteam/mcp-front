@@ -222,11 +222,25 @@ func (s *AuthorizationServer) RefreshTokens(ctx context.Context, refreshToken st
 		return nil, NewOAuthError(ErrInvalidGrant, "refresh token was issued to a different client")
 	}
 
-	if claims.Identity.ProviderType == GCPProviderType && (s.gcpValidator == nil || !s.gcpValidator.IsAllowed(claims.Identity.Email)) {
-		log.LogWarnWithFields("oauth", "Refused refresh for a GCP account that is no longer allowed", map[string]any{
-			"email": claims.Identity.Email,
-		})
-		return nil, NewOAuthError(ErrInvalidGrant, "account is not an allowed service account")
+	if claims.Identity.ProviderType == GCPProviderType {
+		allowed := false
+		if s.gcpValidator != nil {
+			var err error
+			allowed, err = s.gcpValidator.IsAllowed(ctx, claims.Identity.Email)
+			if err != nil {
+				log.LogErrorWithFields("oauth", "Could not check a GCP account's role before refresh", map[string]any{
+					"email": claims.Identity.Email,
+					"error": err.Error(),
+				})
+				return nil, NewOAuthError(ErrServerError, "failed to verify account access")
+			}
+		}
+		if !allowed {
+			log.LogWarnWithFields("oauth", "Refused refresh for a GCP account that is no longer allowed", map[string]any{
+				"email": claims.Identity.Email,
+			})
+			return nil, NewOAuthError(ErrInvalidGrant, "account is not an allowed service account")
+		}
 	}
 
 	if s.revocationChecker != nil {

@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -358,18 +357,20 @@ func validateRedirectURIHostPolicy(oauth *OAuthAuthConfig) error {
 	return nil
 }
 
-const gcpServiceAccountSuffix = ".iam.gserviceaccount.com"
+var projectRoleName = regexp.MustCompile(`^projects/[^/]+/roles/[^/]+$`)
 
 func validateGCPServiceAccounts(accounts GCPServiceAccountsConfig) error {
-	for i, email := range accounts.Allowed {
-		if !strings.Contains(email, "@") || !strings.HasSuffix(email, gcpServiceAccountSuffix) {
-			return fmt.Errorf("gcpServiceAccounts.allowed[%d] %q must be a service account email ending in %s", i, email, gcpServiceAccountSuffix)
+	roles := []struct{ field, name string }{
+		{"callerRole", accounts.CallerRole},
+		{"impersonatorRole", accounts.ImpersonatorRole},
+	}
+	for _, role := range roles {
+		if role.name != "" && !projectRoleName.MatchString(role.name) {
+			return fmt.Errorf("gcpServiceAccounts.%s %q must be a custom project role name like projects/<project>/roles/<role>", role.field, role.name)
 		}
 	}
-	for i, email := range accounts.Impersonators {
-		if !slices.Contains(accounts.Allowed, email) {
-			return fmt.Errorf("gcpServiceAccounts.impersonators[%d] %q must also be listed in gcpServiceAccounts.allowed", i, email)
-		}
+	if accounts.ImpersonatorRole != "" && accounts.CallerRole == "" {
+		return fmt.Errorf("gcpServiceAccounts.impersonatorRole requires gcpServiceAccounts.callerRole")
 	}
 	return nil
 }

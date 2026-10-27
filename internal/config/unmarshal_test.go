@@ -343,8 +343,8 @@ func TestOAuthAuthConfig_UnmarshalJSON(t *testing.T) {
 		"jwtSecret": {"$env": "JWT_SECRET"},
 		"encryptionKey": {"$env": "ENCRYPTION_KEY"},
 		"gcpServiceAccounts": {
-			"allowed": ["opsbot@p.iam.gserviceaccount.com", "ci@p.iam.gserviceaccount.com"],
-			"impersonators": ["opsbot@p.iam.gserviceaccount.com"]
+			"callerRole": "projects/p/roles/mcpGatewayCaller",
+			"impersonatorRole": "projects/p/roles/mcpGatewayImpersonator"
 		}
 	}`
 
@@ -366,8 +366,8 @@ func TestOAuthAuthConfig_UnmarshalJSON(t *testing.T) {
 	assert.Equal(t, Secret("this-is-a-very-long-jwt-secret-key"), config.JWTSecret)
 	assert.Equal(t, Secret("exactly-32-bytes-long-encryptkey"), config.EncryptionKey)
 	assert.Equal(t, GCPServiceAccountsConfig{
-		Allowed:       []string{"opsbot@p.iam.gserviceaccount.com", "ci@p.iam.gserviceaccount.com"},
-		Impersonators: []string{"opsbot@p.iam.gserviceaccount.com"},
+		CallerRole:       "projects/p/roles/mcpGatewayCaller",
+		ImpersonatorRole: "projects/p/roles/mcpGatewayImpersonator",
 	}, config.GCPServiceAccounts)
 }
 

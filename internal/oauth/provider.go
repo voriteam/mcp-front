@@ -108,7 +108,16 @@ func NewValidateTokenMiddleware(authServer *AuthorizationServer, issuer string, 
 				ctx = context.WithValue(ctx, authTokenContextKey, token)
 
 				if onBehalf := r.Header.Get("X-On-Behalf-Of"); onBehalf != "" {
-					if !gcpValidator.CanImpersonate(gcpEmail) {
+					canImpersonate, err := gcpValidator.CanImpersonate(ctx, gcpEmail)
+					if err != nil {
+						log.LogErrorWithFields("oauth", "Could not check the service account's impersonator role", map[string]any{
+							"service_account": gcpEmail,
+							"error":           err.Error(),
+						})
+						jsonwriter.WriteServiceUnavailable(w, "Could not verify impersonation access")
+						return
+					}
+					if !canImpersonate {
 						log.LogWarnWithFields("oauth", "GCP service account not allowed to impersonate users", map[string]any{
 							"service_account": gcpEmail,
 							"on_behalf_of":    onBehalf,

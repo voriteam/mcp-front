@@ -814,7 +814,10 @@ func TestValidateOAuthConfig_RedirectURIHostPolicy(t *testing.T) {
 }
 
 func TestValidateOAuthConfig_GCPServiceAccounts(t *testing.T) {
-	const opsbot = "opsbot@p.iam.gserviceaccount.com"
+	const (
+		caller       = "projects/p/roles/mcpGatewayCaller"
+		impersonator = "projects/p/roles/mcpGatewayImpersonator"
+	)
 
 	tests := []struct {
 		name        string
@@ -822,10 +825,10 @@ func TestValidateOAuthConfig_GCPServiceAccounts(t *testing.T) {
 		errContains string
 	}{
 		{name: "absent passes", accounts: GCPServiceAccountsConfig{}},
-		{name: "impersonator listed in allowed passes", accounts: GCPServiceAccountsConfig{Allowed: []string{opsbot}, Impersonators: []string{opsbot}}},
-		{name: "rejects a user email", accounts: GCPServiceAccountsConfig{Allowed: []string{"alice@example.com"}}, errContains: "allowed[0]"},
-		{name: "rejects an entry without a local part", accounts: GCPServiceAccountsConfig{Allowed: []string{"p.iam.gserviceaccount.com"}}, errContains: "allowed[0]"},
-		{name: "rejects an impersonator missing from allowed", accounts: GCPServiceAccountsConfig{Allowed: []string{opsbot}, Impersonators: []string{"ci@p.iam.gserviceaccount.com"}}, errContains: "impersonators[0]"},
+		{name: "caller and impersonator roles pass", accounts: GCPServiceAccountsConfig{CallerRole: caller, ImpersonatorRole: impersonator}},
+		{name: "rejects a predefined role", accounts: GCPServiceAccountsConfig{CallerRole: "roles/viewer"}, errContains: "callerRole"},
+		{name: "rejects a malformed impersonator role", accounts: GCPServiceAccountsConfig{CallerRole: caller, ImpersonatorRole: "mcpGatewayImpersonator"}, errContains: "impersonatorRole"},
+		{name: "rejects an impersonator role without a caller role", accounts: GCPServiceAccountsConfig{ImpersonatorRole: impersonator}, errContains: "requires gcpServiceAccounts.callerRole"},
 	}
 
 	for _, tt := range tests {

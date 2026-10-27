@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,8 +195,12 @@ func TestNewValidateTokenMiddleware_GCPServiceAccounts(t *testing.T) {
 			"coder-token":    coderServiceAccount,
 			"outsider-token": outsiderServiceAccount,
 		}),
-		AllowedServiceAccounts: []string{opsbotServiceAccount, coderServiceAccount},
-		Impersonators:          []string{opsbotServiceAccount},
+		Roles: fakeRoles{
+			callerRole:       {opsbotServiceAccount, coderServiceAccount},
+			impersonatorRole: {opsbotServiceAccount},
+		},
+		CallerRole:       callerRole,
+		ImpersonatorRole: impersonatorRole,
 	})
 
 	cases := []struct {
@@ -205,10 +210,10 @@ func TestNewValidateTokenMiddleware_GCPServiceAccounts(t *testing.T) {
 		wantStatus int
 		wantUser   string
 	}{
-		{name: "allowed service account acts as itself", token: "coder-token", wantStatus: http.StatusOK, wantUser: coderServiceAccount},
-		{name: "account not on the list is not authenticated", token: "outsider-token", wantStatus: http.StatusOK},
-		{name: "account not on the list cannot impersonate", token: "outsider-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusOK},
-		{name: "allowed non-impersonator is forbidden from impersonating", token: "coder-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusForbidden},
+		{name: "caller acts as itself", token: "coder-token", wantStatus: http.StatusOK, wantUser: coderServiceAccount},
+		{name: "account without the caller role is not authenticated", token: "outsider-token", wantStatus: http.StatusOK},
+		{name: "account without the caller role cannot impersonate", token: "outsider-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusOK},
+		{name: "caller without the impersonator role is forbidden from impersonating", token: "coder-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusForbidden},
 		{name: "impersonator acts as the target user", token: "opsbot-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusOK, wantUser: "alice@example.com"},
 		{name: "impersonator cannot target another domain", token: "opsbot-token", onBehalfOf: "eve@other.com", wantStatus: http.StatusForbidden},
 	}
@@ -319,4 +324,41 @@ func TestExtractServiceNameFromPath(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// impersonatorCheckFails grants the caller role but cannot answer for the
+// impersonator role.
+type impersonatorCheckFails struct{}
+
+func (impersonatorCheckFails) HasRole(_ context.Context, role, _ string) (bool, error) {
+	if role == impersonatorRole {
+		return false, errors.New("IAM unavailable")
+	}
+	return true, nil
+}
+
+func TestNewValidateTokenMiddleware_ImpersonatorCheckFailure(t *testing.T) {
+	const issuer = "https://mcp.example.com"
+	authServer, err := NewAuthorizationServer(AuthorizationServerConfig{
+		JWTSecret: []byte(strings.Repeat("a", 32)),
+		Issuer:    issuer,
+	})
+	require.NoError(t, err)
+
+	gcpValidator := NewGCPAccessTokenValidator(GCPAccessTokenValidatorConfig{
+		TokenInfoURL:     newFakeTokenInfo(t, map[string]string{"opsbot-token": opsbotServiceAccount}),
+		Roles:            impersonatorCheckFails{},
+		CallerRole:       callerRole,
+		ImpersonatorRole: impersonatorRole,
+	})
+
+	req := httptest.NewRequest("GET", "/gateway/mcp", nil)
+	req.Header.Set("Authorization", "Bearer opsbot-token")
+	req.Header.Set("X-On-Behalf-Of", "alice@example.com")
+	rr := httptest.NewRecorder()
+	NewValidateTokenMiddleware(authServer, issuer, false, gcpValidator, []string{"example.com"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request reached the handler")
+	})).ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 }
