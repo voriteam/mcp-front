@@ -108,7 +108,7 @@ func (v *GCPAccessTokenValidator) Validate(ctx context.Context, token string) (s
 		log.LogWarnWithFields("gcp_auth", "Rejected access token from an account not in gcpServiceAccounts.allowed", map[string]any{
 			"email": result.Email,
 		})
-		return "", fmt.Errorf("GCP account %s is not an allowed service account", result.Email)
+		return "", fmt.Errorf("GCP account is not an allowed service account")
 	}
 
 	ttl := maxCacheTTL

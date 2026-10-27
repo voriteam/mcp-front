@@ -231,6 +231,7 @@ func TestNewValidateTokenMiddleware_GCPServiceAccounts(t *testing.T) {
 			NewValidateTokenMiddleware(authServer, issuer, false, gcpValidator, []string{"example.com"})(handler).ServeHTTP(rr, req)
 
 			assert.Equal(t, tc.wantStatus, rr.Code)
+			assert.NotContains(t, rr.Body.String(), "@")
 			assert.Equal(t, tc.wantStatus == http.StatusOK, called)
 			assert.Equal(t, tc.wantUser, gotUser)
 		})

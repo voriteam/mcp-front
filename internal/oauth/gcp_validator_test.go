@@ -65,6 +65,7 @@ func TestGCPAccessTokenValidator_Validate(t *testing.T) {
 			email, err := v.Validate(context.Background(), tc.token)
 			if tc.wantEmail == "" {
 				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "@")
 				assert.Empty(t, email)
 				return
 			}
