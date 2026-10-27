@@ -164,6 +164,7 @@ func validateAuthStructure(auth map[string]any, result *ValidationResult) {
 		}
 
 		validateRedirectURIHostStructure(auth, result)
+		validateGCPServiceAccountsStructure(auth, result)
 	default:
 		result.Errors = append(result.Errors, ValidationError{
 			Path:    "proxy.auth.kind",
@@ -243,6 +244,33 @@ func validateRedirectURIHostStructure(auth map[string]any, result *ValidationRes
 				Message: fmt.Sprintf("%q must not include a query or fragment", entryStr),
 			})
 		}
+	}
+}
+
+func validateGCPServiceAccountsStructure(auth map[string]any, result *ValidationResult) {
+	raw, ok := auth["gcpServiceAccounts"]
+	if !ok {
+		return
+	}
+
+	var accounts GCPServiceAccountsConfig
+	data, err := json.Marshal(raw)
+	if err == nil {
+		err = json.Unmarshal(data, &accounts)
+	}
+	if err != nil {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    "proxy.auth.gcpServiceAccounts",
+			Message: "must be an object with \"allowed\" and \"impersonators\" arrays of service account emails",
+		})
+		return
+	}
+
+	if err := validateGCPServiceAccounts(accounts); err != nil {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    "proxy.auth.gcpServiceAccounts",
+			Message: err.Error(),
+		})
 	}
 }
 

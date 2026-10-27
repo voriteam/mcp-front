@@ -727,6 +727,90 @@ func TestUpstreamOAuthStatePreservesPKCE(t *testing.T) {
 		"all AuthorizeParams fields must survive the upstream OAuth state round-trip")
 }
 
+func TestTokenHandler_TokenExchangeAllowsOnlyListedServiceAccounts(t *testing.T) {
+	const (
+		issuer          = "https://test.example.com"
+		allowedAccount  = "opsbot@example-project.iam.gserviceaccount.com"
+		outsiderAccount = "outsider@other-project.iam.gserviceaccount.com"
+	)
+
+	emails := map[string]string{
+		"allowed-token":  allowedAccount,
+		"outsider-token": outsiderAccount,
+	}
+	tokenInfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]string{
+			"email":          emails[r.URL.Query().Get("access_token")],
+			"email_verified": "true",
+			"expires_in":     "3600",
+		}))
+	}))
+	t.Cleanup(tokenInfo.Close)
+
+	oauthConfig := config.OAuthAuthConfig{
+		Issuer:        issuer,
+		JWTSecret:     config.Secret(strings.Repeat("a", 32)),
+		EncryptionKey: config.Secret(strings.Repeat("b", 32)),
+		TokenTTL:      time.Hour,
+	}
+	store := storage.NewMemoryStorage()
+	authServer, err := oauth.NewAuthorizationServer(oauth.AuthorizationServerConfig{
+		JWTSecret:      []byte(oauthConfig.JWTSecret),
+		Issuer:         issuer,
+		AccessTokenTTL: oauthConfig.TokenTTL,
+	})
+	require.NoError(t, err)
+	sessionEncryptor, err := oauth.NewSessionEncryptor([]byte(oauthConfig.EncryptionKey))
+	require.NoError(t, err)
+	gcpValidator := oauth.NewGCPAccessTokenValidator(oauth.GCPAccessTokenValidatorConfig{
+		TokenInfoURL:           tokenInfo.URL,
+		AllowedServiceAccounts: []string{allowedAccount},
+	})
+	handlers := NewAuthHandlers(authServer, oauthConfig, &mockIDPProvider{}, store, sessionEncryptor, map[string]*config.MCPClientConfig{}, nil, gcpValidator)
+
+	_, err = store.CreateClient(context.Background(), "test-client", []string{"http://localhost/callback"}, []string{"openid"}, issuer)
+	require.NoError(t, err)
+
+	exchange := func(subjectToken string) *httptest.ResponseRecorder {
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"client_id":          {"test-client"},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handlers.TokenHandler(rec, req)
+		return rec
+	}
+
+	t.Run("listed service account gets tokens for itself", func(t *testing.T) {
+		rec := exchange("allowed-token")
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		var resp struct {
+			AccessToken string `json:"access_token"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		claims, err := authServer.ValidateAccessToken(resp.AccessToken)
+		require.NoError(t, err)
+		assert.Equal(t, allowedAccount, claims.Identity.Email)
+	})
+
+	t.Run("unlisted service account is rejected", func(t *testing.T) {
+		rec := exchange("outsider-token")
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var resp struct {
+			Error string `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "invalid_grant", resp.Error)
+	})
+}
+
 func TestValidateAccess(t *testing.T) {
 	tests := []struct {
 		name           string

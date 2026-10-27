@@ -287,24 +287,25 @@ func parseWorkspaceRevocation(data json.RawMessage) (*WorkspaceRevocationConfig,
 func (o *OAuthAuthConfig) UnmarshalJSON(data []byte) error {
 	// Use a raw type to parse references
 	type rawOAuth struct {
-		Kind                            AuthKind        `json:"kind"`
-		Issuer                          json.RawMessage `json:"issuer"`
-		GCPProject                      json.RawMessage `json:"gcpProject"`
-		IDP                             json.RawMessage `json:"idp"`
-		AllowedDomains                  []string        `json:"allowedDomains"`
-		AllowedOrigins                  []string        `json:"allowedOrigins"`
-		AllowedRedirectURIHosts         []string        `json:"allowedRedirectUriHosts"`
-		AllowAnyRedirectURIHost         bool            `json:"allowAnyRedirectUriHost"`
-		TokenTTL                        string          `json:"tokenTtl"`
-		RefreshTokenTTL                 string          `json:"refreshTokenTtl"`
-		RefreshTokenScopes              []string        `json:"refreshTokenScopes"`
-		Storage                         string          `json:"storage"`
-		FirestoreDatabase               string          `json:"firestoreDatabase,omitempty"`
-		FirestoreCollection             string          `json:"firestoreCollection,omitempty"`
-		JWTSecret                       json.RawMessage `json:"jwtSecret"`
-		EncryptionKey                   json.RawMessage `json:"encryptionKey,omitempty"`
-		DangerouslyAcceptIssuerAudience bool            `json:"dangerouslyAcceptIssuerAudience,omitempty"`
-		WorkspaceRevocation             json.RawMessage `json:"workspaceRevocation,omitempty"`
+		Kind                            AuthKind                 `json:"kind"`
+		Issuer                          json.RawMessage          `json:"issuer"`
+		GCPProject                      json.RawMessage          `json:"gcpProject"`
+		IDP                             json.RawMessage          `json:"idp"`
+		AllowedDomains                  []string                 `json:"allowedDomains"`
+		AllowedOrigins                  []string                 `json:"allowedOrigins"`
+		AllowedRedirectURIHosts         []string                 `json:"allowedRedirectUriHosts"`
+		AllowAnyRedirectURIHost         bool                     `json:"allowAnyRedirectUriHost"`
+		TokenTTL                        string                   `json:"tokenTtl"`
+		RefreshTokenTTL                 string                   `json:"refreshTokenTtl"`
+		RefreshTokenScopes              []string                 `json:"refreshTokenScopes"`
+		Storage                         string                   `json:"storage"`
+		FirestoreDatabase               string                   `json:"firestoreDatabase,omitempty"`
+		FirestoreCollection             string                   `json:"firestoreCollection,omitempty"`
+		JWTSecret                       json.RawMessage          `json:"jwtSecret"`
+		EncryptionKey                   json.RawMessage          `json:"encryptionKey,omitempty"`
+		DangerouslyAcceptIssuerAudience bool                     `json:"dangerouslyAcceptIssuerAudience,omitempty"`
+		WorkspaceRevocation             json.RawMessage          `json:"workspaceRevocation,omitempty"`
+		GCPServiceAccounts              GCPServiceAccountsConfig `json:"gcpServiceAccounts"`
 	}
 
 	var raw rawOAuth
@@ -322,6 +323,7 @@ func (o *OAuthAuthConfig) UnmarshalJSON(data []byte) error {
 	o.FirestoreDatabase = raw.FirestoreDatabase
 	o.FirestoreCollection = raw.FirestoreCollection
 	o.DangerouslyAcceptIssuerAudience = raw.DangerouslyAcceptIssuerAudience
+	o.GCPServiceAccounts = raw.GCPServiceAccounts
 
 	// RefreshTokenScopes: if set, refresh tokens are only issued when the
 	// request includes at least one of these scopes. Empty slice means always

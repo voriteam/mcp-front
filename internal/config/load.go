@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -306,6 +307,10 @@ func validateOAuthConfig(oauth *OAuthAuthConfig) error {
 		return err
 	}
 
+	if err := validateGCPServiceAccounts(oauth.GCPServiceAccounts); err != nil {
+		return err
+	}
+
 	if oauth.Storage == "firestore" {
 		if oauth.GCPProject == "" {
 			return fmt.Errorf("gcpProject is required when using firestore storage")
@@ -348,6 +353,22 @@ func validateRedirectURIHostPolicy(oauth *OAuthAuthConfig) error {
 		}
 		if u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("allowedRedirectURIHosts[%d] %q must not include a query or fragment", i, entry)
+		}
+	}
+	return nil
+}
+
+const gcpServiceAccountSuffix = ".iam.gserviceaccount.com"
+
+func validateGCPServiceAccounts(accounts GCPServiceAccountsConfig) error {
+	for i, email := range accounts.Allowed {
+		if !strings.Contains(email, "@") || !strings.HasSuffix(email, gcpServiceAccountSuffix) {
+			return fmt.Errorf("gcpServiceAccounts.allowed[%d] %q must be a service account email ending in %s", i, email, gcpServiceAccountSuffix)
+		}
+	}
+	for i, email := range accounts.Impersonators {
+		if !slices.Contains(accounts.Allowed, email) {
+			return fmt.Errorf("gcpServiceAccounts.impersonators[%d] %q must also be listed in gcpServiceAccounts.allowed", i, email)
 		}
 	}
 	return nil

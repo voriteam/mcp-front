@@ -230,6 +230,28 @@ Enforcement is eventual by design: an access token already issued keeps working 
 
 `enabled` turns it on (default: `false`). It requires `idp.provider` `"google"` (the only provider that currently supports the refresh probe) and, for the stored tokens to survive restarts, `storage` `"firestore"`. There is no other configuration and nothing to provision outside MCP Front.
 
+### `auth.gcpServiceAccounts`
+
+An MCP client that runs as a Google Cloud service account can authenticate with a GCP access token instead of signing in through the identity provider. MCP Front checks the token against Google's tokeninfo endpoint and accepts it only when it belongs to a service account in `allowed`. The token works as a bearer token on MCP requests, and as the `subject_token` of a token-exchange grant (`urn:ietf:params:oauth:grant-type:token-exchange`) at `/token`, which returns an MCP Front token for that service account.
+
+```json
+{
+  "auth": {
+    "gcpServiceAccounts": {
+      "allowed": [
+        "ci@my-project.iam.gserviceaccount.com",
+        "assistant@my-project.iam.gserviceaccount.com"
+      ],
+      "impersonators": ["assistant@my-project.iam.gserviceaccount.com"]
+    }
+  }
+}
+```
+
+A service account in `impersonators` can also send an `X-On-Behalf-Of` header with a user's email on an MCP request. MCP Front then handles the request as that user, including which of the user's stored tokens it sends to backends. When `allowedDomains` is set, the user's email must be in one of those domains. Any other service account that sends the header gets `403 Forbidden`. Tokens from the token-exchange grant cannot impersonate.
+
+Each entry must be a service account email ending in `.iam.gserviceaccount.com`, and each impersonator must also be in `allowed`. When `allowed` is empty or `gcpServiceAccounts` is absent, MCP Front rejects every GCP access token.
+
 ## MCP server configuration
 
 Each server needs at least a `transportType`. See [Server Types](/mcp-front/server-types/) for transport-specific documentation.

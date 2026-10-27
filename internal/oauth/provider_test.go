@@ -180,6 +180,63 @@ func TestNewValidateTokenMiddleware_RejectsServiceAuthDomain(t *testing.T) {
 	}
 }
 
+func TestNewValidateTokenMiddleware_GCPServiceAccounts(t *testing.T) {
+	const issuer = "https://mcp.example.com"
+	authServer, err := NewAuthorizationServer(AuthorizationServerConfig{
+		JWTSecret: []byte(strings.Repeat("a", 32)),
+		Issuer:    issuer,
+	})
+	require.NoError(t, err)
+
+	gcpValidator := NewGCPAccessTokenValidator(GCPAccessTokenValidatorConfig{
+		TokenInfoURL: newFakeTokenInfo(t, map[string]string{
+			"opsbot-token":   opsbotServiceAccount,
+			"coder-token":    coderServiceAccount,
+			"outsider-token": outsiderServiceAccount,
+		}),
+		AllowedServiceAccounts: []string{opsbotServiceAccount, coderServiceAccount},
+		Impersonators:          []string{opsbotServiceAccount},
+	})
+
+	cases := []struct {
+		name       string
+		token      string
+		onBehalfOf string
+		wantStatus int
+		wantUser   string
+	}{
+		{name: "allowed service account acts as itself", token: "coder-token", wantStatus: http.StatusOK, wantUser: coderServiceAccount},
+		{name: "account not on the list is not authenticated", token: "outsider-token", wantStatus: http.StatusOK},
+		{name: "account not on the list cannot impersonate", token: "outsider-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusOK},
+		{name: "allowed non-impersonator is forbidden from impersonating", token: "coder-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusForbidden},
+		{name: "impersonator acts as the target user", token: "opsbot-token", onBehalfOf: "alice@example.com", wantStatus: http.StatusOK, wantUser: "alice@example.com"},
+		{name: "impersonator cannot target another domain", token: "opsbot-token", onBehalfOf: "eve@other.com", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var called bool
+			var gotUser string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				gotUser, _ = GetUserFromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequest("GET", "/gateway/mcp", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			if tc.onBehalfOf != "" {
+				req.Header.Set("X-On-Behalf-Of", tc.onBehalfOf)
+			}
+			rr := httptest.NewRecorder()
+			NewValidateTokenMiddleware(authServer, issuer, false, gcpValidator, []string{"example.com"})(handler).ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.wantStatus, rr.Code)
+			assert.Equal(t, tc.wantStatus == http.StatusOK, called)
+			assert.Equal(t, tc.wantUser, gotUser)
+		})
+	}
+}
+
 func TestExtractServiceNameFromPath(t *testing.T) {
 	tests := []struct {
 		name        string

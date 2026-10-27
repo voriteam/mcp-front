@@ -618,6 +618,59 @@ func TestValidateFile_RedirectURIHostPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateFile_GCPServiceAccounts(t *testing.T) {
+	tests := []struct {
+		name     string
+		accounts string
+		wantErr  string
+	}{
+		{name: "valid lists pass", accounts: `{"allowed": ["opsbot@p.iam.gserviceaccount.com"], "impersonators": ["opsbot@p.iam.gserviceaccount.com"]}`},
+		{name: "impersonator missing from allowed errors", accounts: `{"allowed": [], "impersonators": ["opsbot@p.iam.gserviceaccount.com"]}`, wantErr: "must also be listed in gcpServiceAccounts.allowed"},
+		{name: "wrong shape errors", accounts: `{"allowed": "opsbot@p.iam.gserviceaccount.com"}`, wantErr: "must be an object"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config.json")
+			require.NoError(t, os.WriteFile(configPath, []byte(`{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080",
+					"auth": {
+						"kind": "oauth",
+						"issuer": "https://example.com",
+						"idp": {"provider": "google", "clientId": "id", "clientSecret": "secret", "redirectUri": "https://example.com/callback"},
+						"jwtSecret": {"$env": "JWT_SECRET"},
+						"encryptionKey": {"$env": "ENCRYPTION_KEY"},
+						"allowedDomains": ["example.com"],
+						"allowedOrigins": ["https://claude.ai"],
+						"allowedRedirectUriHosts": ["https://claude.ai"],
+						"gcpServiceAccounts": `+tt.accounts+`
+					}
+				},
+				"mcpServers": {}
+			}`), 0644))
+
+			result, err := ValidateFile(configPath)
+			require.NoError(t, err)
+
+			var messages []string
+			for _, e := range result.Errors {
+				if e.Path == "proxy.auth.gcpServiceAccounts" {
+					messages = append(messages, e.Message)
+				}
+			}
+			if tt.wantErr == "" {
+				assert.Empty(t, messages)
+				return
+			}
+			require.Len(t, messages, 1)
+			assert.Contains(t, messages[0], tt.wantErr)
+		})
+	}
+}
+
 func TestValidateFile_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")

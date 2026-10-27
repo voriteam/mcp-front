@@ -373,6 +373,15 @@ type OAuthAuthConfig struct {
 	// WorkspaceRevocation configures the background job that revokes access for
 	// disabled Google Workspace accounts.
 	WorkspaceRevocation *WorkspaceRevocationConfig `json:"workspaceRevocation,omitempty"`
+	GCPServiceAccounts  GCPServiceAccountsConfig   `json:"gcpServiceAccounts"`
+}
+
+// GCPServiceAccountsConfig lists the Google service accounts that may
+// authenticate with a GCP access token, and the subset that may act as a user
+// through X-On-Behalf-Of. An empty Allowed list rejects every GCP access token.
+type GCPServiceAccountsConfig struct {
+	Allowed       []string `json:"allowed"`
+	Impersonators []string `json:"impersonators"`
 }
 
 // WorkspaceRevocationConfig configures account-revocation enforcement: at token

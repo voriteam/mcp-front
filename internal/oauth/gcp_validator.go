@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -23,17 +24,35 @@ type cachedTokenInfo struct {
 	expiresAt time.Time
 }
 
-type GCPAccessTokenValidator struct {
-	tokenInfoURL string
-	httpClient   *http.Client
-	cache        sync.Map
+type GCPAccessTokenValidatorConfig struct {
+	TokenInfoURL           string
+	AllowedServiceAccounts []string
+	Impersonators          []string
 }
 
-func NewGCPAccessTokenValidator() *GCPAccessTokenValidator {
-	return &GCPAccessTokenValidator{
-		tokenInfoURL: defaultTokenInfoURL,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+type GCPAccessTokenValidator struct {
+	tokenInfoURL  string
+	allowed       []string
+	impersonators []string
+	httpClient    *http.Client
+	cache         sync.Map
+}
+
+func NewGCPAccessTokenValidator(cfg GCPAccessTokenValidatorConfig) *GCPAccessTokenValidator {
+	tokenInfoURL := cfg.TokenInfoURL
+	if tokenInfoURL == "" {
+		tokenInfoURL = defaultTokenInfoURL
 	}
+	return &GCPAccessTokenValidator{
+		tokenInfoURL:  tokenInfoURL,
+		allowed:       cfg.AllowedServiceAccounts,
+		impersonators: cfg.Impersonators,
+		httpClient:    &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (v *GCPAccessTokenValidator) CanImpersonate(email string) bool {
+	return slices.Contains(v.impersonators, email)
 }
 
 func (v *GCPAccessTokenValidator) Validate(ctx context.Context, token string) (string, error) {
@@ -76,6 +95,13 @@ func (v *GCPAccessTokenValidator) Validate(ctx context.Context, token string) (s
 
 	if result.EmailVerified != "true" {
 		return "", fmt.Errorf("GCP access token email not verified")
+	}
+
+	if !slices.Contains(v.allowed, result.Email) {
+		log.LogWarnWithFields("gcp_auth", "Rejected access token from an account not in gcpServiceAccounts.allowed", map[string]any{
+			"email": result.Email,
+		})
+		return "", fmt.Errorf("GCP account %s is not an allowed service account", result.Email)
 	}
 
 	ttl := maxCacheTTL

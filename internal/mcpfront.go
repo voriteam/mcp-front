@@ -311,7 +311,14 @@ func setupAuthentication(ctx context.Context, cfg config.Config, store storage.S
 	}
 
 	serviceOAuthClient := auth.NewServiceOAuthClient(store, cfg.Proxy.BaseURL, encryptionKey)
-	gcpValidator := oauth.NewGCPAccessTokenValidator()
+	gcpValidator := oauth.NewGCPAccessTokenValidator(oauth.GCPAccessTokenValidatorConfig{
+		AllowedServiceAccounts: oauthAuth.GCPServiceAccounts.Allowed,
+		Impersonators:          oauthAuth.GCPServiceAccounts.Impersonators,
+	})
+	log.LogInfoWithFields("mcpfront", "GCP service account access configured", map[string]any{
+		"allowed":       oauthAuth.GCPServiceAccounts.Allowed,
+		"impersonators": oauthAuth.GCPServiceAccounts.Impersonators,
+	})
 
 	return authServer, idpProvider, sessionEncryptor, *oauthAuth, serviceOAuthClient, gcpValidator, nil
 }
