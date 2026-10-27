@@ -19,6 +19,9 @@ const (
 	maxCacheTTL         = 5 * time.Minute
 )
 
+// GCPProviderType marks identities issued through the token-exchange grant.
+const GCPProviderType = "gcp"
+
 type cachedTokenInfo struct {
 	email     string
 	expiresAt time.Time
@@ -49,6 +52,10 @@ func NewGCPAccessTokenValidator(cfg GCPAccessTokenValidatorConfig) *GCPAccessTok
 		impersonators: cfg.Impersonators,
 		httpClient:    &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+func (v *GCPAccessTokenValidator) IsAllowed(email string) bool {
+	return slices.Contains(v.allowed, email)
 }
 
 func (v *GCPAccessTokenValidator) CanImpersonate(email string) bool {
@@ -97,7 +104,7 @@ func (v *GCPAccessTokenValidator) Validate(ctx context.Context, token string) (s
 		return "", fmt.Errorf("GCP access token email not verified")
 	}
 
-	if !slices.Contains(v.allowed, result.Email) {
+	if !v.IsAllowed(result.Email) {
 		log.LogWarnWithFields("gcp_auth", "Rejected access token from an account not in gcpServiceAccounts.allowed", map[string]any{
 			"email": result.Email,
 		})
