@@ -512,6 +512,13 @@ func validateAggregateServerStructure(name string, srv map[string]any, allServer
 		}
 	}
 
+	if options, ok := srv["options"].(map[string]any); ok && options["toolFilter"] != nil {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    path + ".options.toolFilter",
+			Message: "toolFilter is not allowed on aggregate servers. Hint: set options.toolFilter on each backend server, using that backend's tool names",
+		})
+	}
+
 	// Validate transportType if present
 	if tt, ok := srv["transportType"].(string); ok {
 		if tt != "sse" && tt != "streamable-http" {
