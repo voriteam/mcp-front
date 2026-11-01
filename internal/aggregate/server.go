@@ -393,12 +393,6 @@ func (s *Server) buildSessionTools(userEmail string, tools map[string][]mcp.Tool
 		for _, tool := range backendTools {
 			namespacedName := PrefixToolName(backendName, tool.Name, s.delimiter)
 			tool.Name = namespacedName
-			if s.streamlineResponses {
-				tool.Description = streamlineDescription(tool.Description)
-				if len(tool.RawInputSchema) > 0 {
-					tool.RawInputSchema = streamlineInputSchema(tool.RawInputSchema)
-				}
-			}
 			sessionTools[namespacedName] = mcpserver.ServerTool{
 				Tool:    tool,
 				Handler: s.makeToolHandler(userEmail, backendName),
@@ -772,7 +766,35 @@ func (s *Server) discoverBackendTools(ctx context.Context, userEmail, backendNam
 		}
 	}
 
+	rawBytes, err := toolListBytes(filtered)
+	if err != nil {
+		return nil, err
+	}
+	fields := map[string]any{
+		"server":    s.name,
+		"backend":   backendName,
+		"toolCount": len(filtered),
+		"bytes":     rawBytes,
+	}
+	if s.streamlineResponses {
+		filtered = streamlineTools(filtered)
+		streamlinedBytes, err := toolListBytes(filtered)
+		if err != nil {
+			return nil, err
+		}
+		fields["streamlinedBytes"] = streamlinedBytes
+	}
+	log.LogInfoWithFields("aggregate", "Backend tools discovered", fields)
+
 	return filtered, nil
+}
+
+func toolListBytes(tools []mcp.Tool) (int, error) {
+	encoded, err := json.Marshal(tools)
+	if err != nil {
+		return 0, fmt.Errorf("encoding tool list: %w", err)
+	}
+	return len(encoded), nil
 }
 
 func (s *Server) makeToolHandler(userEmail, backendName string) mcpserver.ToolHandlerFunc {

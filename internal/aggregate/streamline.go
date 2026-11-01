@@ -4,9 +4,14 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
-const maxDescriptionLength = 300
+const (
+	maxDescriptionLength         = 300
+	maxPropertyDescriptionLength = 150
+)
 
 var (
 	xmlBlockPatterns = []*regexp.Regexp{
@@ -15,21 +20,93 @@ var (
 		regexp.MustCompile(`(?s)<example>.*?</example>`),
 	}
 	multipleNewlines = regexp.MustCompile(`\n{3,}`)
+
+	abbreviations = map[string]bool{"e.g": true, "i.e": true, "etc": true, "vs": true}
+
+	// Validation-only keywords: they tell a model nothing about how to fill the argument.
+	droppedSchemaKeys = map[string]bool{
+		"additionalProperties": true,
+		"minimum":              true,
+		"maximum":              true,
+		"exclusiveMinimum":     true,
+		"exclusiveMaximum":     true,
+		"minLength":            true,
+		"maxLength":            true,
+		"minItems":             true,
+		"maxItems":             true,
+		"pattern":              true,
+	}
 )
+
+func streamlineTools(tools []mcp.Tool) []mcp.Tool {
+	out := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		out[i] = streamlineTool(tool)
+	}
+	return out
+}
+
+// mcp-go decodes a backend's inputSchema into InputSchema and never sets
+// RawInputSchema, so the trimmed schema moves to RawInputSchema and
+// InputSchema is zeroed, which Tool.MarshalJSON requires.
+func streamlineTool(tool mcp.Tool) mcp.Tool {
+	tool.Description = streamlineDescription(tool.Description)
+	raw := tool.RawInputSchema
+	if raw == nil {
+		encoded, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			return tool
+		}
+		raw = encoded
+	}
+	tool.RawInputSchema = streamlineInputSchema(raw)
+	tool.InputSchema = mcp.ToolInputSchema{}
+	return tool
+}
 
 func streamlineDescription(desc string) string {
 	for _, pat := range xmlBlockPatterns {
 		desc = pat.ReplaceAllString(desc, "")
 	}
 	desc = multipleNewlines.ReplaceAllString(desc, "\n\n")
-	desc = strings.TrimSpace(desc)
-	if len(desc) > maxDescriptionLength {
-		desc = desc[:maxDescriptionLength]
-		if i := strings.LastIndex(desc, ". "); i > maxDescriptionLength/2 {
-			desc = desc[:i+1]
+	return truncate(strings.TrimSpace(desc), maxDescriptionLength)
+}
+
+func streamlinePropertyDescription(desc string) string {
+	return truncate(firstSentence(strings.TrimSpace(desc)), maxPropertyDescriptionLength)
+}
+
+func firstSentence(desc string) string {
+	for i := 0; i < len(desc); i++ {
+		switch desc[i] {
+		case '\n':
+			return strings.TrimSpace(desc[:i])
+		case '.', '!', '?':
+			if i+1 < len(desc) && desc[i+1] != ' ' {
+				continue
+			}
+			word := desc[strings.LastIndexByte(desc[:i], ' ')+1 : i]
+			if abbreviations[strings.ToLower(strings.TrimLeft(word, "([\"'"))] {
+				continue
+			}
+			return desc[:i+1]
 		}
 	}
 	return desc
+}
+
+func truncate(desc string, limit int) string {
+	if len(desc) <= limit {
+		return desc
+	}
+	cut := desc[:limit]
+	if i := strings.LastIndex(cut, ". "); i > limit/2 {
+		return cut[:i+1]
+	}
+	if i := strings.LastIndexByte(cut, ' '); i > limit/2 {
+		return cut[:i]
+	}
+	return cut
 }
 
 func streamlineInputSchema(raw json.RawMessage) json.RawMessage {
@@ -42,8 +119,7 @@ func streamlineInputSchema(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 
-	stripSchemaClutter(schema)
-	simplifyNullableTypes(schema)
+	streamlineSchema(schema)
 
 	result, err := json.Marshal(schema)
 	if err != nil {
@@ -52,98 +128,64 @@ func streamlineInputSchema(raw json.RawMessage) json.RawMessage {
 	return result
 }
 
-// Fields that are only used for validation, not for understanding tool usage.
-var validationOnlyFields = []string{
-	"description",
-	"additionalProperties",
-	"minimum",
-	"maximum",
-	"minLength",
-	"maxLength",
-	"pattern",
-	"format",
-}
-
-func stripSchemaClutter(schema map[string]any) {
-	delete(schema, "additionalProperties")
-
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		return
-	}
-
-	for _, prop := range props {
-		propMap, ok := prop.(map[string]any)
-		if !ok {
-			continue
-		}
-		for _, field := range validationOnlyFields {
-			delete(propMap, field)
-		}
-
-		// Strip x-google-* extension fields
-		for k := range propMap {
-			if strings.HasPrefix(k, "x-") {
-				delete(propMap, k)
+func streamlineSchema(schema map[string]any) {
+	collapseNullable(schema)
+	for key, value := range schema {
+		switch {
+		case droppedSchemaKeys[key] || strings.HasPrefix(key, "x-"):
+			delete(schema, key)
+		case key == "description":
+			if desc, ok := value.(string); ok {
+				schema[key] = streamlinePropertyDescription(desc)
 			}
-		}
-
-		// Recurse into nested objects
-		stripSchemaClutter(propMap)
-
-		// Handle items for arrays
-		if items, ok := propMap["items"].(map[string]any); ok {
-			for _, field := range validationOnlyFields {
-				delete(items, field)
-			}
-			stripSchemaClutter(items)
-		}
-	}
-}
-
-func simplifyNullableTypes(schema map[string]any) {
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		return
-	}
-
-	for key, prop := range props {
-		propMap, ok := prop.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		anyOf, ok := propMap["anyOf"].([]any)
-		if !ok || len(anyOf) != 2 {
-			continue
-		}
-
-		// Find the non-null type in anyOf
-		var realType map[string]any
-		hasNull := false
-		for _, item := range anyOf {
-			itemMap, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if itemMap["type"] == "null" {
-				hasNull = true
-			} else {
-				realType = itemMap
-			}
-		}
-
-		if hasNull && realType != nil {
-			simplified := make(map[string]any)
-			for k, v := range realType {
-				if k != "description" {
-					simplified[k] = v
+		case key == "properties" || key == "$defs":
+			if children, ok := value.(map[string]any); ok {
+				for _, child := range children {
+					streamlineSubschema(child)
 				}
 			}
-			if def, ok := propMap["default"]; ok {
-				simplified["default"] = def
-			}
-			props[key] = simplified
+		case key == "items" || key == "anyOf" || key == "oneOf" || key == "allOf":
+			streamlineSubschema(value)
+		}
+	}
+}
+
+func streamlineSubschema(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		streamlineSchema(node)
+	case []any:
+		for _, item := range node {
+			streamlineSubschema(item)
+		}
+	}
+}
+
+func collapseNullable(schema map[string]any) {
+	anyOf, ok := schema["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		return
+	}
+	var real map[string]any
+	hasNull := false
+	for _, item := range anyOf {
+		branch, ok := item.(map[string]any)
+		if !ok {
+			return
+		}
+		if branch["type"] == "null" {
+			hasNull = true
+		} else {
+			real = branch
+		}
+	}
+	if !hasNull || real == nil {
+		return
+	}
+	delete(schema, "anyOf")
+	for key, value := range real {
+		if _, taken := schema[key]; !taken {
+			schema[key] = value
 		}
 	}
 }

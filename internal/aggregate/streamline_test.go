@@ -2,7 +2,11 @@ package aggregate
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStreamlineDescription(t *testing.T) {
@@ -32,30 +36,91 @@ func TestStreamlineDescription(t *testing.T) {
 			expected: "Tool description.\n\nMiddle text.",
 		},
 		{
-			name:  "truncates long description at sentence boundary",
-			input: "This is a tool that does many things. It supports complex queries with boolean operators. It also handles pagination and filtering. " + "Additional details that push it well beyond the maximum allowed description length for streamlined responses in the gateway multiplexer endpoint. More text here to ensure truncation happens correctly at a sentence boundary.",
+			name:     "truncates long description at sentence boundary",
+			input:    "This is a tool that does many things. It supports complex queries with boolean operators. It also handles pagination and filtering. " + "Additional details that push it well beyond the maximum allowed description length for streamlined responses in the gateway multiplexer endpoint. More text here to ensure truncation happens correctly at a sentence boundary.",
 			expected: "This is a tool that does many things. It supports complex queries with boolean operators. It also handles pagination and filtering. Additional details that push it well beyond the maximum allowed description length for streamlined responses in the gateway multiplexer endpoint.",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := streamlineDescription(tt.input)
-			if got != tt.expected {
-				t.Errorf("streamlineDescription():\ngot:  %q\nwant: %q", got, tt.expected)
-			}
+			assert.Equal(t, tt.expected, streamlineDescription(tt.input))
 		})
 	}
 }
 
+func TestStreamlinePropertyDescription(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "single sentence unchanged",
+			input:    "The SQL query to execute.",
+			expected: "The SQL query to execute.",
+		},
+		{
+			name:     "keeps only the first sentence",
+			input:    "Due date (ISO format). On update, pass null to remove the due date",
+			expected: "Due date (ISO format).",
+		},
+		{
+			name:     "abbreviations do not end a sentence",
+			input:    "Parent issue ID or identifier (e.g., LIN-123). Null to remove",
+			expected: "Parent issue ID or identifier (e.g., LIN-123).",
+		},
+		{
+			name:     "parenthesised abbreviations do not end a sentence",
+			input:    "Label names (e.g. [\"Bug\"]) to add. Append-only; existing labels are never removed",
+			expected: "Label names (e.g. [\"Bug\"]) to add.",
+		},
+		{
+			name:     "decimals and URLs are not boundaries",
+			input:    "Timeout in seconds, default 2.5 (see https://example.com/docs). Must be positive",
+			expected: "Timeout in seconds, default 2.5 (see https://example.com/docs).",
+		},
+		{
+			name:     "line break ends the sentence",
+			input:    "Filter by status:\n- open\n- closed",
+			expected: "Filter by status:",
+		},
+		{
+			name:     "long first sentence is cut at a word boundary",
+			input:    strings.Repeat("word ", 40) + "end.",
+			expected: strings.TrimSpace(strings.Repeat("word ", 30)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, streamlinePropertyDescription(tt.input))
+		})
+	}
+}
+
+func parseSchema(t *testing.T, raw json.RawMessage) map[string]any {
+	t.Helper()
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(raw, &parsed))
+	return parsed
+}
+
+func properties(t *testing.T, schema map[string]any) map[string]any {
+	t.Helper()
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok, "schema has no properties: %v", schema)
+	return props
+}
+
 func TestStreamlineInputSchema(t *testing.T) {
-	t.Run("strips property descriptions", func(t *testing.T) {
-		input := json.RawMessage(`{
+	t.Run("shortens property descriptions to their first sentence", func(t *testing.T) {
+		result := streamlineInputSchema(json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"query": {
 					"type": "string",
-					"description": "The SQL query to execute against the database"
+					"description": "The SQL query to execute against the database. Must be a single statement."
 				},
 				"limit": {
 					"type": "integer",
@@ -64,154 +129,91 @@ func TestStreamlineInputSchema(t *testing.T) {
 				}
 			},
 			"required": ["query"]
-		}`)
+		}`))
 
-		result := streamlineInputSchema(input)
-
-		var parsed map[string]any
-		if err := json.Unmarshal(result, &parsed); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-
-		props := parsed["properties"].(map[string]any)
-
-		queryProp := props["query"].(map[string]any)
-		if _, hasDesc := queryProp["description"]; hasDesc {
-			t.Error("query property should not have description")
-		}
-		if queryProp["type"] != "string" {
-			t.Error("query type should be preserved")
-		}
-
-		limitProp := props["limit"].(map[string]any)
-		if _, hasDesc := limitProp["description"]; hasDesc {
-			t.Error("limit property should not have description")
-		}
-		if limitProp["default"] != float64(50) {
-			t.Error("limit default should be preserved")
-		}
-
-		required := parsed["required"].([]any)
-		if len(required) != 1 || required[0] != "query" {
-			t.Error("required should be preserved")
-		}
+		parsed := parseSchema(t, result)
+		props := properties(t, parsed)
+		assert.Equal(t, map[string]any{"type": "string", "description": "The SQL query to execute against the database."}, props["query"])
+		assert.Equal(t, map[string]any{"type": "integer", "default": float64(50), "description": "Maximum number of rows to return"}, props["limit"])
+		assert.Equal(t, []any{"query"}, parsed["required"])
 	})
 
-	t.Run("simplifies anyOf nullable types", func(t *testing.T) {
-		input := json.RawMessage(`{
+	t.Run("collapses nullable anyOf and keeps the outer description", func(t *testing.T) {
+		result := streamlineInputSchema(json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"region": {
 					"anyOf": [
-						{"type": "string", "description": "The region URL"},
+						{"type": "string", "format": "uri", "description": "The region URL"},
 						{"type": "null"}
 					],
 					"default": null,
-					"description": "Optional region parameter"
+					"description": "Optional region parameter. Defaults to the caller's region"
 				}
 			}
-		}`)
+		}`))
 
-		result := streamlineInputSchema(input)
-
-		var parsed map[string]any
-		if err := json.Unmarshal(result, &parsed); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-
-		props := parsed["properties"].(map[string]any)
-		regionProp := props["region"].(map[string]any)
-
-		if _, hasAnyOf := regionProp["anyOf"]; hasAnyOf {
-			t.Error("anyOf should be simplified away")
-		}
-		if regionProp["type"] != "string" {
-			t.Errorf("type should be string, got %v", regionProp["type"])
-		}
-		if _, hasDesc := regionProp["description"]; hasDesc {
-			t.Error("description should be stripped")
-		}
+		region := properties(t, parseSchema(t, result))["region"]
+		assert.Equal(t, map[string]any{
+			"type":        "string",
+			"format":      "uri",
+			"default":     nil,
+			"description": "Optional region parameter.",
+		}, region)
 	})
 
-	t.Run("handles nested objects", func(t *testing.T) {
-		input := json.RawMessage(`{
+	t.Run("applies the same rules inside nested objects, items, $defs and oneOf", func(t *testing.T) {
+		result := streamlineInputSchema(json.RawMessage(`{
 			"type": "object",
+			"$defs": {
+				"Filter": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"field": {"type": "string", "pattern": "^[a-z]+$", "description": "Field to filter on. Must be indexed."}
+					}
+				}
+			},
 			"properties": {
+				"filters": {"type": "array", "items": {"$ref": "#/$defs/Filter"}, "minItems": 1},
 				"telemetry": {
 					"type": "object",
 					"properties": {
-						"intent": {
-							"type": "string",
-							"description": "Briefly describe the wider context task"
-						}
+						"intent": {"type": "string", "minLength": 1, "description": "Briefly describe the wider context task. Keep it short."}
 					},
 					"required": ["intent"]
+				},
+				"patch": {
+					"type": "array",
+					"items": {
+						"oneOf": [
+							{"type": "object", "properties": {"op": {"const": "replace"}, "old": {"type": "string", "minLength": 1, "description": "Exact text to replace. Must match once."}}},
+							{"type": "object", "properties": {"op": {"const": "append"}, "text": {"type": "string", "maxLength": 100}}}
+						]
+					}
 				}
 			}
-		}`)
+		}`))
 
-		result := streamlineInputSchema(input)
+		parsed := parseSchema(t, result)
+		field := properties(t, parsed["$defs"].(map[string]any)["Filter"].(map[string]any))["field"]
+		assert.Equal(t, map[string]any{"type": "string", "description": "Field to filter on."}, field)
+		assert.NotContains(t, parsed["$defs"].(map[string]any)["Filter"], "additionalProperties")
 
-		var parsed map[string]any
-		if err := json.Unmarshal(result, &parsed); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
+		props := properties(t, parsed)
+		assert.Equal(t, map[string]any{"type": "array", "items": map[string]any{"$ref": "#/$defs/Filter"}}, props["filters"])
 
-		props := parsed["properties"].(map[string]any)
 		telemetry := props["telemetry"].(map[string]any)
-		innerProps := telemetry["properties"].(map[string]any)
-		intent := innerProps["intent"].(map[string]any)
+		assert.Equal(t, map[string]any{"type": "string", "description": "Briefly describe the wider context task."}, properties(t, telemetry)["intent"])
+		assert.Equal(t, []any{"intent"}, telemetry["required"])
 
-		if _, hasDesc := intent["description"]; hasDesc {
-			t.Error("nested property description should be stripped")
-		}
+		ops := props["patch"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any)
+		assert.Equal(t, map[string]any{"type": "string", "description": "Exact text to replace."}, properties(t, ops[0].(map[string]any))["old"])
+		assert.Equal(t, map[string]any{"type": "string"}, properties(t, ops[1].(map[string]any))["text"])
 	})
 
-	t.Run("preserves enum values", func(t *testing.T) {
-		input := json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"status": {
-					"type": "string",
-					"enum": ["resolved", "unresolved", "ignored"],
-					"description": "The new status for the issue"
-				}
-			}
-		}`)
-
-		result := streamlineInputSchema(input)
-
-		var parsed map[string]any
-		if err := json.Unmarshal(result, &parsed); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-
-		props := parsed["properties"].(map[string]any)
-		status := props["status"].(map[string]any)
-
-		enumVals := status["enum"].([]any)
-		if len(enumVals) != 3 {
-			t.Errorf("enum should have 3 values, got %d", len(enumVals))
-		}
-	})
-
-	t.Run("returns input unchanged on invalid JSON", func(t *testing.T) {
-		input := json.RawMessage(`not valid json`)
-		result := streamlineInputSchema(input)
-		if string(result) != string(input) {
-			t.Error("invalid JSON should be returned unchanged")
-		}
-	})
-
-	t.Run("returns empty input unchanged", func(t *testing.T) {
-		result := streamlineInputSchema(nil)
-		if result != nil {
-			t.Error("nil input should return nil")
-		}
-	})
-
-	t.Run("strips validation constraints and extensions", func(t *testing.T) {
-		input := json.RawMessage(`{
+	t.Run("keeps format, enum and default, drops bounds, pattern, additionalProperties and extensions", func(t *testing.T) {
+		result := streamlineInputSchema(json.RawMessage(`{
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
@@ -219,6 +221,7 @@ func TestStreamlineInputSchema(t *testing.T) {
 					"type": "number",
 					"minimum": 1,
 					"maximum": 100,
+					"exclusiveMaximum": 101,
 					"default": 10
 				},
 				"query": {
@@ -234,46 +237,22 @@ func TestStreamlineInputSchema(t *testing.T) {
 					"x-google-enum-descriptions": ["Table format", "Wide format", "YAML format"]
 				}
 			}
-		}`)
+		}`))
 
-		result := streamlineInputSchema(input)
+		parsed := parseSchema(t, result)
+		assert.NotContains(t, parsed, "additionalProperties")
+		props := properties(t, parsed)
+		assert.Equal(t, map[string]any{"type": "number", "default": float64(10)}, props["limit"])
+		assert.Equal(t, map[string]any{"type": "string", "format": "uri"}, props["query"])
+		assert.Equal(t, map[string]any{"type": "string", "enum": []any{"TABLE", "WIDE", "YAML"}}, props["output"])
+	})
 
-		var parsed map[string]any
-		if err := json.Unmarshal(result, &parsed); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
+	t.Run("returns input unchanged on invalid JSON", func(t *testing.T) {
+		input := json.RawMessage(`not valid json`)
+		assert.Equal(t, input, streamlineInputSchema(input))
+	})
 
-		if _, has := parsed["additionalProperties"]; has {
-			t.Error("top-level additionalProperties should be stripped")
-		}
-
-		props := parsed["properties"].(map[string]any)
-
-		limit := props["limit"].(map[string]any)
-		if _, has := limit["minimum"]; has {
-			t.Error("minimum should be stripped")
-		}
-		if _, has := limit["maximum"]; has {
-			t.Error("maximum should be stripped")
-		}
-		if limit["default"] != float64(10) {
-			t.Error("default should be preserved")
-		}
-
-		query := props["query"].(map[string]any)
-		for _, field := range []string{"minLength", "maxLength", "pattern", "format"} {
-			if _, has := query[field]; has {
-				t.Errorf("%s should be stripped", field)
-			}
-		}
-
-		output := props["output"].(map[string]any)
-		if _, has := output["x-google-enum-descriptions"]; has {
-			t.Error("x-google-* fields should be stripped")
-		}
-		enumVals := output["enum"].([]any)
-		if len(enumVals) != 3 {
-			t.Error("enum values should be preserved")
-		}
+	t.Run("returns empty input unchanged", func(t *testing.T) {
+		assert.Nil(t, streamlineInputSchema(nil))
 	})
 }
