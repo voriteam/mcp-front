@@ -18,6 +18,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
+	"github.com/stainless-api/mcp-front/internal/httputil"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/reqlog"
@@ -244,7 +245,7 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.transport
+	return httputil.RequireSessionProtocol(s.transport)
 }
 
 // Name returns the aggregate server's name (used as a URL path prefix).
@@ -1105,7 +1106,7 @@ func (s *Server) createConn(ctx context.Context, userEmail, backendName string) 
 	}
 
 	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ProtocolVersion = mcp.LATEST_LEGACY_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{Name: s.name, Version: "1.0.0"}
 	// Initialize is a request-response exchange with its own timeout.
 	// The caller's context is detached (via WithoutCancel in singleflight)

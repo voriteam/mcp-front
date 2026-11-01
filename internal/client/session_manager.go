@@ -345,7 +345,7 @@ func (s *StdioSession) DiscoverAndRegisterCapabilities(
 	}
 
 	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initRequest.Params.ProtocolVersion = mcp.LATEST_LEGACY_PROTOCOL_VERSION
 	initRequest.Params.ClientInfo = mcp.Implementation{
 		Name:    serverName,
 		Version: "1.0",

@@ -479,6 +479,9 @@ func buildHTTPHandler(
 				mcpSrv,
 				userTokenService.GetUserToken,
 			)
+			if serverConfig.IsStdio() {
+				handler = httputil.RequireSessionProtocol(handler)
+			}
 		}
 
 		mcpMiddlewares := []server.MiddlewareFunc{mcpLogger, corsMiddleware}

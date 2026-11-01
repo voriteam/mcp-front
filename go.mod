@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	cloud.google.com/go/firestore v1.20.0
-	github.com/mark3labs/mcp-go v0.55.1
+	github.com/mark3labs/mcp-go v1.5.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.17.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.63.0
