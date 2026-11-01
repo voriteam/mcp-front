@@ -2,20 +2,26 @@ package aggregate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
+	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/reqlog"
 	"github.com/stainless-api/mcp-front/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -417,6 +423,157 @@ func TestToolRouting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "query", calledWithName)
 	assert.Len(t, result.Content, 1)
+}
+
+func TestGatewayCallsToolsAsTheCaller(t *testing.T) {
+	backendMCP := mcpserver.NewMCPServer("backend", "1.0.0", mcpserver.WithToolCapabilities(true))
+	backendMCP.AddTool(mcp.NewTool("whoami"), func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText(req.Header.Get("X-User")), nil
+	})
+	backend := httptest.NewServer(mcpserver.NewStreamableHTTPServer(backendMCP, mcpserver.WithEndpointPath("/")))
+	t.Cleanup(backend.Close)
+
+	for _, gatewayTransport := range []config.MCPClientType{config.MCPClientTypeStreamable, config.MCPClientTypeSSE} {
+		t.Run(string(gatewayTransport), func(t *testing.T) {
+			srv := NewServer(ServerConfig{
+				Name:          "gw",
+				TransportType: gatewayTransport,
+				Backends: map[string]*config.MCPClientConfig{"pg": {
+					TransportType:    config.MCPClientTypeStreamable,
+					URL:              backend.URL + "/",
+					Headers:          map[string]string{"X-User": "{{email}}"},
+					HeadersNeedEmail: map[string]bool{"X-User": true},
+				}},
+				Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+				CreateTransport: client.DefaultTransportCreator,
+			})
+			srv.Start()
+			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx := context.WithValue(r.Context(), oauth.GetUserContextKey(), r.Header.Get("X-Test-User"))
+				srv.Handler().ServeHTTP(w, r.WithContext(ctx))
+			}))
+			t.Cleanup(front.Close)
+
+			ctx := context.Background()
+			connect := func(user string) *mcpclient.Client {
+				headers := map[string]string{"X-Test-User": user}
+				var tr transport.Interface
+				var err error
+				if gatewayTransport == config.MCPClientTypeSSE {
+					tr, err = transport.NewSSE(front.URL+"/gw/sse", transport.WithHeaders(headers))
+				} else {
+					tr, err = transport.NewStreamableHTTP(front.URL+"/gw/", transport.WithHTTPHeaders(headers))
+				}
+				require.NoError(t, err)
+				c := mcpclient.NewClient(tr)
+				require.NoError(t, c.Start(ctx))
+				t.Cleanup(func() { _ = c.Close() })
+				_, err = c.Initialize(ctx, mcp.InitializeRequest{Params: mcp.InitializeParams{
+					ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+					ClientInfo:      mcp.Implementation{Name: "test", Version: "1"},
+				}})
+				require.NoError(t, err)
+				return c
+			}
+
+			alice, bob := connect("alice@vori.com"), connect("bob@vori.com")
+			for _, c := range []*mcpclient.Client{alice, bob} {
+				_, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+				require.NoError(t, err)
+			}
+
+			for user, c := range map[string]*mcpclient.Client{"alice@vori.com": alice, "bob@vori.com": bob} {
+				result, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "pg.whoami"}})
+				require.NoError(t, err)
+				require.Len(t, result.Content, 1)
+				assert.Equal(t, user, result.Content[0].(mcp.TextContent).Text)
+			}
+		})
+	}
+}
+
+func discoverFromBackend(t *testing.T, tools string) (discovered []mcp.Tool, backendMethods []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var methods []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			return
+		}
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		methods = append(methods, req.Method)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		result := map[string]any{}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "backend-session")
+			result = map[string]any{
+				"protocolVersion": "2025-06-18",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "legacy", "version": "1"},
+			}
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+			return
+		case "tools/list":
+			result = map[string]any{"tools": json.RawMessage(tools)}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := NewServer(ServerConfig{
+		Name:            "gw",
+		TransportType:   config.MCPClientTypeStreamable,
+		Backends:        map[string]*config.MCPClientConfig{"backend": {TransportType: config.MCPClientTypeStreamable, URL: backend.URL}},
+		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		CreateTransport: client.DefaultTransportCreator,
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	byBackend, err := srv.ListToolsByBackend(context.Background(), "user@vori.com")
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	return byBackend["backend"], slices.Clone(methods)
+}
+
+func TestBackendConnectionsOpenWithInitialize(t *testing.T) {
+	_, methods := discoverFromBackend(t, `[{"name":"query","inputSchema":{"type":"object"}}]`)
+	assert.Equal(t, []string{"initialize", "notifications/initialized", "tools/list"}, methods)
+}
+
+func TestDiscoveryKeepsArrayValuedSchemaTypes(t *testing.T) {
+	tools, _ := discoverFromBackend(t, `[{
+		"name": "list_commits",
+		"inputSchema": {"type": ["object", "null"], "properties": {"owner": {"type": "string"}}},
+		"outputSchema": {"type": ["null", "object"], "properties": {"sha": {"type": "string"}}}
+	}]`)
+	require.Len(t, tools, 1)
+
+	encoded, err := json.Marshal(tools[0])
+	require.NoError(t, err)
+	var schemas struct {
+		InputSchema  struct{ Type []string } `json:"inputSchema"`
+		OutputSchema struct{ Type []string } `json:"outputSchema"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &schemas))
+	assert.Equal(t, []string{"object", "null"}, schemas.InputSchema.Type)
+	assert.Equal(t, []string{"null", "object"}, schemas.OutputSchema.Type)
 }
 
 func TestPerUserConnectionIsolation(t *testing.T) {

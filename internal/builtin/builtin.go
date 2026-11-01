@@ -48,7 +48,7 @@ func (c *Client) Ping(context.Context) error  { return nil }
 // The aggregate calls Initialize as a handshake and never inspects capabilities.
 func (c *Client) Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error) {
 	return &mcp.InitializeResult{
-		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		ProtocolVersion: mcp.LATEST_LEGACY_PROTOCOL_VERSION,
 		ServerInfo:      mcp.Implementation{Name: c.serverName, Version: "1.0.0"},
 	}, nil
 }
