@@ -96,7 +96,7 @@ func TestLifecycle(t *testing.T) {
 	init, err := c.Initialize(ctx, mcp.InitializeRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, "gtm", init.ServerInfo.Name)
-	assert.Equal(t, mcp.LATEST_PROTOCOL_VERSION, init.ProtocolVersion)
+	assert.Equal(t, mcp.LATEST_LEGACY_PROTOCOL_VERSION, init.ProtocolVersion)
 
 	require.NoError(t, c.Close())
 }
