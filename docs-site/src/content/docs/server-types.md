@@ -190,4 +190,4 @@ All server types support `serviceAuths` for connection authentication and `requi
 
 ## Tool filtering
 
-Any server type supports filtering which tools are exposed to clients. See [Configuration](/mcp-front/configuration/#optionstoolfilter) for details and examples.
+Set `options.toolFilter` on a backend server to filter which of its tools clients see. An aggregate applies each backend's filter to the tools that backend contributes, and validation rejects a filter on the aggregate itself. See [Configuration](/mcp-front/configuration/#optionstoolfilter) for details and examples.
