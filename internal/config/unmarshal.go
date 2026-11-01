@@ -39,6 +39,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		Discovery           json.RawMessage            `json:"discovery,omitempty"`
 		Delimiter           string                     `json:"delimiter,omitempty"`
 		StreamlineResponses bool                       `json:"streamlineResponses,omitempty"`
+		Supersedes          map[string][]string        `json:"supersedes,omitempty"`
 	}
 
 	var raw rawConfig
@@ -86,6 +87,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		}
 		c.Servers = raw.Servers
 		c.StreamlineResponses = raw.StreamlineResponses
+		c.Supersedes = raw.Supersedes
 		if c.TransportType == "" {
 			c.TransportType = MCPClientTypeSSE
 		}

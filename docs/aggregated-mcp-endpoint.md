@@ -119,6 +119,29 @@ Results are cached globally for the duration of `discovery.cacheTtl` (default 60
 
 For backends that require per-user tokens (API keys, OAuth tokens to upstream services), the existing `UserTokenService` handles retrieval and refresh. If a user hasn't set up their token for a particular service, that service's tools still appear in the aggregated list — but calling them returns a structured error with setup instructions pointing to `/my/tokens`. Same behavior as per-service endpoints today.
 
+### Superseded backends
+
+A gateway can carry two versions of one service: a full backend that each user connects with their own token, and a read-only backend on a shared credential for everyone else. `supersedes` maps a backend to the backends it replaces:
+
+```json
+{
+  "gateway": {
+    "type": "aggregate",
+    "servers": ["notion", "notion-read-only", "sentry", "sentry-read-only"],
+    "supersedes": {
+      "notion": ["notion-read-only"],
+      "sentry": ["sentry-read-only"]
+    }
+  }
+}
+```
+
+When a backend contributes at least one tool to a user's discovery, the aggregate leaves the backends it supersedes out of that user's tool list. A user without a Notion token sees the `notion-read-only.` tools. A user who connects Notion sees the `notion.` tools instead, and a call to a `notion-read-only.` tool fails as an unknown tool. The read-only backend comes back when the user removes their token, or when Notion discovery fails and the aggregate has no recent Notion tools to serve in its place.
+
+A connected session picks up the change once the user's discovery cache expires, on its next `tools/list` or tool call, and the aggregate sends it `notifications/tools/list_changed`.
+
+Every name in `supersedes` must be one of the aggregate's servers. A backend cannot supersede itself, and a superseded backend cannot supersede other backends. To replace several backends, list each one under the backend that replaces it.
+
 ### Authentication
 
 The aggregate endpoint uses the same middleware stack as everything else: CORS, OAuth token validation, recovery. Audience validation works naturally — `ValidateTokenMiddleware` extracts the server name from the request path and checks the token's audience accordingly.

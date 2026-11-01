@@ -109,6 +109,7 @@ type Server struct {
 	discovery           *config.DiscoveryConfig
 	delimiter           string
 	streamlineResponses bool
+	supersedes          map[string][]string
 	getUserToken        UserTokenFunc
 	tokenSources        map[string]oauth2.TokenSource
 	createTransport     client.TransportCreator
@@ -146,6 +147,7 @@ type ServerConfig struct {
 	Discovery           *config.DiscoveryConfig
 	Delimiter           string
 	StreamlineResponses bool
+	Supersedes          map[string][]string
 	GetUserToken        UserTokenFunc
 	TokenSources        map[string]oauth2.TokenSource
 	CreateTransport     client.TransportCreator
@@ -179,6 +181,7 @@ func NewServer(cfg ServerConfig) *Server {
 		discovery:           cfg.Discovery,
 		delimiter:           delimiter,
 		streamlineResponses: cfg.StreamlineResponses,
+		supersedes:          cfg.Supersedes,
 		getUserToken:        cfg.GetUserToken,
 		tokenSources:        cfg.TokenSources,
 		createTransport:     cfg.CreateTransport,
@@ -338,11 +341,15 @@ func (s *Server) syncSessionTools(ctx context.Context, session mcpserver.ClientS
 		return
 	}
 
+	hidden := supersededBackends(s.supersedes, tools)
+	visible := maps.Clone(tools)
+	maps.DeleteFunc(visible, func(backendName string, _ []mcp.Tool) bool { return hidden[backendName] })
+
 	current := sessionWithTools.GetSessionTools()
-	fresh := s.buildSessionTools(userEmail, tools)
+	fresh := s.buildSessionTools(userEmail, visible)
 	for name, tool := range current {
 		backendName, _, ok := ParseToolName(name, s.delimiter)
-		if !ok {
+		if !ok || hidden[backendName] {
 			continue
 		}
 		if _, discovered := tools[backendName]; !discovered {
@@ -406,6 +413,19 @@ func (s *Server) buildSessionTools(userEmail string, tools map[string][]mcp.Tool
 		}
 	}
 	return sessionTools
+}
+
+func supersededBackends(supersedes map[string][]string, tools map[string][]mcp.Tool) map[string]bool {
+	hidden := make(map[string]bool)
+	for superseding, superseded := range supersedes {
+		if len(tools[superseding]) == 0 {
+			continue
+		}
+		for _, backendName := range superseded {
+			hidden[backendName] = true
+		}
+	}
+	return hidden
 }
 
 func diffSessionTools(current, fresh map[string]mcpserver.ServerTool) (added, removed, changed int) {
