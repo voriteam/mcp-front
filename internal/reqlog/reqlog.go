@@ -12,14 +12,15 @@ import (
 type contextKey struct{}
 
 // ToolCall describes one proxied MCP tool call. Arguments and results are
-// deliberately absent: the gateway records that a tool ran, never what ran
-// through it.
+// deliberately absent: the gateway records that a tool ran and how large its
+// result was, never what ran through it.
 type ToolCall struct {
-	Backend    string
-	Name       string
-	SessionID  string
-	DurationMS int64
-	Failed     bool
+	Backend     string
+	Name        string
+	SessionID   string
+	DurationMS  int64
+	ResultBytes int
+	Failed      bool
 }
 
 type Context struct {
