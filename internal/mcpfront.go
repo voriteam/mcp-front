@@ -532,6 +532,7 @@ func buildHTTPHandler(
 			Discovery:           serverConfig.Discovery,
 			Delimiter:           serverConfig.Delimiter,
 			StreamlineResponses: serverConfig.StreamlineResponses,
+			Supersedes:          serverConfig.Supersedes,
 			GetUserToken:        userTokenService.GetUserToken,
 			TokenSources:        backendTokenSources,
 			CreateTransport:     createTransport,

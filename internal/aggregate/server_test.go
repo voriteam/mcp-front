@@ -2339,6 +2339,159 @@ func TestToolCallCarriesTheSessionID(t *testing.T) {
 	assert.Equal(t, "mcp-session-abc", tool.SessionID)
 }
 
+func TestSupersededBackends(t *testing.T) {
+	supersedes := map[string][]string{
+		"notion": {"notion-read-only"},
+		"sentry": {"sentry-read-only", "sentry-legacy"},
+	}
+	search := []mcp.Tool{{Name: "search"}}
+
+	tests := []struct {
+		name  string
+		tools map[string][]mcp.Tool
+		want  map[string]bool
+	}{
+		{
+			name:  "a superseding backend with tools hides every backend it supersedes",
+			tools: map[string][]mcp.Tool{"sentry": search, "sentry-read-only": search, "sentry-legacy": search, "notion-read-only": search},
+			want:  map[string]bool{"sentry-read-only": true, "sentry-legacy": true},
+		},
+		{
+			name:  "a superseding backend missing from discovery hides nothing",
+			tools: map[string][]mcp.Tool{"notion-read-only": search, "sentry-read-only": search},
+			want:  map[string]bool{},
+		},
+		{
+			name:  "a superseding backend that contributed no tools hides nothing",
+			tools: map[string][]mcp.Tool{"notion": {}, "notion-read-only": search},
+			want:  map[string]bool{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, supersededBackends(supersedes, tt.tools))
+		})
+	}
+}
+
+type supersedeFixture struct {
+	srv      *Server
+	notion   *mockTransport
+	readOnly *mockTransport
+	hasToken atomic.Bool
+}
+
+func newSupersedeFixture(t *testing.T) *supersedeFixture {
+	t.Helper()
+	f := &supersedeFixture{
+		notion:   newMockTransport([]mcp.Tool{{Name: "search"}, {Name: "update_page"}}),
+		readOnly: newMockTransport([]mcp.Tool{{Name: "search"}}),
+	}
+	mocks := map[string]*mockTransport{
+		"http://localhost/notion":           f.notion,
+		"http://localhost/notion-read-only": f.readOnly,
+		"http://localhost/linear":           newMockTransport([]mcp.Tool{{Name: "list_issues"}}),
+	}
+	f.srv = NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeStreamable,
+		Backends: map[string]*config.MCPClientConfig{
+			"notion":           {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/notion", RequiresUserToken: true},
+			"notion-read-only": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/notion-read-only"},
+			"linear":           {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/linear"},
+		},
+		Discovery:  &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 20 * time.Millisecond},
+		Delimiter:  "__",
+		Supersedes: map[string][]string{"notion": {"notion-read-only"}},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			if userEmail != "alice@test.com" || !f.hasToken.Load() {
+				return "", storage.ErrUserTokenNotFound
+			}
+			return "alice-notion-token", nil
+		},
+		CreateTransport: func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+			if mock, ok := mocks[conf.URL]; ok {
+				return mock, nil
+			}
+			return nil, fmt.Errorf("unknown backend")
+		},
+		BaseURL: "http://localhost:8080",
+	})
+	f.srv.Start()
+	t.Cleanup(func() { _ = f.srv.Shutdown(context.Background()) })
+	return f
+}
+
+func (f *supersedeFixture) viewToolNames(t *testing.T, userEmail string) []string {
+	t.Helper()
+	f.srv.refreshView(context.Background(), userEmail)
+	f.srv.cacheMu.RLock()
+	defer f.srv.cacheMu.RUnlock()
+	view := f.srv.views[userEmail]
+	require.NotNil(t, view)
+	return slices.Sorted(maps.Keys(view.tools))
+}
+
+func (f *supersedeFixture) afterCacheExpiry() {
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestViewSwapsReadOnlyBackendForTheOneTheUserConnects(t *testing.T) {
+	f := newSupersedeFixture(t)
+	require.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, f.viewToolNames(t, "alice@test.com"), "without a token the user sees the read-only backend")
+
+	f.hasToken.Store(true)
+	f.afterCacheExpiry()
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, f.viewToolNames(t, "alice@test.com"))
+
+	aliceCtx := context.WithValue(context.Background(), oauth.GetUserContextKey(), "alice@test.com")
+	_, err := f.srv.callTool(aliceCtx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "notion-read-only__search"}})
+	assert.ErrorIs(t, err, mcpserver.ErrToolNotFound)
+}
+
+func TestSupersedesAppliesToEachUsersOwnConnections(t *testing.T) {
+	f := newSupersedeFixture(t)
+	f.hasToken.Store(true)
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, f.viewToolNames(t, "alice@test.com"))
+	assert.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, f.viewToolNames(t, "bob@test.com"))
+
+	bobCtx := context.WithValue(context.Background(), oauth.GetUserContextKey(), "bob@test.com")
+	_, err := f.srv.callTool(bobCtx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "notion-read-only__search"}})
+	assert.NoError(t, err)
+}
+
+func TestReadOnlyBackendStaysWhenTheConnectedBackendFailsDiscovery(t *testing.T) {
+	f := newSupersedeFixture(t)
+	f.hasToken.Store(true)
+	f.notion.setListToolsErr(transport.ErrAuthorizationRequired)
+
+	assert.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, f.viewToolNames(t, "alice@test.com"))
+}
+
+func TestReadOnlyBackendStaysHiddenWhileTheConnectedBackendServesLastKnownTools(t *testing.T) {
+	f := newSupersedeFixture(t)
+	f.hasToken.Store(true)
+	require.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, f.viewToolNames(t, "alice@test.com"))
+
+	f.notion.setListToolsErr(errTransientDiscovery)
+	f.afterCacheExpiry()
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, f.viewToolNames(t, "alice@test.com"))
+}
+
+func TestViewDropsReadOnlyToolsEvenWhenTheirOwnDiscoveryFails(t *testing.T) {
+	f := newSupersedeFixture(t)
+	require.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, f.viewToolNames(t, "alice@test.com"))
+
+	f.hasToken.Store(true)
+	f.readOnly.setListToolsErr(transport.ErrAuthorizationRequired)
+	f.afterCacheExpiry()
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, f.viewToolNames(t, "alice@test.com"))
+}
+
 type fakeSession struct{ id string }
 
 func (f fakeSession) Initialize()       {}

@@ -1,7 +1,13 @@
 package integration
 
 import (
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -223,4 +229,114 @@ func TestAggregateToolFilter(t *testing.T) {
 
 	assert.True(t, toolNames["test-streamable.get_time"], "get_time should be unaffected")
 	assert.True(t, toolNames["test-streamable.echo_streamable"], "echo_streamable should be unaffected")
+}
+
+func TestAggregateSupersedes(t *testing.T) {
+	const cacheTTL = 2 * time.Second
+	mcpServers := map[string]any{
+		"notes": map[string]any{
+			"transportType":     "sse",
+			"url":               "http://localhost:3001/sse",
+			"requiresUserToken": true,
+			"userAuthentication": map[string]any{
+				"type":         "manual",
+				"displayName":  "Notes",
+				"instructions": "Enter your notes token",
+			},
+		},
+		"notes-read-only": map[string]any{
+			"transportType": "streamable-http",
+			"url":           "http://localhost:3002",
+		},
+		"mcp": map[string]any{
+			"type":          "aggregate",
+			"transportType": "sse",
+			"discovery": map[string]any{
+				"timeout":  "1s",
+				"cacheTtl": cacheTTL.String(),
+			},
+			"supersedes": map[string]any{"notes": []string{"notes-read-only"}},
+		},
+	}
+	cfg := buildTestConfig("http://localhost:8080", "aggregate-supersedes-test", testOAuthConfigFromEnv(), mcpServers)
+	startMCPFront(t, writeTestConfig(t, cfg),
+		"JWT_SECRET=test-jwt-secret-32-bytes-exactly!",
+		"ENCRYPTION_KEY=test-encryption-key-32-bytes-ok!",
+		"GOOGLE_CLIENT_ID=test-client-id-for-oauth",
+		"GOOGLE_CLIENT_SECRET=test-client-secret-for-oauth",
+		"MCP_FRONT_ENV=development",
+	)
+	waitForMCPFront(t)
+
+	accessToken := getOAuthAccessToken(t, "http://localhost:8080/mcp")
+	connect := func(t *testing.T) *MCPSSEClient {
+		client := NewMCPSSEClient("http://localhost:8080")
+		client.SetAuthToken(accessToken)
+		require.NoError(t, client.ConnectToServer("mcp"))
+		t.Cleanup(client.Close)
+		return client
+	}
+	readOnlyTools := []string{"notes-read-only.echo_streamable", "notes-read-only.get_time"}
+	fullTools := []string{"notes.echo_text", "notes.sample_stream"}
+
+	client := connect(t)
+	require.Equal(t, readOnlyTools, aggregateToolNames(t, client), "a user without a notes token sees the read-only backend")
+
+	submitTokenForm(t, "set", url.Values{"service": {"notes"}, "token": {"notes-token"}})
+	time.Sleep(cacheTTL + 500*time.Millisecond)
+
+	assert.Equal(t, fullTools, aggregateToolNames(t, client), "the connected session swaps the read-only backend for the full one")
+
+	result, err := client.SendMCPRequest("tools/call", map[string]any{"name": "notes-read-only.get_time", "arguments": map[string]any{}})
+	require.NoError(t, err)
+	rpcErr, ok := result["error"].(map[string]any)
+	require.True(t, ok, "calling a hidden tool must fail, got %v", result)
+	assert.Contains(t, rpcErr["message"], "not found")
+
+	result, err = client.SendMCPRequest("tools/call", map[string]any{"name": "notes.echo_text", "arguments": map[string]any{"text": "hi"}})
+	require.NoError(t, err)
+	assert.NotContains(t, result, "error")
+
+	submitTokenForm(t, "delete", url.Values{"service": {"notes"}})
+	time.Sleep(cacheTTL + 500*time.Millisecond)
+
+	assert.Equal(t, readOnlyTools, aggregateToolNames(t, connect(t)), "a new session after disconnecting sees the read-only backend again")
+}
+
+func aggregateToolNames(t *testing.T, client *MCPSSEClient) []string {
+	t.Helper()
+	result, err := client.SendMCPRequest("tools/list", map[string]any{})
+	require.NoError(t, err)
+	resultData, ok := result["result"].(map[string]any)
+	require.True(t, ok, "expected a result, got %v", result)
+	tools, ok := resultData["tools"].([]any)
+	require.True(t, ok, "expected a tools array, got %v", resultData)
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.(map[string]any)["name"].(string))
+	}
+	sort.Strings(names)
+	return names
+}
+
+func submitTokenForm(t *testing.T, action string, form url.Values) {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	browser := &http.Client{Jar: jar}
+
+	resp, err := browser.Get("http://localhost:8080/my/tokens")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	form.Set("csrf_token", extractCSRFToken(t, string(body)))
+
+	browser.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err = browser.PostForm("http://localhost:8080/my/tokens/"+action, form)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Location"), "type=success")
 }

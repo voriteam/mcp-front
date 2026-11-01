@@ -239,10 +239,11 @@ type MCPClientConfig struct {
 	UserEmail string `json:"-"`
 
 	// Aggregate server configuration
-	Servers             []string         `json:"servers,omitempty"`
-	Discovery           *DiscoveryConfig `json:"discovery,omitempty"`
-	Delimiter           string           `json:"delimiter,omitempty"`
-	StreamlineResponses bool             `json:"streamlineResponses,omitempty"`
+	Servers             []string            `json:"servers,omitempty"`
+	Discovery           *DiscoveryConfig    `json:"discovery,omitempty"`
+	Delimiter           string              `json:"delimiter,omitempty"`
+	StreamlineResponses bool                `json:"streamlineResponses,omitempty"`
+	Supersedes          map[string][]string `json:"supersedes,omitempty"`
 }
 
 // CanDiscoverOAuth reports whether the server exposes an endpoint mcp-front can read

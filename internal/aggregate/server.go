@@ -118,6 +118,7 @@ type Server struct {
 	discovery           *config.DiscoveryConfig
 	delimiter           string
 	streamlineResponses bool
+	supersedes          map[string][]string
 	getUserToken        UserTokenFunc
 	tokenSources        map[string]oauth2.TokenSource
 	createTransport     client.TransportCreator
@@ -159,6 +160,7 @@ type ServerConfig struct {
 	Discovery           *config.DiscoveryConfig
 	Delimiter           string
 	StreamlineResponses bool
+	Supersedes          map[string][]string
 	GetUserToken        UserTokenFunc
 	TokenSources        map[string]oauth2.TokenSource
 	CreateTransport     client.TransportCreator
@@ -192,6 +194,7 @@ func NewServer(cfg ServerConfig) *Server {
 		discovery:           cfg.Discovery,
 		delimiter:           delimiter,
 		streamlineResponses: cfg.StreamlineResponses,
+		supersedes:          cfg.Supersedes,
 		getUserToken:        cfg.GetUserToken,
 		tokenSources:        cfg.TokenSources,
 		createTransport:     cfg.CreateTransport,
@@ -397,8 +400,12 @@ func (s *Server) storeView(userEmail string, shared, user *cachedTools) {
 }
 
 func (s *Server) presentTools(tools map[string][]mcp.Tool) map[string]mcp.Tool {
+	hidden := supersededBackends(s.supersedes, tools)
 	presented := make(map[string]mcp.Tool)
 	for backendName, backendTools := range tools {
+		if hidden[backendName] {
+			continue
+		}
 		for _, tool := range backendTools {
 			tool.Name = PrefixToolName(backendName, tool.Name, s.delimiter)
 			if s.streamlineResponses {
@@ -411,6 +418,19 @@ func (s *Server) presentTools(tools map[string][]mcp.Tool) map[string]mcp.Tool {
 		}
 	}
 	return presented
+}
+
+func supersededBackends(supersedes map[string][]string, tools map[string][]mcp.Tool) map[string]bool {
+	hidden := make(map[string]bool)
+	for superseding, superseded := range supersedes {
+		if len(tools[superseding]) == 0 {
+			continue
+		}
+		for _, backendName := range superseded {
+			hidden[backendName] = true
+		}
+	}
+	return hidden
 }
 
 // syncRegistry registers the union of every user's view on the shared mcp-go
