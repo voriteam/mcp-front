@@ -349,10 +349,11 @@ func TestLoggerMiddlewareCarriesARecordedToolCall(t *testing.T) {
 
 	handler := NewLoggerMiddleware("mcp")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.True(t, reqlog.RecordTool(r.Context(), reqlog.ToolCall{
-			Backend:    "postgres",
-			Name:       "query",
-			SessionID:  "mcp-session-abc",
-			DurationMS: 12,
+			Backend:     "postgres",
+			Name:        "query",
+			SessionID:   "mcp-session-abc",
+			DurationMS:  12,
+			ResultBytes: 4096,
 		}))
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -365,6 +366,7 @@ func TestLoggerMiddlewareCarriesARecordedToolCall(t *testing.T) {
 	assert.Equal(t, "postgres", records[0]["mcp.backend.name"])
 	assert.Equal(t, "mcp-session-abc", records[0]["mcp.session.id"])
 	assert.Equal(t, float64(12), records[0]["mcp.tool.duration_ms"])
+	assert.Equal(t, float64(4096), records[0]["mcp.tool.result.size"])
 	assert.Equal(t, false, records[0]["mcp.tool.is_error"])
 }
 
