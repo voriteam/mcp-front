@@ -1168,6 +1168,69 @@ func TestValidateFile_AggregateServer(t *testing.T) {
 			}`,
 			wantErrors: []string{"not allowed in MCP tool names"},
 		},
+		{
+			name: "supersedes_valid_with_default_servers",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"notion": {"transportType": "sse", "url": "http://localhost:3001"},
+					"notion-read-only": {"transportType": "sse", "url": "http://localhost:3002"},
+					"mcp": {"type": "aggregate", "supersedes": {"notion": ["notion-read-only"]}}
+				}
+			}`,
+			wantErrors: nil,
+		},
+		{
+			name: "supersedes_names_servers_outside_the_aggregate",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"notion": {"transportType": "sse", "url": "http://localhost:3001"},
+					"notion-read-only": {"transportType": "sse", "url": "http://localhost:3002"},
+					"mcp": {"type": "aggregate", "servers": ["notion"], "supersedes": {"notion": ["notion-read-only"], "ghost": []}}
+				}
+			}`,
+			wantErrors: []string{"server 'notion-read-only' is not one of this aggregate's servers", "server 'ghost' is not one of this aggregate's servers"},
+		},
+		{
+			name: "supersedes_itself",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"notion": {"transportType": "sse", "url": "http://localhost:3001"},
+					"mcp": {"type": "aggregate", "servers": ["notion"], "supersedes": {"notion": ["notion"]}}
+				}
+			}`,
+			wantErrors: []string{"'notion' cannot supersede itself"},
+		},
+		{
+			name: "supersedes_chain",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"a": {"transportType": "sse", "url": "http://localhost:3001"},
+					"b": {"transportType": "sse", "url": "http://localhost:3002"},
+					"mcp": {"type": "aggregate", "servers": ["a", "b"], "supersedes": {"a": ["b"], "b": ["a"]}}
+				}
+			}`,
+			wantErrors: []string{"'b' cannot be superseded because it supersedes other servers", "'a' cannot be superseded because it supersedes other servers"},
+		},
+		{
+			name: "supersedes_wrong_shape",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {"baseURL": "http://localhost:8080", "addr": ":8080"},
+				"mcpServers": {
+					"notion": {"transportType": "sse", "url": "http://localhost:3001"},
+					"mcp": {"type": "aggregate", "servers": ["notion"], "supersedes": {"notion": "notion-read-only"}}
+				}
+			}`,
+			wantErrors: []string{"superseded servers must be a list of server names"},
+		},
 	}
 
 	for _, tt := range tests {

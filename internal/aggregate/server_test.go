@@ -16,7 +16,9 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
+	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/reqlog"
+	"github.com/stainless-api/mcp-front/internal/storage"
 	"github.com/stainless-api/mcp-front/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2093,4 +2095,157 @@ func TestToolCallCarriesTheSessionID(t *testing.T) {
 	tool, ok := rc.TakeTool()
 	require.True(t, ok)
 	assert.Equal(t, "mcp-session-abc", tool.SessionID)
+}
+
+func TestSupersededBackends(t *testing.T) {
+	supersedes := map[string][]string{
+		"notion": {"notion-read-only"},
+		"sentry": {"sentry-read-only", "sentry-legacy"},
+	}
+	search := []mcp.Tool{{Name: "search"}}
+
+	tests := []struct {
+		name  string
+		tools map[string][]mcp.Tool
+		want  map[string]bool
+	}{
+		{
+			name:  "a superseding backend with tools hides every backend it supersedes",
+			tools: map[string][]mcp.Tool{"sentry": search, "sentry-read-only": search, "sentry-legacy": search, "notion-read-only": search},
+			want:  map[string]bool{"sentry-read-only": true, "sentry-legacy": true},
+		},
+		{
+			name:  "a superseding backend missing from discovery hides nothing",
+			tools: map[string][]mcp.Tool{"notion-read-only": search, "sentry-read-only": search},
+			want:  map[string]bool{},
+		},
+		{
+			name:  "a superseding backend that contributed no tools hides nothing",
+			tools: map[string][]mcp.Tool{"notion": {}, "notion-read-only": search},
+			want:  map[string]bool{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, supersededBackends(supersedes, tt.tools))
+		})
+	}
+}
+
+type supersedeFixture struct {
+	srv      *Server
+	notion   *mockTransport
+	readOnly *mockTransport
+	hasToken atomic.Bool
+}
+
+func newSupersedeFixture(t *testing.T) *supersedeFixture {
+	t.Helper()
+	f := &supersedeFixture{
+		notion:   newMockTransport([]mcp.Tool{{Name: "search"}, {Name: "update_page"}}),
+		readOnly: newMockTransport([]mcp.Tool{{Name: "search"}}),
+	}
+	mocks := map[string]*mockTransport{
+		"http://localhost/notion":           f.notion,
+		"http://localhost/notion-read-only": f.readOnly,
+		"http://localhost/linear":           newMockTransport([]mcp.Tool{{Name: "list_issues"}}),
+	}
+	f.srv = NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeSSE,
+		Backends: map[string]*config.MCPClientConfig{
+			"notion":           {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/notion", RequiresUserToken: true},
+			"notion-read-only": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/notion-read-only"},
+			"linear":           {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/linear"},
+		},
+		Discovery:  &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 20 * time.Millisecond},
+		Delimiter:  "__",
+		Supersedes: map[string][]string{"notion": {"notion-read-only"}},
+		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
+			if !f.hasToken.Load() {
+				return "", storage.ErrUserTokenNotFound
+			}
+			return "alice-notion-token", nil
+		},
+		CreateTransport: func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
+			if mock, ok := mocks[conf.URL]; ok {
+				return mock, nil
+			}
+			return nil, fmt.Errorf("unknown backend")
+		},
+		BaseURL: "http://localhost:8080",
+	})
+	f.srv.Start()
+	t.Cleanup(func() { _ = f.srv.Shutdown(context.Background()) })
+	return f
+}
+
+func (f *supersedeFixture) connect(t *testing.T, id string) (*fakeSessionWithTools, context.Context) {
+	t.Helper()
+	session := &fakeSessionWithTools{id: id, notifications: make(chan mcp.JSONRPCNotification, 4)}
+	ctx := context.WithValue(f.srv.mcpServer.WithContext(context.Background(), session), oauth.GetUserContextKey(), "alice@test.com")
+	require.NoError(t, f.srv.mcpServer.RegisterSession(ctx, session))
+	return session, ctx
+}
+
+func (f *supersedeFixture) resyncAfterCacheExpiry(ctx context.Context, session *fakeSessionWithTools) {
+	time.Sleep(50 * time.Millisecond)
+	f.srv.syncSessionTools(ctx, session)
+}
+
+func TestSessionSwapsReadOnlyBackendForTheOneTheUserConnects(t *testing.T) {
+	f := newSupersedeFixture(t)
+	session, ctx := f.connect(t, "connects-notion")
+	require.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, sessionToolNames(session), "without a token the user sees the read-only backend")
+
+	f.hasToken.Store(true)
+	f.resyncAfterCacheExpiry(ctx, session)
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, sessionToolNames(session))
+	select {
+	case n := <-session.notifications:
+		assert.Equal(t, mcp.MethodNotificationToolsListChanged, n.Method)
+	default:
+		t.Fatal("expected a tools/list_changed notification")
+	}
+
+	resp := f.srv.mcpServer.HandleMessage(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"notion-read-only__search"}}`))
+	rpcErr, ok := resp.(mcp.JSONRPCError)
+	require.True(t, ok, "calling a hidden tool must fail, got %#v", resp)
+	assert.Contains(t, rpcErr.Error.Message, "not found")
+}
+
+func TestReadOnlyBackendStaysWhenTheConnectedBackendFailsDiscovery(t *testing.T) {
+	f := newSupersedeFixture(t)
+	f.hasToken.Store(true)
+	f.notion.setListToolsErr(transport.ErrAuthorizationRequired)
+
+	session, _ := f.connect(t, "notion-rejects-token")
+
+	assert.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, sessionToolNames(session))
+}
+
+func TestReadOnlyBackendStaysHiddenWhileTheConnectedBackendServesLastKnownTools(t *testing.T) {
+	f := newSupersedeFixture(t)
+	f.hasToken.Store(true)
+	session, ctx := f.connect(t, "notion-blips")
+	require.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, sessionToolNames(session))
+
+	f.notion.setListToolsErr(errTransientDiscovery)
+	f.resyncAfterCacheExpiry(ctx, session)
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, sessionToolNames(session))
+	assert.Empty(t, session.notifications)
+}
+
+func TestSessionDropsReadOnlyToolsEvenWhenTheirOwnDiscoveryFails(t *testing.T) {
+	f := newSupersedeFixture(t)
+	session, ctx := f.connect(t, "read-only-fails")
+	require.Equal(t, []string{"linear__list_issues", "notion-read-only__search"}, sessionToolNames(session))
+
+	f.hasToken.Store(true)
+	f.readOnly.setListToolsErr(transport.ErrAuthorizationRequired)
+	f.resyncAfterCacheExpiry(ctx, session)
+
+	assert.Equal(t, []string{"linear__list_issues", "notion__search", "notion__update_page"}, sessionToolNames(session))
 }

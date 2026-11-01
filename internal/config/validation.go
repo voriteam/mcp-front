@@ -592,9 +592,88 @@ func validateAggregateServerStructure(name string, srv map[string]any, allServer
 		}
 	}
 
+	if supersedes, ok := srv["supersedes"]; ok {
+		validateSupersedes(supersedes, path+".supersedes", aggregateMembers(srv, allServers), result)
+	}
+
 	// Validate discovery config durations
 	if discovery, ok := srv["discovery"].(map[string]any); ok {
 		validateDiscoveryDurations(discovery, path+".discovery", result)
+	}
+}
+
+func aggregateMembers(srv map[string]any, allServers map[string]any) map[string]bool {
+	members := make(map[string]bool)
+	if serversList, ok := srv["servers"].([]any); ok {
+		for _, s := range serversList {
+			if ref, ok := s.(string); ok {
+				members[ref] = true
+			}
+		}
+		return members
+	}
+	for name, server := range allServers {
+		other, _ := server.(map[string]any)
+		serverType, _ := other["type"].(string)
+		transportType, _ := other["transportType"].(string)
+		if includedInAggregatesByDefault(ServerType(serverType), MCPClientType(transportType)) {
+			members[name] = true
+		}
+	}
+	return members
+}
+
+func validateSupersedes(raw any, path string, members map[string]bool, result *ValidationResult) {
+	supersedes, ok := raw.(map[string]any)
+	if !ok {
+		result.Errors = append(result.Errors, ValidationError{
+			Path:    path,
+			Message: "supersedes must map a server name to a list of server names",
+		})
+		return
+	}
+	for superseding, list := range supersedes {
+		keyPath := path + "." + superseding
+		if !members[superseding] {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    keyPath,
+				Message: fmt.Sprintf("server '%s' is not one of this aggregate's servers", superseding),
+			})
+		}
+		refs, ok := list.([]any)
+		if !ok {
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    keyPath,
+				Message: "superseded servers must be a list of server names",
+			})
+			continue
+		}
+		for i, r := range refs {
+			refPath := fmt.Sprintf("%s[%d]", keyPath, i)
+			ref, ok := r.(string)
+			if !ok {
+				result.Errors = append(result.Errors, ValidationError{Path: refPath, Message: "server reference must be a string"})
+				continue
+			}
+			_, chained := supersedes[ref]
+			switch {
+			case ref == superseding:
+				result.Errors = append(result.Errors, ValidationError{
+					Path:    refPath,
+					Message: fmt.Sprintf("'%s' cannot supersede itself", ref),
+				})
+			case !members[ref]:
+				result.Errors = append(result.Errors, ValidationError{
+					Path:    refPath,
+					Message: fmt.Sprintf("server '%s' is not one of this aggregate's servers", ref),
+				})
+			case chained:
+				result.Errors = append(result.Errors, ValidationError{
+					Path:    refPath,
+					Message: fmt.Sprintf("'%s' cannot be superseded because it supersedes other servers", ref),
+				})
+			}
+		}
 	}
 }
 

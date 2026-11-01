@@ -125,7 +125,7 @@ func ResolveDefaults(config *Config) {
 	// non-inline (inline servers have no network transport).
 	eligibleNames := make([]string, 0)
 	for name, server := range config.MCPServers {
-		if !server.IsAggregate() && server.TransportType != MCPClientTypeInline {
+		if includedInAggregatesByDefault(server.Type, server.TransportType) {
 			eligibleNames = append(eligibleNames, name)
 		}
 	}
@@ -138,6 +138,10 @@ func ResolveDefaults(config *Config) {
 			server.Servers = serversCopy
 		}
 	}
+}
+
+func includedInAggregatesByDefault(serverType ServerType, transportType MCPClientType) bool {
+	return serverType != ServerTypeAggregate && transportType != MCPClientTypeInline
 }
 
 // ValidateConfig validates the resolved configuration.
@@ -209,6 +213,22 @@ func ValidateConfig(config *Config) error {
 						"aggregate": name,
 						"backend":   ref,
 					})
+				}
+			}
+			for superseding, superseded := range server.Supersedes {
+				if !seen[superseding] {
+					return fmt.Errorf("aggregate server '%s': supersedes names '%s', which is not one of its servers", name, superseding)
+				}
+				for _, ref := range superseded {
+					if ref == superseding {
+						return fmt.Errorf("aggregate server '%s': '%s' cannot supersede itself", name, ref)
+					}
+					if !seen[ref] {
+						return fmt.Errorf("aggregate server '%s': supersedes names '%s', which is not one of its servers", name, ref)
+					}
+					if _, chained := server.Supersedes[ref]; chained {
+						return fmt.Errorf("aggregate server '%s': '%s' cannot be superseded because it supersedes other servers", name, ref)
+					}
 				}
 			}
 			if server.Discovery.Timeout >= server.Discovery.CacheTTL {
