@@ -1,10 +1,12 @@
 package aggregate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +25,7 @@ import (
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/reqlog"
+	"github.com/stainless-api/mcp-front/internal/storage"
 	"github.com/stainless-api/mcp-front/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -290,6 +293,49 @@ func TestDiscoverToolsCaching(t *testing.T) {
 // TestPerUserTokenBackendIsolation verifies that a backend requiring a user
 // token is discovered per-user: a user without a token never sees it, a user
 // with one does, and neither user's discovery leaks into the other's tool set.
+func TestToolHandlerRejectsToolsOutsideTheCallersView(t *testing.T) {
+	var called atomic.Bool
+	gated := newMockTransport([]mcp.Tool{{Name: "catalog"}})
+	gated.callToolFn = func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		called.Store(true)
+		return mcp.NewToolResultText("catalog"), nil
+	}
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeStreamable,
+		Backends: map[string]*config.MCPClientConfig{"materialize": {
+			TransportType:     config.MCPClientTypeSSE,
+			URL:               "http://localhost/materialize",
+			RequiresUserToken: true,
+		}},
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: time.Minute},
+		GetUserToken: func(_ context.Context, userEmail, _ string, _ *config.MCPClientConfig) (string, error) {
+			if userEmail == "alice@test.com" {
+				return "alice-token", nil
+			}
+			return "", storage.ErrUserTokenNotFound
+		},
+		CreateTransport: func(*config.MCPClientConfig) (client.MCPClientInterface, error) { return gated, nil },
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	ctx := context.Background()
+	srv.refreshView(ctx, "alice@test.com")
+	srv.refreshView(ctx, "bob@test.com")
+	require.NotNil(t, srv.mcpServer.GetTool("materialize.catalog"), "alice's discovery registers the tool for everyone")
+
+	bobCtx := context.WithValue(ctx, oauth.GetUserContextKey(), "bob@test.com")
+	_, err := srv.callTool(bobCtx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "materialize.catalog"}})
+	require.ErrorIs(t, err, mcpserver.ErrToolNotFound)
+	assert.False(t, called.Load(), "bob's call must not reach the backend")
+
+	strangerCtx := context.WithValue(ctx, oauth.GetUserContextKey(), "stranger@test.com")
+	_, err = srv.callTool(strangerCtx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "materialize.catalog"}})
+	require.ErrorIs(t, err, mcpserver.ErrToolNotFound)
+	assert.False(t, called.Load(), "a caller with no view must not reach the backend")
+}
+
 func TestPerUserTokenBackendIsolation(t *testing.T) {
 	sharedMock := newMockTransport([]mcp.Tool{{Name: "query"}})
 	tokenMock := newMockTransport([]mcp.Tool{{Name: "catalog"}})
@@ -414,7 +460,7 @@ func TestToolRouting(t *testing.T) {
 
 	srv := newTestServer(t, backends)
 
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	result, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name: "postgres.query",
@@ -425,71 +471,244 @@ func TestToolRouting(t *testing.T) {
 	assert.Len(t, result.Content, 1)
 }
 
-func TestGatewayCallsToolsAsTheCaller(t *testing.T) {
+func toolHandlerAs(srv *Server, userEmail string) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		srv.ensureView(ctx, userEmail)
+		return srv.callTool(context.WithValue(ctx, oauth.GetUserContextKey(), userEmail), req)
+	}
+}
+
+func whoamiBackend(t *testing.T) string {
+	t.Helper()
 	backendMCP := mcpserver.NewMCPServer("backend", "1.0.0", mcpserver.WithToolCapabilities(true))
 	backendMCP.AddTool(mcp.NewTool("whoami"), func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText(req.Header.Get("X-User")), nil
 	})
 	backend := httptest.NewServer(mcpserver.NewStreamableHTTPServer(backendMCP, mcpserver.WithEndpointPath("/")))
 	t.Cleanup(backend.Close)
+	return backend.URL + "/"
+}
 
-	for _, gatewayTransport := range []config.MCPClientType{config.MCPClientTypeStreamable, config.MCPClientTypeSSE} {
-		t.Run(string(gatewayTransport), func(t *testing.T) {
-			srv := NewServer(ServerConfig{
-				Name:          "gw",
-				TransportType: gatewayTransport,
-				Backends: map[string]*config.MCPClientConfig{"pg": {
-					TransportType:    config.MCPClientTypeStreamable,
-					URL:              backend.URL + "/",
-					Headers:          map[string]string{"X-User": "{{email}}"},
-					HeadersNeedEmail: map[string]bool{"X-User": true},
-				}},
-				Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
-				CreateTransport: client.DefaultTransportCreator,
+type testGateway struct {
+	url     string
+	methods func() []string
+}
+
+// startGateway serves a gateway over a shared docs backend and two token-gated
+// backends, linear and hubspot, each answering whoami with the caller's email.
+func startGateway(t *testing.T, transportType config.MCPClientType, cacheTTL time.Duration, connected func(userEmail, backendName string) bool) testGateway {
+	t.Helper()
+	backend := func(requiresUserToken bool) *config.MCPClientConfig {
+		return &config.MCPClientConfig{
+			TransportType:     config.MCPClientTypeStreamable,
+			URL:               whoamiBackend(t),
+			Headers:           map[string]string{"X-User": "{{email}}"},
+			HeadersNeedEmail:  map[string]bool{"X-User": true},
+			RequiresUserToken: requiresUserToken,
+		}
+	}
+	srv := NewServer(ServerConfig{
+		Name:          "gw",
+		TransportType: transportType,
+		Backends: map[string]*config.MCPClientConfig{
+			"docs":    backend(false),
+			"linear":  backend(true),
+			"hubspot": backend(true),
+		},
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: cacheTTL},
+		GetUserToken: func(_ context.Context, userEmail, backendName string, _ *config.MCPClientConfig) (string, error) {
+			if connected(userEmail, backendName) {
+				return "token", nil
+			}
+			return "", storage.ErrUserTokenNotFound
+		},
+		CreateTransport: client.DefaultTransportCreator,
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	var mu sync.Mutex
+	var methods []string
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			var msg struct {
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(body, &msg)
+			mu.Lock()
+			methods = append(methods, msg.Method)
+			mu.Unlock()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		ctx := context.WithValue(r.Context(), oauth.GetUserContextKey(), r.Header.Get("X-Test-User"))
+		srv.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(front.Close)
+
+	return testGateway{url: front.URL, methods: func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(methods)
+	}}
+}
+
+type gatewayClient struct {
+	name      string
+	transport config.MCPClientType
+	modern    bool
+}
+
+var gatewayClients = []gatewayClient{
+	{name: "sessionless", transport: config.MCPClientTypeStreamable, modern: true},
+	{name: "session", transport: config.MCPClientTypeStreamable},
+	{name: "sse", transport: config.MCPClientTypeSSE},
+}
+
+func (gc gatewayClient) connect(t *testing.T, gw testGateway, userEmail string) *mcpclient.Client {
+	t.Helper()
+	ctx := context.Background()
+	headers := map[string]string{"X-Test-User": userEmail}
+	var tr transport.Interface
+	var err error
+	if gc.transport == config.MCPClientTypeSSE {
+		tr, err = transport.NewSSE(gw.url+"/gw/sse", transport.WithHeaders(headers))
+	} else {
+		trOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
+		if !gc.modern {
+			//lint:ignore SA1019 session-based clients still receive notifications on the GET stream
+			trOpts = append(trOpts, transport.WithContinuousListening()) //nolint:staticcheck
+		}
+		tr, err = transport.NewStreamableHTTP(gw.url+"/gw/", trOpts...)
+	}
+	require.NoError(t, err)
+
+	var opts []mcpclient.ClientOption
+	if !gc.modern {
+		opts = append(opts, mcpclient.WithProtocolVersion(mcp.LATEST_LEGACY_PROTOCOL_VERSION))
+	}
+	c := mcpclient.NewClient(tr, opts...)
+	require.NoError(t, c.Start(ctx))
+	t.Cleanup(func() { _ = c.Close() })
+	_, err = c.Initialize(ctx, mcp.InitializeRequest{Params: mcp.InitializeParams{
+		ClientInfo: mcp.Implementation{Name: "test", Version: "1"},
+	}})
+	require.NoError(t, err)
+	return c
+}
+
+func listToolNames(t *testing.T, c *mcpclient.Client) []string {
+	t.Helper()
+	result, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+	require.NoError(t, err)
+	names := make([]string, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		names = append(names, tool.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func callWhoami(c *mcpclient.Client, tool string) (string, error) {
+	result, err := c.CallTool(context.Background(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: tool}})
+	if err != nil {
+		return "", err
+	}
+	if len(result.Content) != 1 {
+		return "", fmt.Errorf("unexpected content: %v", result.Content)
+	}
+	return result.Content[0].(mcp.TextContent).Text, nil
+}
+
+func TestGatewayIsolatesUsers(t *testing.T) {
+	connected := map[string]string{"alice@vori.com": "linear", "bob@vori.com": "hubspot"}
+	for _, gc := range gatewayClients {
+		t.Run(gc.name, func(t *testing.T) {
+			gw := startGateway(t, gc.transport, time.Minute, func(userEmail, backendName string) bool {
+				return connected[userEmail] == backendName
 			})
-			srv.Start()
-			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+			alice, bob := gc.connect(t, gw, "alice@vori.com"), gc.connect(t, gw, "bob@vori.com")
 
-			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), oauth.GetUserContextKey(), r.Header.Get("X-Test-User"))
-				srv.Handler().ServeHTTP(w, r.WithContext(ctx))
-			}))
-			t.Cleanup(front.Close)
+			assert.Equal(t, []string{"docs.whoami", "hubspot.whoami"}, listToolNames(t, bob))
 
-			ctx := context.Background()
-			connect := func(user string) *mcpclient.Client {
-				headers := map[string]string{"X-Test-User": user}
-				var tr transport.Interface
-				var err error
-				if gatewayTransport == config.MCPClientTypeSSE {
-					tr, err = transport.NewSSE(front.URL+"/gw/sse", transport.WithHeaders(headers))
-				} else {
-					tr, err = transport.NewStreamableHTTP(front.URL+"/gw/", transport.WithHTTPHeaders(headers))
+			who, err := callWhoami(alice, "linear.whoami")
+			require.NoError(t, err, "a call needs no prior tools/list")
+			assert.Equal(t, "alice@vori.com", who)
+
+			assert.Equal(t, []string{"docs.whoami", "linear.whoami"}, listToolNames(t, alice))
+
+			for c, want := range map[*mcpclient.Client]string{alice: "alice@vori.com", bob: "bob@vori.com"} {
+				who, err := callWhoami(c, "docs.whoami")
+				require.NoError(t, err)
+				assert.Equal(t, want, who)
+			}
+			who, err = callWhoami(bob, "hubspot.whoami")
+			require.NoError(t, err)
+			assert.Equal(t, "bob@vori.com", who)
+
+			_, err = callWhoami(alice, "hubspot.whoami")
+			assert.ErrorContains(t, err, "not found")
+			_, err = callWhoami(bob, "linear.whoami")
+			assert.ErrorContains(t, err, "not found")
+		})
+	}
+}
+
+func TestSessionlessClientSkipsInitialize(t *testing.T) {
+	gw := startGateway(t, config.MCPClientTypeStreamable, time.Minute, func(string, string) bool { return false })
+	c := gatewayClients[0].connect(t, gw, "alice@vori.com")
+
+	assert.Equal(t, []string{"docs.whoami"}, listToolNames(t, c))
+	assert.Empty(t, c.GetSessionId())
+	assert.Equal(t, []string{"server/discover", "tools/list"}, gw.methods())
+}
+
+func TestClientsRelistWhenTheirToolsChange(t *testing.T) {
+	for _, gc := range gatewayClients {
+		t.Run(gc.name, func(t *testing.T) {
+			var bobConnected atomic.Bool
+			gw := startGateway(t, gc.transport, 50*time.Millisecond, func(userEmail, backendName string) bool {
+				return backendName == "linear" && (userEmail == "alice@vori.com" || bobConnected.Load())
+			})
+			alice, bob := gc.connect(t, gw, "alice@vori.com"), gc.connect(t, gw, "bob@vori.com")
+			require.Equal(t, []string{"docs.whoami", "linear.whoami"}, listToolNames(t, alice))
+			require.Equal(t, []string{"docs.whoami"}, listToolNames(t, bob))
+
+			relisted := make(chan struct{}, 16)
+			bob.OnNotification(func(n mcp.JSONRPCNotification) {
+				if n.Method == mcp.MethodNotificationToolsListChanged {
+					relisted <- struct{}{}
 				}
+			})
+			if gc.modern {
+				stop, err := bob.ListenAsync(context.Background(), mcp.SubscriptionFilter{ToolsListChanged: true}, nil)
 				require.NoError(t, err)
-				c := mcpclient.NewClient(tr)
-				require.NoError(t, c.Start(ctx))
-				t.Cleanup(func() { _ = c.Close() })
-				_, err = c.Initialize(ctx, mcp.InitializeRequest{Params: mcp.InitializeParams{
-					ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-					ClientInfo:      mcp.Implementation{Name: "test", Version: "1"},
-				}})
-				require.NoError(t, err)
-				return c
+				t.Cleanup(stop)
 			}
 
-			alice, bob := connect("alice@vori.com"), connect("bob@vori.com")
-			for _, c := range []*mcpclient.Client{alice, bob} {
-				_, err := c.ListTools(ctx, mcp.ListToolsRequest{})
-				require.NoError(t, err)
+			time.Sleep(200 * time.Millisecond)
+			_, err := callWhoami(bob, "docs.whoami")
+			require.NoError(t, err)
+			select {
+			case <-relisted:
+				t.Fatal("unchanged tools must not ask clients to re-list")
+			case <-time.After(300 * time.Millisecond):
 			}
 
-			for user, c := range map[string]*mcpclient.Client{"alice@vori.com": alice, "bob@vori.com": bob} {
-				result, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "pg.whoami"}})
-				require.NoError(t, err)
-				require.Len(t, result.Content, 1)
-				assert.Equal(t, user, result.Content[0].(mcp.TextContent).Text)
+			bobConnected.Store(true)
+			time.Sleep(100 * time.Millisecond)
+			_, err = callWhoami(bob, "docs.whoami")
+			require.NoError(t, err)
+			select {
+			case <-relisted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("expected a tools/list_changed notification")
 			}
+			assert.Equal(t, []string{"docs.whoami", "linear.whoami"}, listToolNames(t, bob))
 		})
 	}
 }
@@ -979,7 +1198,7 @@ func TestEvictConnOnCallToolFailure(t *testing.T) {
 	}
 	srv := newTestServer(t, backends)
 
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 
 	// First call fails with transport error — connection should be evicted
 	_, err := handler(context.Background(), mcp.CallToolRequest{
@@ -1081,7 +1300,7 @@ func TestRetryOnAuthErrorToolCall(t *testing.T) {
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
-	handler := srv.makeToolHandler("user@test.com", "help-docs")
+	handler := toolHandlerAs(srv, "user@test.com")
 	result, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "help-docs.search"},
 	})
@@ -1223,7 +1442,7 @@ func TestShutdownDuringActiveToolCall(t *testing.T) {
 	require.NoError(t, err)
 
 	// Start a tool call that blocks
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	type callResult struct {
 		result *mcp.CallToolResult
 		err    error
@@ -1377,167 +1596,6 @@ func (s staticTokenSource) Token() (*oauth2.Token, error) {
 	return &oauth2.Token{AccessToken: s.token, TokenType: "Bearer"}, nil
 }
 
-type fakeSessionWithTools struct {
-	id            string
-	mu            sync.Mutex
-	tools         map[string]mcpserver.ServerTool
-	notifications chan mcp.JSONRPCNotification
-}
-
-func (f *fakeSessionWithTools) Initialize()       {}
-func (f *fakeSessionWithTools) Initialized() bool { return true }
-func (f *fakeSessionWithTools) NotificationChannel() chan<- mcp.JSONRPCNotification {
-	if f.notifications == nil {
-		return make(chan<- mcp.JSONRPCNotification, 1)
-	}
-	return f.notifications
-}
-func (f *fakeSessionWithTools) SessionID() string { return f.id }
-func (f *fakeSessionWithTools) GetSessionTools() map[string]mcpserver.ServerTool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make(map[string]mcpserver.ServerTool, len(f.tools))
-	for k, v := range f.tools {
-		out[k] = v
-	}
-	return out
-}
-func (f *fakeSessionWithTools) SetSessionTools(tools map[string]mcpserver.ServerTool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.tools = make(map[string]mcpserver.ServerTool, len(tools))
-	for k, v := range tools {
-		f.tools[k] = v
-	}
-}
-
-func TestEnsureSessionToolsRehydratesAfterRestart(t *testing.T) {
-	backends := map[string]*mockTransport{
-		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
-	}
-	srv := newTestServer(t, backends)
-
-	// Simulate an ephemeral session created for a request that carries a
-	// stale session ID (pod restart scenario — session is unregistered
-	// and GetSessionTools returns empty).
-	stale := &fakeSessionWithTools{id: "mcp-session-stale"}
-	ctx := srv.mcpServer.WithContext(context.Background(), stale)
-
-	srv.populateToolsFromContext(ctx)
-
-	tools := stale.GetSessionTools()
-	require.NotEmpty(t, tools, "tools should be repopulated for stale session")
-	_, ok := tools["postgres"+srv.delimiter+"query"]
-	assert.True(t, ok, "expected namespaced tool to be present after rehydration")
-}
-
-func newSessionSyncTestServer(t *testing.T, backends map[string]*mockTransport) *Server {
-	t.Helper()
-	backendConfigs := make(map[string]*config.MCPClientConfig, len(backends))
-	for name := range backends {
-		backendConfigs[name] = &config.MCPClientConfig{
-			TransportType: config.MCPClientTypeSSE,
-			URL:           "http://localhost/" + name,
-		}
-	}
-	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 50 * time.Millisecond},
-		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
-			return "", nil
-		},
-		CreateTransport: func(conf *config.MCPClientConfig) (client.MCPClientInterface, error) {
-			for name, mock := range backends {
-				if conf.URL == "http://localhost/"+name {
-					return mock, nil
-				}
-			}
-			return nil, fmt.Errorf("unknown backend")
-		},
-		BaseURL:   "http://localhost:8080",
-		Delimiter: "__",
-	})
-	srv.Start()
-	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-	return srv
-}
-
-func registerSyncTestSession(t *testing.T, srv *Server, id string) (*fakeSessionWithTools, context.Context) {
-	t.Helper()
-	session := &fakeSessionWithTools{id: id, notifications: make(chan mcp.JSONRPCNotification, 4)}
-	ctx := srv.mcpServer.WithContext(context.Background(), session)
-	require.NoError(t, srv.mcpServer.RegisterSession(ctx, session))
-	return session, ctx
-}
-
-func sessionToolNames(session *fakeSessionWithTools) []string {
-	names := make([]string, 0)
-	for name := range session.GetSessionTools() {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func TestSessionPicksUpToolsAddedAfterItConnected(t *testing.T) {
-	zoho := &mockTransport{tools: []mcp.Tool{{Name: "Get_an_Item"}}}
-	srv := newSessionSyncTestServer(t, map[string]*mockTransport{"zoho": zoho})
-	session, ctx := registerSyncTestSession(t, srv, "long-lived")
-	require.Equal(t, []string{"zoho__Get_an_Item"}, sessionToolNames(session))
-
-	zoho.mu.Lock()
-	zoho.tools = []mcp.Tool{{Name: "Get_an_Item"}, {Name: "List_all_Items"}}
-	zoho.mu.Unlock()
-	time.Sleep(100 * time.Millisecond)
-
-	srv.queueSessionRefresh(ctx)
-
-	select {
-	case n := <-session.notifications:
-		assert.Equal(t, mcp.MethodNotificationToolsListChanged, n.Method)
-	case <-time.After(5 * time.Second):
-		t.Fatal("expected a tools/list_changed notification")
-	}
-	assert.Equal(t, []string{"zoho__Get_an_Item", "zoho__List_all_Items"}, sessionToolNames(session))
-}
-
-func TestSessionSyncWithUnchangedToolsSendsNoNotification(t *testing.T) {
-	zoho := &mockTransport{tools: []mcp.Tool{{Name: "Get_an_Item"}}}
-	srv := newSessionSyncTestServer(t, map[string]*mockTransport{"zoho": zoho})
-	session, ctx := registerSyncTestSession(t, srv, "unchanged")
-	time.Sleep(100 * time.Millisecond)
-
-	srv.syncSessionTools(ctx, session)
-
-	assert.Empty(t, session.notifications)
-	assert.Equal(t, []string{"zoho__Get_an_Item"}, sessionToolNames(session))
-}
-
-func TestSessionSyncKeepsToolsOfABackendMissingFromDiscovery(t *testing.T) {
-	zoho := &mockTransport{tools: []mcp.Tool{{Name: "Get_an_Item"}}}
-	hubspot := &mockTransport{tools: []mcp.Tool{{Name: "search"}}}
-	srv := newSessionSyncTestServer(t, map[string]*mockTransport{"zoho": zoho, "hubspot": hubspot})
-	session, ctx := registerSyncTestSession(t, srv, "partial")
-	require.Equal(t, []string{"hubspot__search", "zoho__Get_an_Item"}, sessionToolNames(session))
-
-	zoho.mu.Lock()
-	zoho.listToolsErr = errors.New("authorization required")
-	zoho.mu.Unlock()
-	hubspot.mu.Lock()
-	hubspot.tools = []mcp.Tool{{Name: "search"}, {Name: "get"}}
-	hubspot.mu.Unlock()
-	srv.cacheMu.Lock()
-	srv.sharedCache = nil
-	clear(srv.lastGood)
-	srv.cacheMu.Unlock()
-
-	srv.syncSessionTools(ctx, session)
-
-	assert.Equal(t, []string{"hubspot__get", "hubspot__search", "zoho__Get_an_Item"}, sessionToolNames(session))
-}
-
 func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
 	backendConfigs := map[string]*config.MCPClientConfig{
 		"mintlify": {
@@ -1645,7 +1703,7 @@ func TestRetryOnSessionInvalidation(t *testing.T) {
 			srv.Start()
 			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
-			handler := srv.makeToolHandler("user@test.com", "datadog")
+			handler := toolHandlerAs(srv, "user@test.com")
 			result, err := handler(context.Background(), mcp.CallToolRequest{
 				Params: mcp.CallToolParams{Name: "datadog.search"},
 			})
@@ -1677,7 +1735,7 @@ func TestNoRetryOnNonSessionError(t *testing.T) {
 	}
 	srv := newTestServer(t, map[string]*mockTransport{"datadog": mock})
 
-	handler := srv.makeToolHandler("user@test.com", "datadog")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "datadog.search"},
 	})
@@ -1963,7 +2021,7 @@ func TestBuiltinBackendCarriesUserEmail(t *testing.T) {
 	require.Len(t, tools["gtm"], 1)
 	assert.Equal(t, "create_onboarding_link", tools["gtm"][0].Name)
 
-	handler := srv.makeToolHandler("ae@vori.com", "gtm")
+	handler := toolHandlerAs(srv, "ae@vori.com")
 	req := mcp.CallToolRequest{}
 	req.Params.Name = PrefixToolName("gtm", "create_onboarding_link", srv.delimiter)
 	_, err = handler(context.Background(), req)
@@ -2080,7 +2138,7 @@ func TestToolCallRecordedOnTheRequestLogContext(t *testing.T) {
 	})
 
 	ctx, rc := reqlog.Inject(context.Background())
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2104,7 +2162,7 @@ func TestToolCallReportsAToolReportedFailure(t *testing.T) {
 	})
 
 	ctx, rc := reqlog.Inject(context.Background())
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2126,7 +2184,7 @@ func TestToolCallReportsATransportFailure(t *testing.T) {
 	})
 
 	ctx, rc := reqlog.Inject(context.Background())
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2154,7 +2212,7 @@ func TestRetriedToolCallIsReportedOnce(t *testing.T) {
 	})
 
 	readLogs := testutil.CaptureLogs(t)
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2170,7 +2228,7 @@ func TestToolCallIsLoggedWithoutARequestLogContext(t *testing.T) {
 	})
 
 	readLogs := testutil.CaptureLogs(t)
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2197,7 +2255,7 @@ func TestToolCallLogsTheSizeOfItsResult(t *testing.T) {
 			},
 		},
 	})
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	request := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"}}
 	wantBytes := len(`{"content":[{"type":"text","text":"3 rows"}]}`)
 
@@ -2222,7 +2280,7 @@ func TestToolCallLineCarriesTheRequestBody(t *testing.T) {
 	})
 
 	readLogs := testutil.CaptureLogs(t)
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      "postgres" + srv.delimiter + "query",
@@ -2247,7 +2305,7 @@ func TestFailedToolCallLineSaysWhy(t *testing.T) {
 	})
 
 	readLogs := testutil.CaptureLogs(t)
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(context.Background(), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2267,10 +2325,10 @@ func TestToolCallCarriesTheSessionID(t *testing.T) {
 		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
 	})
 
-	session := &fakeSessionWithTools{id: "mcp-session-abc"}
+	session := fakeSession{id: "mcp-session-abc"}
 	ctx, rc := reqlog.Inject(srv.mcpServer.WithContext(context.Background(), session))
 
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	_, err := handler(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"},
 	})
@@ -2279,4 +2337,31 @@ func TestToolCallCarriesTheSessionID(t *testing.T) {
 	tool, ok := rc.TakeTool()
 	require.True(t, ok)
 	assert.Equal(t, "mcp-session-abc", tool.SessionID)
+}
+
+type fakeSession struct{ id string }
+
+func (f fakeSession) Initialize()       {}
+func (f fakeSession) Initialized() bool { return true }
+func (f fakeSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
+	return make(chan mcp.JSONRPCNotification, 1)
+}
+func (f fakeSession) SessionID() string { return f.id }
+
+func TestRegisteredToolFollowsItsDefinition(t *testing.T) {
+	pg := newMockTransport([]mcp.Tool{{Name: "query", Description: "old"}})
+	srv := newStaleToolsTestServer(t, map[string]*mockTransport{"postgres": pg},
+		&config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 50 * time.Millisecond})
+	ctx := context.Background()
+
+	srv.refreshView(ctx, "alice@test.com")
+	require.Equal(t, "old", srv.mcpServer.GetTool("postgres.query").Tool.Description)
+
+	pg.mu.Lock()
+	pg.tools = []mcp.Tool{{Name: "query", Description: "new"}}
+	pg.mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	srv.refreshView(ctx, "alice@test.com")
+
+	assert.Equal(t, "new", srv.mcpServer.GetTool("postgres.query").Tool.Description)
 }
