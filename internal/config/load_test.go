@@ -478,6 +478,25 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 			},
 			expectError: "aggregate server mcp cannot have options.toolFilter (set options.toolFilter on each backend server",
 		},
+		{
+			name:   "aggregate_supersedes_with_default_servers",
+			config: supersedesConfig(nil, map[string][]string{"notion": {"notion-read-only"}}),
+		},
+		{
+			name:        "aggregate_supersedes_server_outside_the_aggregate",
+			config:      supersedesConfig([]string{"notion"}, map[string][]string{"notion": {"notion-read-only"}}),
+			expectError: "supersedes names 'notion-read-only', which is not one of its servers",
+		},
+		{
+			name:        "aggregate_supersedes_itself",
+			config:      supersedesConfig(nil, map[string][]string{"notion": {"notion"}}),
+			expectError: "'notion' cannot supersede itself",
+		},
+		{
+			name:        "aggregate_supersedes_chain",
+			config:      supersedesConfig(nil, map[string][]string{"notion": {"notion-read-only"}, "notion-read-only": {"notion"}}),
+			expectError: "cannot be superseded because it supersedes other servers",
+		},
 	}
 
 	for _, tt := range tests {
@@ -491,6 +510,22 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+func supersedesConfig(servers []string, supersedes map[string][]string) *Config {
+	return &Config{
+		Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+		MCPServers: map[string]*MCPClientConfig{
+			"notion":           {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3001"},
+			"notion-read-only": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3002"},
+			"mcp": {
+				Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+				Discovery:  &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
+				Servers:    servers,
+				Supersedes: supersedes,
+			},
+		},
 	}
 }
 

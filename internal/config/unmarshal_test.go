@@ -566,7 +566,8 @@ func TestMCPClientConfig_AggregateExplicitFields(t *testing.T) {
 		"discovery": {
 			"timeout": "30s",
 			"cacheTtl": "5m"
-		}
+		},
+		"supersedes": {"notion": ["notion-read-only"]}
 	}`
 
 	var cfg MCPClientConfig
@@ -576,6 +577,7 @@ func TestMCPClientConfig_AggregateExplicitFields(t *testing.T) {
 	assert.Equal(t, ServerTypeAggregate, cfg.Type)
 	assert.Equal(t, MCPClientTypeStreamable, cfg.TransportType)
 	assert.Equal(t, []string{"postgres"}, cfg.Servers)
+	assert.Equal(t, map[string][]string{"notion": {"notion-read-only"}}, cfg.Supersedes)
 	require.NotNil(t, cfg.Discovery)
 	assert.Equal(t, 30*time.Second, cfg.Discovery.Timeout)
 	assert.Equal(t, 5*time.Minute, cfg.Discovery.CacheTTL)

@@ -176,6 +176,24 @@ Configure discovery behavior with the `discovery` field.
 
 `timeout` is how long to wait for a backend during tool discovery (default: 10s). `cacheTtl` is how long discovered tools are cached (default: 60s). `maxConnsPerUser` limits concurrent backend connections per user (default: 0, unlimited).
 
+### Superseded backends
+
+An aggregate can offer a full backend that each user connects with their own token next to a read-only backend on a shared credential. Set `supersedes` to show each user only one of them.
+
+```json
+{
+  "all": {
+    "type": "aggregate",
+    "servers": ["notion", "notion-read-only"],
+    "supersedes": {
+      "notion": ["notion-read-only"]
+    }
+  }
+}
+```
+
+Once a user's `notion` discovery returns tools, that user stops seeing `notion-read-only` tools, and calls to them fail as unknown tools. Users without a Notion token keep `notion-read-only`, and so does a user whose Notion discovery fails with no recent tools to fall back on. Every name in `supersedes` must be one of the aggregate's servers, and a superseded backend cannot supersede others.
+
 ### Transport type
 
 Aggregate servers default to SSE. Set `"transportType": "streamable-http"` if your client prefers that protocol.
