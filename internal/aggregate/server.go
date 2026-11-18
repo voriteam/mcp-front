@@ -18,7 +18,6 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/client"
 	"github.com/stainless-api/mcp-front/internal/config"
-	"github.com/stainless-api/mcp-front/internal/httputil"
 	"github.com/stainless-api/mcp-front/internal/log"
 	"github.com/stainless-api/mcp-front/internal/oauth"
 	"github.com/stainless-api/mcp-front/internal/reqlog"
@@ -31,12 +30,6 @@ const (
 	connIdleTimeout     = 5 * time.Minute
 	connCleanupInterval = 1 * time.Minute
 
-	// sessionIdleTTL bounds how long a streamable-http session's per-session
-	// transport state (notably its per-session tool map) is retained after the
-	// session's last request before mcp-go's sweeper reaps it. It comfortably
-	// exceeds a live client's inter-request idle gap so active sessions are not
-	// churned, while keeping retained sessions proportional to recent activity
-	// rather than growing without bound.
 	sessionIdleTTL = 10 * time.Minute
 
 	// staleToolsTTL bounds how long a failed backend may be served from its last
@@ -51,7 +44,7 @@ const (
 	// long the backend configures its own timeout.
 	maxBackendDiscoveryTimeout = 30 * time.Second
 
-	sessionRefreshQueueSize = 256
+	viewRefreshQueueSize = 256
 )
 
 var ErrUserConnLimitExceeded = fmt.Errorf("user connection limit exceeded")
@@ -78,6 +71,21 @@ type conn struct {
 type cachedTools struct {
 	tools   map[string][]mcp.Tool // backendName -> filtered tools
 	expires time.Time
+}
+
+// userView is the tool list one user is shown, built from the discoveries it
+// references. A nil user cache means the gateway has no token-gated backends.
+type userView struct {
+	shared *cachedTools
+	user   *cachedTools
+	tools  map[string]mcp.Tool // namespaced name -> tool as listed
+}
+
+func (v *userView) expires() time.Time {
+	if v.user != nil && v.user.expires.Before(v.shared.expires) {
+		return v.user.expires
+	}
+	return v.shared.expires
 }
 
 // backendTools is the most recent successful discovery for a single backend.
@@ -119,7 +127,11 @@ type Server struct {
 	sharedCache    *cachedTools            // tools from backends needing no user token
 	userCache      map[string]*cachedTools // token-gated tools, keyed by userEmail
 	lastGood       map[lastGoodKey]*backendTools
+	views          map[string]*userView
 	discoveryGroup singleflight.Group
+
+	registryMu sync.Mutex
+	registered map[string]struct{}
 
 	connMu    sync.RWMutex
 	conns     map[connKey]*conn
@@ -129,15 +141,15 @@ type Server struct {
 	mcpServer *mcpserver.MCPServer
 	transport mcpTransport
 
-	refreshCh    chan sessionRefresh
+	refreshCh    chan viewRefresh
 	stopCleanup  chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
 }
 
-type sessionRefresh struct {
-	ctx     context.Context
-	session mcpserver.ClientSession
+type viewRefresh struct {
+	ctx       context.Context
+	userEmail string
 }
 
 type ServerConfig struct {
@@ -186,44 +198,35 @@ func NewServer(cfg ServerConfig) *Server {
 		baseURL:             cfg.BaseURL,
 		userCache:           make(map[string]*cachedTools),
 		lastGood:            make(map[lastGoodKey]*backendTools),
+		views:               make(map[string]*userView),
+		registered:          make(map[string]struct{}),
 		conns:               make(map[connKey]*conn),
-		refreshCh:           make(chan sessionRefresh, sessionRefreshQueueSize),
+		refreshCh:           make(chan viewRefresh, viewRefreshQueueSize),
 		stopCleanup:         make(chan struct{}),
 	}
 
 	hooks := &mcpserver.Hooks{}
-	hooks.AddOnRegisterSession(s.onRegisterSession)
 	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcp.ListToolsRequest) {
-		if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
-			s.syncSessionTools(ctx, session)
-		}
+		s.refreshView(ctx, userFromContext(ctx))
 	})
 	hooks.AddBeforeCallTool(func(ctx context.Context, _ any, _ *mcp.CallToolRequest) {
-		s.populateToolsFromContext(ctx)
-		s.queueSessionRefresh(ctx)
+		s.ensureView(ctx, userFromContext(ctx))
 	})
 
 	s.mcpServer = mcpserver.NewMCPServer(cfg.Name, "1.0.0",
 		mcpserver.WithHooks(hooks),
 		mcpserver.WithToolCapabilities(true),
+		mcpserver.WithToolFilter(s.filterTools),
 	)
 
 	switch cfg.TransportType {
 	case config.MCPClientTypeStreamable:
-		// StatelessGeneratingSessionIdManager mints fresh UUIDs for
-		// `initialize` requests and validates subsequent IDs by format
-		// only. A stale ID surviving a pod restart passes validation
-		// instead of 400-ing, and the before-tool hooks above rebuild
-		// the per-session tool list lazily for those rehydrated sessions.
+		// A stale session ID surviving a pod restart passes format-only
+		// validation instead of 404-ing. Clients mint a session on every
+		// initialize and rarely send DELETE, so idle ones are reaped.
 		streamable := mcpserver.NewStreamableHTTPServer(s.mcpServer,
 			mcpserver.WithEndpointPath("/"+cfg.Name+"/"),
 			mcpserver.WithSessionIdManager(&mcpserver.StatelessGeneratingSessionIdManager{}),
-			// Reap idle sessions' per-session state. Clients mint a fresh session
-			// on every `initialize` and rarely send DELETE, so without a TTL the
-			// per-session tool maps accumulate without bound and the process
-			// leaks memory to its limit. Swept sessions are rebuilt lazily from
-			// cached discovery on their next request (see the before-tool hooks
-			// above), so reaping idle ones is safe.
 			mcpserver.WithSessionIdleTTL(sessionIdleTTL),
 		)
 		s.transport = streamable
@@ -245,7 +248,7 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Handler() http.Handler {
-	return httputil.RequireSessionProtocol(s.transport)
+	return s.transport
 }
 
 // Name returns the aggregate server's name (used as a URL path prefix).
@@ -294,147 +297,48 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func (s *Server) onRegisterSession(ctx context.Context, session mcpserver.ClientSession) {
-	s.syncSessionTools(ctx, session)
+func userFromContext(ctx context.Context) string {
+	if userEmail, _ := oauth.GetUserFromContext(ctx); userEmail != "" {
+		return userEmail
+	}
+	return "anonymous"
 }
 
-// ensureSessionTools populates per-session tools if they are missing, so
-// ephemeral sessions created for requests carrying a stale session ID (e.g.
-// after a pod restart) get their tool list rebuilt from the aggregate's cached
-// discovery instead of appearing empty.
-func (s *Server) ensureSessionTools(ctx context.Context, session mcpserver.ClientSession) {
-	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
-	if ok && len(sessionWithTools.GetSessionTools()) > 0 {
-		return
+// filterTools narrows the registered tools to the caller's view. mcp-go runs it
+// on every tools/list and tools/call, so it reads only the cached view.
+func (s *Server) filterTools(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+	s.cacheMu.RLock()
+	view := s.views[userFromContext(ctx)]
+	s.cacheMu.RUnlock()
+	if view == nil {
+		return nil
 	}
-	s.syncSessionTools(ctx, session)
+
+	visible := make([]mcp.Tool, 0, min(len(tools), len(view.tools)))
+	for _, tool := range tools {
+		if own, ok := view.tools[tool.Name]; ok {
+			visible = append(visible, own)
+		}
+	}
+	return visible
 }
 
-func (s *Server) syncSessionTools(ctx context.Context, session mcpserver.ClientSession) {
-	sessionWithTools, ok := session.(mcpserver.SessionWithTools)
-	if !ok {
-		log.LogErrorWithFields("aggregate", "Session does not support per-session tools", map[string]any{
-			"server":    s.name,
-			"sessionID": session.SessionID(),
-		})
+// ensureView gives a tool call a view to check against, waiting on discovery
+// only when the user has none.
+func (s *Server) ensureView(ctx context.Context, userEmail string) {
+	s.cacheMu.RLock()
+	view := s.views[userEmail]
+	s.cacheMu.RUnlock()
+
+	if view == nil {
+		s.refreshView(ctx, userEmail)
 		return
 	}
-
-	userEmail, _ := oauth.GetUserFromContext(ctx)
-	if userEmail == "" {
-		userEmail = "anonymous"
-		log.LogInfoWithFields("aggregate", "No user identity in session context, using anonymous", map[string]any{
-			"server":    s.name,
-			"sessionID": session.SessionID(),
-		})
-	}
-
-	tools, err := s.getTools(ctx, userEmail)
-	if err != nil {
-		log.LogErrorWithFields("aggregate", "Tool discovery failed", map[string]any{
-			"server": s.name,
-			"user":   userEmail,
-			"error":  err.Error(),
-		})
-		return
-	}
-
-	current := sessionWithTools.GetSessionTools()
-	fresh := s.buildSessionTools(userEmail, tools)
-	for name, tool := range current {
-		backendName, _, ok := ParseToolName(name, s.delimiter)
-		if !ok {
-			continue
+	if time.Now().After(view.expires()) {
+		select {
+		case s.refreshCh <- viewRefresh{ctx: context.WithoutCancel(ctx), userEmail: userEmail}:
+		default:
 		}
-		if _, discovered := tools[backendName]; !discovered {
-			fresh[name] = tool
-		}
-	}
-
-	added, removed, changed := diffSessionTools(current, fresh)
-	if added == 0 && removed == 0 && changed == 0 {
-		return
-	}
-	sessionWithTools.SetSessionTools(fresh)
-
-	if len(current) == 0 {
-		log.LogInfoWithFields("aggregate", "Session registered", map[string]any{
-			"server":    s.name,
-			"sessionID": session.SessionID(),
-			"user":      userEmail,
-			"toolCount": len(fresh),
-		})
-		return
-	}
-
-	log.LogInfoWithFields("aggregate", "Session tools changed", map[string]any{
-		"server":    s.name,
-		"sessionID": session.SessionID(),
-		"user":      userEmail,
-		"toolCount": len(fresh),
-		"added":     added,
-		"removed":   removed,
-		"changed":   changed,
-	})
-	if !session.Initialized() {
-		return
-	}
-	if err := s.mcpServer.SendNotificationToSpecificClient(session.SessionID(), mcp.MethodNotificationToolsListChanged, nil); err != nil {
-		log.LogDebugWithFields("aggregate", "Could not notify session of tool list change", map[string]any{
-			"server":    s.name,
-			"sessionID": session.SessionID(),
-			"error":     err.Error(),
-		})
-	}
-}
-
-func (s *Server) buildSessionTools(userEmail string, tools map[string][]mcp.Tool) map[string]mcpserver.ServerTool {
-	sessionTools := make(map[string]mcpserver.ServerTool)
-	for backendName, backendTools := range tools {
-		for _, tool := range backendTools {
-			namespacedName := PrefixToolName(backendName, tool.Name, s.delimiter)
-			tool.Name = namespacedName
-			if s.streamlineResponses {
-				tool.Description = streamlineDescription(tool.Description)
-				if len(tool.RawInputSchema) > 0 {
-					tool.RawInputSchema = streamlineInputSchema(tool.RawInputSchema)
-				}
-			}
-			sessionTools[namespacedName] = mcpserver.ServerTool{
-				Tool:    tool,
-				Handler: s.makeToolHandler(userEmail, backendName),
-			}
-		}
-	}
-	return sessionTools
-}
-
-func diffSessionTools(current, fresh map[string]mcpserver.ServerTool) (added, removed, changed int) {
-	for name, tool := range fresh {
-		prev, ok := current[name]
-		switch {
-		case !ok:
-			added++
-		case !reflect.DeepEqual(prev.Tool, tool.Tool):
-			changed++
-		}
-	}
-	for name := range current {
-		if _, ok := fresh[name]; !ok {
-			removed++
-		}
-	}
-	return added, removed, changed
-}
-
-func (s *Server) queueSessionRefresh(ctx context.Context) {
-	session := mcpserver.ClientSessionFromContext(ctx)
-	if session == nil {
-		return
-	}
-	select {
-	case s.refreshCh <- sessionRefresh{ctx: context.WithoutCancel(ctx), session: session}:
-	default:
 	}
 }
 
@@ -445,15 +349,115 @@ func (s *Server) refreshLoop() {
 		case <-s.stopCleanup:
 			return
 		case req := <-s.refreshCh:
-			s.syncSessionTools(req.ctx, req.session)
+			s.refreshView(req.ctx, req.userEmail)
 		}
 	}
 }
 
-func (s *Server) populateToolsFromContext(ctx context.Context) {
-	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
-		s.ensureSessionTools(ctx, session)
+func (s *Server) refreshView(ctx context.Context, userEmail string) {
+	shared, err := s.getSharedTools(ctx, userEmail)
+	if err != nil {
+		s.logDiscoveryFailure(userEmail, err)
+		return
 	}
+	user, err := s.getUserTools(ctx, userEmail)
+	if err != nil {
+		s.logDiscoveryFailure(userEmail, err)
+		return
+	}
+	s.storeView(userEmail, shared, user)
+}
+
+func (s *Server) logDiscoveryFailure(userEmail string, err error) {
+	log.LogErrorWithFields("aggregate", "Tool discovery failed", map[string]any{
+		"server": s.name,
+		"user":   userEmail,
+		"error":  err.Error(),
+	})
+}
+
+func (s *Server) storeView(userEmail string, shared, user *cachedTools) {
+	s.cacheMu.RLock()
+	prev := s.views[userEmail]
+	s.cacheMu.RUnlock()
+	if prev != nil && prev.shared == shared && prev.user == user {
+		return
+	}
+
+	view := &userView{shared: shared, user: user, tools: s.presentTools(mergeTools(shared, user))}
+	s.cacheMu.Lock()
+	if cur := s.views[userEmail]; cur != prev {
+		s.cacheMu.Unlock()
+		return
+	}
+	s.views[userEmail] = view
+	s.cacheMu.Unlock()
+
+	s.syncRegistry(prev != nil && !reflect.DeepEqual(prev.tools, view.tools))
+}
+
+func (s *Server) presentTools(tools map[string][]mcp.Tool) map[string]mcp.Tool {
+	presented := make(map[string]mcp.Tool)
+	for backendName, backendTools := range tools {
+		for _, tool := range backendTools {
+			tool.Name = PrefixToolName(backendName, tool.Name, s.delimiter)
+			if s.streamlineResponses {
+				tool.Description = streamlineDescription(tool.Description)
+				if len(tool.RawInputSchema) > 0 {
+					tool.RawInputSchema = streamlineInputSchema(tool.RawInputSchema)
+				}
+			}
+			presented[tool.Name] = tool
+		}
+	}
+	return presented
+}
+
+// syncRegistry registers the union of every user's view on the shared mcp-go
+// server and tells clients to re-list when it or a user's view changed. A
+// sessionless client cannot be addressed on its own, so every client re-lists.
+func (s *Server) syncRegistry(viewChanged bool) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+
+	s.cacheMu.RLock()
+	union := make(map[string]mcp.Tool, len(s.registered))
+	for _, view := range s.views {
+		for name, tool := range view.tools {
+			if _, ok := union[name]; !ok {
+				union[name] = tool
+			}
+		}
+	}
+	s.cacheMu.RUnlock()
+
+	same := len(union) == len(s.registered)
+	for name := range union {
+		if _, ok := s.registered[name]; !ok {
+			same = false
+			break
+		}
+	}
+	if same {
+		if viewChanged {
+			s.mcpServer.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+		}
+		return
+	}
+
+	serverTools := make([]mcpserver.ServerTool, 0, len(union))
+	registered := make(map[string]struct{}, len(union))
+	for name, tool := range union {
+		serverTools = append(serverTools, mcpserver.ServerTool{Tool: tool, Handler: s.callTool})
+		registered[name] = struct{}{}
+	}
+	s.mcpServer.SetTools(serverTools...)
+	s.registered = registered
+
+	log.LogInfoWithFields("aggregate", "Registered tools changed", map[string]any{
+		"server":    s.name,
+		"toolCount": len(registered),
+	})
 }
 
 // discoveryCacheTTL returns how long a discovery result deserves to be cached.
@@ -476,13 +480,17 @@ func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]m
 	if err != nil {
 		return nil, err
 	}
+	return mergeTools(shared, user), nil
+}
 
-	// Shared and token-gated backend names are disjoint, so the union is
-	// collision-free.
-	merged := make(map[string][]mcp.Tool, len(shared)+len(user))
-	maps.Copy(merged, shared)
-	maps.Copy(merged, user)
-	return merged, nil
+// mergeTools combines shared and token-gated discoveries. Their backend names
+// are disjoint, so the union is collision-free.
+func mergeTools(shared, user *cachedTools) map[string][]mcp.Tool {
+	merged := maps.Clone(shared.tools)
+	if user != nil {
+		maps.Copy(merged, user.tools)
+	}
+	return merged
 }
 
 // getSharedTools returns tools for backends that need no user token. Their
@@ -490,22 +498,20 @@ func (s *Server) getTools(ctx context.Context, userEmail string) (map[string][]m
 // userEmail is used only to open connections during discovery (connections are
 // pooled per-user); a run where every shared backend fails is an error, since
 // it means shared infrastructure is down.
-func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+func (s *Server) getSharedTools(ctx context.Context, userEmail string) (*cachedTools, error) {
 	s.cacheMu.RLock()
-	if s.sharedCache != nil && time.Now().Before(s.sharedCache.expires) {
-		tools := s.sharedCache.tools
+	if cached := s.sharedCache; cached != nil && time.Now().Before(cached.expires) {
 		s.cacheMu.RUnlock()
-		return tools, nil
+		return cached, nil
 	}
 	s.cacheMu.RUnlock()
 
 	v, err, _ := s.discoveryGroup.Do("discover:shared", func() (any, error) {
 		// Double-check inside singleflight.
 		s.cacheMu.RLock()
-		if s.sharedCache != nil && time.Now().Before(s.sharedCache.expires) {
-			tools := s.sharedCache.tools
+		if cached := s.sharedCache; cached != nil && time.Now().Before(cached.expires) {
 			s.cacheMu.RUnlock()
-			return tools, nil
+			return cached, nil
 		}
 		s.cacheMu.RUnlock()
 
@@ -519,34 +525,35 @@ func (s *Server) getSharedTools(ctx context.Context, userEmail string) (map[stri
 			return nil, err
 		}
 
-		s.cacheMu.Lock()
-		s.sharedCache = &cachedTools{
+		cached := &cachedTools{
 			tools:   tools,
 			expires: time.Now().Add(s.discoveryCacheTTL(complete)),
 		}
+		s.cacheMu.Lock()
+		s.sharedCache = cached
 		s.cacheMu.Unlock()
-		return tools, nil
+		return cached, nil
 	})
 
 	if err != nil {
 		return nil, err
 	}
-	return v.(map[string][]mcp.Tool), nil
+	return v.(*cachedTools), nil
 }
 
 // getUserTools returns tools for the token-gated backends the user has a token
 // for. The result is cached per-user. A user with no configured tokens gets an
-// empty set — that is expected, not an error.
-func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string][]mcp.Tool, error) {
+// empty set — that is expected, not an error. A gateway with no token-gated
+// backends returns nil.
+func (s *Server) getUserTools(ctx context.Context, userEmail string) (*cachedTools, error) {
 	if len(s.userBackends) == 0 {
-		return map[string][]mcp.Tool{}, nil
+		return nil, nil
 	}
 
 	s.cacheMu.RLock()
 	if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
-		tools := cached.tools
 		s.cacheMu.RUnlock()
-		return tools, nil
+		return cached, nil
 	}
 	s.cacheMu.RUnlock()
 
@@ -554,9 +561,8 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string
 		// Double-check inside singleflight.
 		s.cacheMu.RLock()
 		if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
-			tools := cached.tools
 			s.cacheMu.RUnlock()
-			return tools, nil
+			return cached, nil
 		}
 		s.cacheMu.RUnlock()
 
@@ -569,19 +575,20 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (map[string
 			return nil, err
 		}
 
-		s.cacheMu.Lock()
-		s.userCache[userEmail] = &cachedTools{
+		cached := &cachedTools{
 			tools:   tools,
 			expires: time.Now().Add(s.discoveryCacheTTL(complete)),
 		}
+		s.cacheMu.Lock()
+		s.userCache[userEmail] = cached
 		s.cacheMu.Unlock()
-		return tools, nil
+		return cached, nil
 	})
 
 	if err != nil {
 		return nil, err
 	}
-	return v.(map[string][]mcp.Tool), nil
+	return v.(*cachedTools), nil
 }
 
 // backendsWithUserToken returns the subset of token-gated backends for which
@@ -768,37 +775,69 @@ func (s *Server) discoverBackendTools(ctx context.Context, userEmail, backendNam
 	filter := toolFilterFunc(conf)
 	filtered := make([]mcp.Tool, 0, len(tools))
 	for _, tool := range tools {
-		if filter(tool.Name) {
-			filtered = append(filtered, tool)
+		if !filter(tool.Name) {
+			continue
 		}
+		// mcp-go panics when registering a tool with invalid x-mcp-header
+		// annotations, so one bad backend definition must not reach it.
+		if err := mcp.ValidateParamHeaderAnnotations(&tool); err != nil {
+			log.LogWarnWithFields("aggregate", "Dropping tool with invalid header annotations", map[string]any{
+				"server":  s.name,
+				"backend": backendName,
+				"tool":    tool.Name,
+				"error":   err.Error(),
+			})
+			continue
+		}
+		filtered = append(filtered, tool)
 	}
 
 	return filtered, nil
 }
 
-func (s *Server) makeToolHandler(userEmail, backendName string) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		requestedName := request.Params.Name
-		_, originalName, ok := ParseToolName(requestedName, s.delimiter)
-		if !ok {
-			return nil, fmt.Errorf("invalid namespaced tool name: %s", requestedName)
-		}
-		request.Params.Name = originalName
-
-		start := time.Now()
-		var result *mcp.CallToolResult
-		err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
-			var callErr error
-			result, callErr = c.client.CallTool(ctx, request)
-			return callErr
-		})
-		s.recordToolCall(ctx, userEmail, backendName, requestedName, request, start, result, err)
-
-		if err != nil {
-			return nil, fmt.Errorf("backend %s: %w", backendName, err)
-		}
-		return result, nil
+// callTool serves every registered tool, calling the backend as the user the
+// request authenticated as.
+func (s *Server) callTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	userEmail := userFromContext(ctx)
+	requestedName := request.Params.Name
+	backendName, originalName, ok := ParseToolName(requestedName, s.delimiter)
+	if !ok || s.backends[backendName] == nil {
+		return nil, fmt.Errorf("invalid namespaced tool name: %s", requestedName)
 	}
+	request.Params.Name = originalName
+	request.Params.Meta = withoutProtocolMeta(request.Params.Meta)
+
+	start := time.Now()
+	var result *mcp.CallToolResult
+	err := s.withConnRetry(ctx, userEmail, backendName, func(ctx context.Context, c *conn) error {
+		var callErr error
+		result, callErr = c.client.CallTool(ctx, request)
+		return callErr
+	})
+	s.recordToolCall(ctx, userEmail, backendName, requestedName, request, start, result, err)
+
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: %w", backendName, err)
+	}
+	return result, nil
+}
+
+// withoutProtocolMeta drops the keys a 2026-07-28 client puts in every request.
+// They describe the client's hop to the gateway, and a backend reached on an
+// earlier protocol rejects a request whose version disagrees with its session.
+func withoutProtocolMeta(meta *mcp.Meta) *mcp.Meta {
+	if meta == nil {
+		return nil
+	}
+	stripped := *meta
+	stripped.AdditionalFields = maps.Clone(meta.AdditionalFields)
+	for _, key := range []string{mcp.MetaKeyProtocolVersion, mcp.MetaKeyClientInfo, mcp.MetaKeyClientCapabilities, mcp.MetaKeyLogLevel} {
+		delete(stripped.AdditionalFields, key)
+	}
+	if stripped.ProgressToken == nil && len(stripped.AdditionalFields) == 0 {
+		return nil
+	}
+	return &stripped
 }
 
 // recordToolCall reports a finished call, successful or not, so tool usage can
@@ -1199,8 +1238,8 @@ func (s *Server) cleanupIdleConns() {
 	}
 }
 
-// cleanupExpiredCache drops expired per-user tool caches and retained
-// discoveries so neither map grows unbounded as users come and go. The shared
+// cleanupExpiredCache drops expired per-user tool caches, retained discoveries
+// and idle users' views so none grows unbounded as users come and go. The shared
 // cache is a single entry and is simply overwritten on the next discovery, so
 // it needs no pruning.
 func (s *Server) cleanupExpiredCache() {
@@ -1217,7 +1256,18 @@ func (s *Server) cleanupExpiredCache() {
 			delete(s.lastGood, key)
 		}
 	}
+	pruned := false
+	for user, view := range s.views {
+		if now.Sub(view.expires()) > staleToolsTTL {
+			delete(s.views, user)
+			pruned = true
+		}
+	}
 	s.cacheMu.Unlock()
+
+	if pruned {
+		s.syncRegistry(false)
+	}
 }
 
 // toolFilterFunc builds a filter predicate from a backend's config.
