@@ -43,7 +43,16 @@ Fully configured:
 ```json
 {
   "mcpServers": {
-    "postgres": { "transportType": "stdio", "command": "postgres-mcp" },
+    "postgres": {
+      "transportType": "stdio",
+      "command": "postgres-mcp",
+      "options": {
+        "toolFilter": {
+          "mode": "block",
+          "list": ["drop_table"]
+        }
+      }
+    },
     "linear": { "transportType": "sse", "url": "http://localhost:9000/sse" },
     "gong": { "transportType": "stdio", "command": "gong-mcp" },
     "dev-tools": {
@@ -53,15 +62,10 @@ Fully configured:
         "timeout": "15s",
         "cacheTtl": "2m"
       },
-      "options": {
-        "toolFilter": {
-          "mode": "block",
-          "list": ["postgres.drop_table"]
-        }
-      },
       "serviceAuths": [
         {
           "type": "bearer",
+          "name": "dev",
           "tokens": ["dev-token-123"]
         }
       ]
@@ -70,7 +74,7 @@ Fully configured:
 }
 ```
 
-Fields that don't apply to aggregates: `command`, `args`, `env`, `url`, `headers`, `timeout`, `requiresUserToken`, `userAuthentication`, `inline`. Validation rejects them if present on an aggregate.
+Fields that don't apply to aggregates: `command`, `args`, `env`, `url`, `headers`, `timeout`, `requiresUserToken`, `userAuthentication`, `inline`, `options.toolFilter`. Validation rejects them if present on an aggregate.
 
 Validation rejects self-references, references to other aggregate servers, references to nonexistent servers, and server names containing `.`.
 
@@ -125,7 +129,7 @@ The aggregate endpoint uses the same middleware stack as everything else: CORS, 
 
 ### Tool filtering
 
-Tool filtering works at two levels. Per-backend `toolFilter` config on individual servers is respected during aggregation — if the postgres config blocks `drop_table`, it won't appear in the aggregated list. A `toolFilter` on the aggregate server itself filters the final namespaced tool list.
+Each backend's own `options.toolFilter` applies during aggregation. The filter matches the backend's tool names before namespacing, so if the postgres config blocks `drop_table`, `postgres.drop_table` won't appear in the aggregated list. Validation rejects a `toolFilter` on the aggregate server itself.
 
 ## What stays the same
 

@@ -916,6 +916,50 @@ func TestValidateFile_AggregateServer(t *testing.T) {
 			},
 		},
 		{
+			name: "aggregate_rejects_tool_filter",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080"
+				},
+				"mcpServers": {
+					"postgres": {
+						"transportType": "stdio",
+						"command": "pg-mcp"
+					},
+					"mcp": {
+						"type": "aggregate",
+						"servers": ["postgres"],
+						"options": {"toolFilter": {"mode": "block", "list": ["postgres.drop_table"]}}
+					}
+				}
+			}`,
+			wantErrors: []string{"toolFilter is not allowed on aggregate servers", "on each backend server"},
+		},
+		{
+			name: "aggregate_accepts_backend_tool_filter",
+			config: `{
+				"version": "v0.0.1-DEV_EDITION",
+				"proxy": {
+					"baseURL": "http://localhost:8080",
+					"addr": ":8080"
+				},
+				"mcpServers": {
+					"postgres": {
+						"transportType": "stdio",
+						"command": "pg-mcp",
+						"options": {"toolFilter": {"mode": "block", "list": ["drop_table"]}}
+					},
+					"mcp": {
+						"type": "aggregate",
+						"servers": ["postgres"]
+					}
+				}
+			}`,
+			wantErrors: nil,
+		},
+		{
 			name: "aggregate_self_reference",
 			config: `{
 				"version": "v0.0.1-DEV_EDITION",

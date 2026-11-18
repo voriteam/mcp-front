@@ -463,6 +463,21 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 			},
 			expectError: "duplicate reference 'postgres'",
 		},
+		{
+			name: "aggregate_rejects_tool_filter",
+			config: &Config{
+				Proxy: ProxyConfig{BaseURL: "https://test.example.com", Addr: ":8080"},
+				MCPServers: map[string]*MCPClientConfig{
+					"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
+					"mcp": {
+						Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+						Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
+						Options:   &Options{ToolFilter: &ToolFilterConfig{Mode: ToolFilterModeBlock, List: []string{"postgres.drop_table"}}},
+					},
+				},
+			},
+			expectError: "aggregate server mcp cannot have options.toolFilter (set options.toolFilter on each backend server",
+		},
 	}
 
 	for _, tt := range tests {

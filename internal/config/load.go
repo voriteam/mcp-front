@@ -383,6 +383,9 @@ func validateMCPServer(name string, server *MCPClientConfig) error {
 		if server.Discovery == nil {
 			return fmt.Errorf("aggregate server %s is missing discovery configuration", name)
 		}
+		if server.Options != nil && server.Options.ToolFilter != nil {
+			return fmt.Errorf("aggregate server %s cannot have options.toolFilter (set options.toolFilter on each backend server, using that backend's tool names)", name)
+		}
 		return nil
 	}
 

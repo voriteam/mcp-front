@@ -337,7 +337,7 @@ Filter which tools are exposed to clients.
 }
 ```
 
-`mode` is `"allow"` (only expose listed tools) or `"block"` (hide listed tools).
+`mode` is `"allow"` (only expose listed tools) or `"block"` (hide listed tools). Aggregate servers don't take a filter. Set one on each backend instead, listing that backend's own tool names.
 
 ### Aggregate servers
 
