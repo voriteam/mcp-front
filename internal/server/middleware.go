@@ -256,6 +256,7 @@ func NewLoggerMiddleware(prefix string) MiddlewareFunc {
 				fields["mcp.backend.name"] = tool.Backend
 				fields["mcp.session.id"] = tool.SessionID
 				fields["mcp.tool.duration_ms"] = tool.DurationMS
+				fields["mcp.tool.result.size"] = tool.ResultBytes
 				fields["mcp.tool.is_error"] = tool.Failed
 			}
 

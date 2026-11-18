@@ -2031,6 +2031,34 @@ func TestToolCallIsLoggedWithoutARequestLogContext(t *testing.T) {
 	assert.Regexp(t, `^\[CANONICAL-REQUEST-LOG\] tools/call postgres.query succeeded in \d+ms$`, lines[0]["msg"])
 }
 
+func TestToolCallLogsTheSizeOfItsResult(t *testing.T) {
+	srv := newTestServer(t, map[string]*mockTransport{
+		"postgres": {
+			tools: []mcp.Tool{{Name: "query"}},
+			callToolFn: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultText("3 rows"), nil
+			},
+		},
+	})
+	handler := srv.makeToolHandler("user@test.com", "postgres")
+	request := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"}}
+	wantBytes := len(`{"content":[{"type":"text","text":"3 rows"}]}`)
+
+	readLogs := testutil.CaptureLogs(t)
+	_, err := handler(context.Background(), request)
+	require.NoError(t, err)
+	lines := toolCallLines(readLogs())
+	require.Len(t, lines, 1)
+	assert.Equal(t, float64(wantBytes), lines[0]["mcp.tool.result.size"])
+
+	ctx, rc := reqlog.Inject(context.Background())
+	_, err = handler(ctx, request)
+	require.NoError(t, err)
+	tool, ok := rc.TakeTool()
+	require.True(t, ok)
+	assert.Equal(t, wantBytes, tool.ResultBytes)
+}
+
 func TestToolCallLineCarriesTheRequestBody(t *testing.T) {
 	srv := newTestServer(t, map[string]*mockTransport{
 		"postgres": {tools: []mcp.Tool{{Name: "query"}}},
@@ -2073,6 +2101,7 @@ func TestFailedToolCallLineSaysWhy(t *testing.T) {
 	assert.Equal(t, false, lines[0]["succeeded"])
 	assert.Equal(t, "ERROR", lines[0]["level"])
 	assert.Equal(t, "connection refused", lines[0]["error.message"])
+	assert.Equal(t, float64(0), lines[0]["mcp.tool.result.size"])
 	assert.Contains(t, lines[0]["msg"], "tools/call postgres.query failed in")
 }
 

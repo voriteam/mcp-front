@@ -810,14 +810,21 @@ func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, req
 	}
 
 	duration := time.Since(start)
+	var resultBytes int
+	if result != nil {
+		if encoded, marshalErr := json.Marshal(result); marshalErr == nil {
+			resultBytes = len(encoded)
+		}
+	}
 	// A tool that reports its own failure does so in the result; only transport
 	// and protocol failures come back as err.
 	call := reqlog.ToolCall{
-		Backend:    backendName,
-		Name:       request.Params.Name,
-		SessionID:  sessionID,
-		DurationMS: duration.Milliseconds(),
-		Failed:     err != nil || (result != nil && result.IsError),
+		Backend:     backendName,
+		Name:        request.Params.Name,
+		SessionID:   sessionID,
+		DurationMS:  duration.Milliseconds(),
+		ResultBytes: resultBytes,
+		Failed:      err != nil || (result != nil && result.IsError),
 	}
 
 	if reqlog.RecordTool(ctx, call) {
@@ -838,6 +845,7 @@ func (s *Server) recordToolCall(ctx context.Context, userEmail, backendName, req
 		"mcp.backend.name":     call.Backend,
 		"mcp.session.id":       call.SessionID,
 		"mcp.tool.duration_ms": call.DurationMS,
+		"mcp.tool.result.size": call.ResultBytes,
 		"mcp.tool.is_error":    call.Failed,
 	}
 	params := request.Params
