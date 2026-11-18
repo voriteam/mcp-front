@@ -4,7 +4,7 @@
 // At login mcp-front stores the user's IdP refresh token. When an mcp-front token
 // is refreshed, the Verifier replays that stored token against the IdP: the
 // provider rejects it once the account is suspended, deleted, or its consent is
-// revoked. On rejection the user's stored upstream tokens and sessions are purged
+// revoked. On rejection the user's stored upstream tokens are purged
 // and the refresh is denied; the dead identity token is kept so every later
 // refresh stays denied until a genuine re-login replaces it. This keys off the
 // user's own authentication, so it needs no directory access or admin privileges.
@@ -110,7 +110,7 @@ func (v *Verifier) IsUserRevoked(ctx context.Context, userEmail, providerType st
 	return false, nil
 }
 
-// purge removes a revoked user's stored upstream service tokens and sessions.
+// purge removes a revoked user's stored upstream service tokens.
 //
 // It deliberately leaves the identity token in place: that token is what failed
 // the probe, so keeping it makes the lockout durable — every subsequent refresh
