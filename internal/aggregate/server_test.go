@@ -185,6 +185,11 @@ func (m *mockTransport) isClosed() bool {
 // newTestServer creates a Server for testing with mock transports.
 func newTestServer(t *testing.T, backends map[string]*mockTransport) *Server {
 	t.Helper()
+	return newTestServerWith(t, backends, func(*ServerConfig) {})
+}
+
+func newTestServerWith(t *testing.T, backends map[string]*mockTransport, configure func(*ServerConfig)) *Server {
+	t.Helper()
 
 	backendConfigs := make(map[string]*config.MCPClientConfig, len(backends))
 	for name := range backends {
@@ -207,7 +212,7 @@ func newTestServer(t *testing.T, backends map[string]*mockTransport) *Server {
 		return "", nil
 	}
 
-	srv := NewServer(ServerConfig{
+	cfg := ServerConfig{
 		Name:            "test-aggregate",
 		TransportType:   config.MCPClientTypeSSE,
 		Backends:        backendConfigs,
@@ -215,7 +220,9 @@ func newTestServer(t *testing.T, backends map[string]*mockTransport) *Server {
 		GetUserToken:    getUserToken,
 		CreateTransport: factory,
 		BaseURL:         "http://localhost:8080",
-	})
+	}
+	configure(&cfg)
+	srv := NewServer(cfg)
 	srv.Start()
 	t.Cleanup(func() {
 		_ = srv.Shutdown(context.Background())
