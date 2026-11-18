@@ -315,6 +315,18 @@ func TestToolAdvertisementWithUserTokens(t *testing.T) {
 		require.NoError(t, err, "Should connect to postgres")
 		defer mcpClient.Close()
 
+		toolsResp, err := mcpClient.SendMCPRequest("tools/list", map[string]any{})
+		require.NoError(t, err, "Should list tools with user token")
+		resultMap, ok := toolsResp["result"].(map[string]any)
+		require.True(t, ok, "Expected result in tools response")
+		tools, _ := resultMap["tools"].([]any)
+		var toolNames []string
+		for _, tool := range tools {
+			name, _ := tool.(map[string]any)["name"].(string)
+			toolNames = append(toolNames, name)
+		}
+		require.Contains(t, toolNames, "pg.execute_sql", "Token-gated tools should be listed once the token is stored")
+
 		// Call the query tool with a simple query
 		queryParams := map[string]any{
 			"name": "pg.execute_sql",
@@ -329,7 +341,7 @@ func TestToolAdvertisementWithUserTokens(t *testing.T) {
 		// Verify we got a successful result, not an error
 		require.NotNil(t, result["result"], "Should have result in response")
 
-		resultMap := result["result"].(map[string]any)
+		resultMap = result["result"].(map[string]any)
 		content := resultMap["content"].([]any)
 		require.NotEmpty(t, content, "Should have content in result")
 
