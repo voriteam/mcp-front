@@ -537,7 +537,7 @@ func (gc gatewayClient) connect(t *testing.T, gw testGateway, userEmail string) 
 		trOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
 		if !gc.modern {
 			//lint:ignore SA1019 session-based clients still receive notifications on the GET stream
-			trOpts = append(trOpts, transport.WithContinuousListening())
+			trOpts = append(trOpts, transport.WithContinuousListening()) //nolint:staticcheck
 		}
 		tr, err = transport.NewStreamableHTTP(gw.url+"/gw/", trOpts...)
 	}
