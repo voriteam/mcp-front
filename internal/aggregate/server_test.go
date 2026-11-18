@@ -2211,7 +2211,7 @@ func TestToolCallLogsTheSizeOfItsResult(t *testing.T) {
 			},
 		},
 	})
-	handler := srv.makeToolHandler("user@test.com", "postgres")
+	handler := toolHandlerAs(srv, "user@test.com")
 	request := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "postgres" + srv.delimiter + "query"}}
 	wantBytes := len(`{"content":[{"type":"text","text":"3 rows"}]}`)
 
