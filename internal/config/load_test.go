@@ -311,7 +311,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				MCPServers: map[string]*MCPClientConfig{
 					"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
 					"mcp": {
-						Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+						Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable,
 						Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 						Options:   &Options{ToolFilter: &ToolFilterConfig{Mode: ToolFilterModeBlock, List: []string{"postgres.drop_table"}}},
 					},
