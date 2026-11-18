@@ -131,7 +131,7 @@ type Server struct {
 	discoveryGroup singleflight.Group
 
 	registryMu sync.Mutex
-	registered map[string]struct{}
+	registered map[string]mcp.Tool
 
 	connMu    sync.RWMutex
 	conns     map[connKey]*conn
@@ -199,7 +199,7 @@ func NewServer(cfg ServerConfig) *Server {
 		userCache:           make(map[string]*cachedTools),
 		lastGood:            make(map[lastGoodKey]*backendTools),
 		views:               make(map[string]*userView),
-		registered:          make(map[string]struct{}),
+		registered:          make(map[string]mcp.Tool),
 		conns:               make(map[connKey]*conn),
 		refreshCh:           make(chan viewRefresh, viewRefreshQueueSize),
 		stopCleanup:         make(chan struct{}),
@@ -414,31 +414,33 @@ func (s *Server) presentTools(tools map[string][]mcp.Tool) map[string]mcp.Tool {
 }
 
 // syncRegistry registers the union of every user's view on the shared mcp-go
-// server and tells clients to re-list when it or a user's view changed. A
-// sessionless client cannot be addressed on its own, so every client re-lists.
+// server and tells clients to re-list when it or a user's view changed. SetTools
+// sends that notification itself. A sessionless client cannot be addressed on
+// its own, so every client re-lists.
 func (s *Server) syncRegistry(viewChanged bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 
+	// Users can hold different definitions of one tool. Keeping the registered
+	// one while any view still has it stops the registry flapping between them.
 	s.cacheMu.RLock()
 	union := make(map[string]mcp.Tool, len(s.registered))
 	for _, view := range s.views {
 		for name, tool := range view.tools {
-			if _, ok := union[name]; !ok {
+			cur, seen := union[name]
+			if !seen {
+				union[name] = tool
+				continue
+			}
+			registered, ok := s.registered[name]
+			if ok && !reflect.DeepEqual(cur, registered) && reflect.DeepEqual(tool, registered) {
 				union[name] = tool
 			}
 		}
 	}
 	s.cacheMu.RUnlock()
 
-	same := len(union) == len(s.registered)
-	for name := range union {
-		if _, ok := s.registered[name]; !ok {
-			same = false
-			break
-		}
-	}
-	if same {
+	if reflect.DeepEqual(union, s.registered) {
 		if viewChanged {
 			s.mcpServer.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
 		}
@@ -446,17 +448,15 @@ func (s *Server) syncRegistry(viewChanged bool) {
 	}
 
 	serverTools := make([]mcpserver.ServerTool, 0, len(union))
-	registered := make(map[string]struct{}, len(union))
-	for name, tool := range union {
+	for _, tool := range union {
 		serverTools = append(serverTools, mcpserver.ServerTool{Tool: tool, Handler: s.callTool})
-		registered[name] = struct{}{}
 	}
 	s.mcpServer.SetTools(serverTools...)
-	s.registered = registered
+	s.registered = union
 
 	log.LogInfoWithFields("aggregate", "Registered tools changed", map[string]any{
 		"server":    s.name,
-		"toolCount": len(registered),
+		"toolCount": len(union),
 	})
 }
 

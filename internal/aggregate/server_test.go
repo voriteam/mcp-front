@@ -2303,3 +2303,21 @@ func (f fakeSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
 	return make(chan mcp.JSONRPCNotification, 1)
 }
 func (f fakeSession) SessionID() string { return f.id }
+
+func TestRegisteredToolFollowsItsDefinition(t *testing.T) {
+	pg := newMockTransport([]mcp.Tool{{Name: "query", Description: "old"}})
+	srv := newStaleToolsTestServer(t, map[string]*mockTransport{"postgres": pg},
+		&config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 50 * time.Millisecond})
+	ctx := context.Background()
+
+	srv.refreshView(ctx, "alice@test.com")
+	require.Equal(t, "old", srv.mcpServer.GetTool("postgres.query").Tool.Description)
+
+	pg.mu.Lock()
+	pg.tools = []mcp.Tool{{Name: "query", Description: "new"}}
+	pg.mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	srv.refreshView(ctx, "alice@test.com")
+
+	assert.Equal(t, "new", srv.mcpServer.GetTool("postgres.query").Tool.Description)
+}
