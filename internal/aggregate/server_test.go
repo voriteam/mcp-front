@@ -293,6 +293,49 @@ func TestDiscoverToolsCaching(t *testing.T) {
 // TestPerUserTokenBackendIsolation verifies that a backend requiring a user
 // token is discovered per-user: a user without a token never sees it, a user
 // with one does, and neither user's discovery leaks into the other's tool set.
+func TestToolHandlerRejectsToolsOutsideTheCallersView(t *testing.T) {
+	var called atomic.Bool
+	gated := newMockTransport([]mcp.Tool{{Name: "catalog"}})
+	gated.callToolFn = func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		called.Store(true)
+		return mcp.NewToolResultText("catalog"), nil
+	}
+	srv := NewServer(ServerConfig{
+		Name:          "test-aggregate",
+		TransportType: config.MCPClientTypeStreamable,
+		Backends: map[string]*config.MCPClientConfig{"materialize": {
+			TransportType:     config.MCPClientTypeSSE,
+			URL:               "http://localhost/materialize",
+			RequiresUserToken: true,
+		}},
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: time.Minute},
+		GetUserToken: func(_ context.Context, userEmail, _ string, _ *config.MCPClientConfig) (string, error) {
+			if userEmail == "alice@test.com" {
+				return "alice-token", nil
+			}
+			return "", storage.ErrUserTokenNotFound
+		},
+		CreateTransport: func(*config.MCPClientConfig) (client.MCPClientInterface, error) { return gated, nil },
+	})
+	srv.Start()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	ctx := context.Background()
+	srv.refreshView(ctx, "alice@test.com")
+	srv.refreshView(ctx, "bob@test.com")
+	require.NotNil(t, srv.mcpServer.GetTool("materialize.catalog"), "alice's discovery registers the tool for everyone")
+
+	bobCtx := context.WithValue(ctx, oauth.GetUserContextKey(), "bob@test.com")
+	_, err := srv.callTool(bobCtx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "materialize.catalog"}})
+	require.ErrorIs(t, err, mcpserver.ErrToolNotFound)
+	assert.False(t, called.Load(), "bob's call must not reach the backend")
+
+	strangerCtx := context.WithValue(ctx, oauth.GetUserContextKey(), "stranger@test.com")
+	_, err = srv.callTool(strangerCtx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "materialize.catalog"}})
+	require.ErrorIs(t, err, mcpserver.ErrToolNotFound)
+	assert.False(t, called.Load(), "a caller with no view must not reach the backend")
+}
+
 func TestPerUserTokenBackendIsolation(t *testing.T) {
 	sharedMock := newMockTransport([]mcp.Tool{{Name: "query"}})
 	tokenMock := newMockTransport([]mcp.Tool{{Name: "catalog"}})
@@ -430,6 +473,7 @@ func TestToolRouting(t *testing.T) {
 
 func toolHandlerAs(srv *Server, userEmail string) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		srv.ensureView(ctx, userEmail)
 		return srv.callTool(context.WithValue(ctx, oauth.GetUserContextKey(), userEmail), req)
 	}
 }

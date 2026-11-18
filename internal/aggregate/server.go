@@ -804,6 +804,16 @@ func (s *Server) callTool(ctx context.Context, request mcp.CallToolRequest) (*mc
 	if !ok || s.backends[backendName] == nil {
 		return nil, fmt.Errorf("invalid namespaced tool name: %s", requestedName)
 	}
+	s.cacheMu.RLock()
+	view := s.views[userEmail]
+	s.cacheMu.RUnlock()
+	var visible bool
+	if view != nil {
+		_, visible = view.tools[requestedName]
+	}
+	if !visible {
+		return nil, fmt.Errorf("tool %s not found: %w", requestedName, mcpserver.ErrToolNotFound)
+	}
 	request.Params.Name = originalName
 	request.Params.Meta = withoutProtocolMeta(request.Params.Meta)
 
