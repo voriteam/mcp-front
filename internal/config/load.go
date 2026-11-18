@@ -245,25 +245,6 @@ func ValidateConfig(config *Config) error {
 		}
 	}
 
-	// Validate proxy session configuration
-	if config.Proxy.Sessions != nil {
-		if config.Proxy.Sessions.Timeout < 0 {
-			return fmt.Errorf("proxy.sessions.timeout cannot be negative")
-		}
-		if config.Proxy.Sessions.CleanupInterval < 0 {
-			return fmt.Errorf("proxy.sessions.cleanupInterval cannot be negative")
-		}
-		if config.Proxy.Sessions.Timeout > 0 && config.Proxy.Sessions.CleanupInterval > config.Proxy.Sessions.Timeout {
-			log.LogWarn("Session cleanup interval is greater than session timeout")
-		}
-		if config.Proxy.Sessions.MaxPerUser < 0 {
-			return fmt.Errorf("proxy.sessions.maxPerUser cannot be negative")
-		}
-		if config.Proxy.Sessions.MaxPerUser == 0 {
-			log.LogWarn("Session maxPerUser is 0 (unlimited) - this may allow resource exhaustion")
-		}
-	}
-
 	return nil
 }
 
@@ -397,8 +378,8 @@ func validateGCPServiceAccounts(accounts GCPServiceAccountsConfig) error {
 
 func validateMCPServer(name string, server *MCPClientConfig) error {
 	if server.IsAggregate() {
-		if server.TransportType != MCPClientTypeSSE && server.TransportType != MCPClientTypeStreamable {
-			return fmt.Errorf("aggregate server %s must use 'sse' or 'streamable-http' transport, got '%s'", name, server.TransportType)
+		if server.TransportType != MCPClientTypeStreamable {
+			return fmt.Errorf("aggregate server %s must use 'streamable-http' transport, got '%s'", name, server.TransportType)
 		}
 		if server.Discovery == nil {
 			return fmt.Errorf("aggregate server %s is missing discovery configuration", name)

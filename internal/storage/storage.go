@@ -38,14 +38,6 @@ type StoredToken struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-type ActiveSession struct {
-	SessionID  string    `json:"session_id"`
-	UserEmail  string    `json:"user_email"`
-	ServerName string    `json:"server_name"`
-	Created    time.Time `json:"created"`
-	LastActive time.Time `json:"last_active"`
-}
-
 type UserTokenStore interface {
 	GetUserToken(ctx context.Context, userEmail, service string) (*StoredToken, error)
 	SetUserToken(ctx context.Context, userEmail, service string, token *StoredToken) error
@@ -122,12 +114,4 @@ type Storage interface {
 
 	// Connection metadata across all users (for the connections page)
 	ConnectionDirectory
-
-	// Session tracking
-	TrackSession(ctx context.Context, session ActiveSession) error
-	RevokeSession(ctx context.Context, sessionID string) error
-
-	// RevokeUserSessions removes all sessions for a user (used when purging a
-	// revoked account).
-	RevokeUserSessions(ctx context.Context, userEmail string) error
 }

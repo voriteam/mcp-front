@@ -104,7 +104,6 @@ type lastGoodKey struct {
 	backendName string
 }
 
-// mcpTransport is satisfied by both mcpserver.SSEServer and mcpserver.StreamableHTTPServer.
 type mcpTransport interface {
 	http.Handler
 	Shutdown(context.Context) error
@@ -124,7 +123,6 @@ type Server struct {
 	getUserToken        UserTokenFunc
 	tokenSources        map[string]oauth2.TokenSource
 	createTransport     client.TransportCreator
-	baseURL             string
 
 	cacheMu        sync.RWMutex
 	sharedCache    *cachedTools            // tools from backends needing no user token
@@ -158,7 +156,6 @@ type viewRefresh struct {
 
 type ServerConfig struct {
 	Name                string
-	TransportType       config.MCPClientType
 	Backends            map[string]*config.MCPClientConfig
 	Discovery           *config.DiscoveryConfig
 	Delimiter           string
@@ -167,7 +164,6 @@ type ServerConfig struct {
 	GetUserToken        UserTokenFunc
 	TokenSources        map[string]oauth2.TokenSource
 	CreateTransport     client.TransportCreator
-	BaseURL             string
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -201,7 +197,6 @@ func NewServer(cfg ServerConfig) *Server {
 		getUserToken:        cfg.GetUserToken,
 		tokenSources:        cfg.TokenSources,
 		createTransport:     cfg.CreateTransport,
-		baseURL:             cfg.BaseURL,
 		userCache:           make(map[string]*cachedTools),
 		userGen:             make(map[string]uint64),
 		lastGood:            make(map[lastGoodKey]*backendTools),
@@ -226,24 +221,14 @@ func NewServer(cfg ServerConfig) *Server {
 		mcpserver.WithToolFilter(s.filterTools),
 	)
 
-	switch cfg.TransportType {
-	case config.MCPClientTypeStreamable:
-		// A stale session ID surviving a pod restart passes format-only
-		// validation instead of 404-ing. Clients mint a session on every
-		// initialize and rarely send DELETE, so idle ones are reaped.
-		streamable := mcpserver.NewStreamableHTTPServer(s.mcpServer,
-			mcpserver.WithEndpointPath("/"+cfg.Name+"/"),
-			mcpserver.WithSessionIdManager(&mcpserver.StatelessGeneratingSessionIdManager{}),
-			mcpserver.WithSessionIdleTTL(sessionIdleTTL),
-		)
-		s.transport = streamable
-	default:
-		sse := mcpserver.NewSSEServer(s.mcpServer,
-			mcpserver.WithStaticBasePath(cfg.Name),
-			mcpserver.WithBaseURL(cfg.BaseURL),
-		)
-		s.transport = sse
-	}
+	// A stale session ID surviving a pod restart passes format-only
+	// validation instead of 404-ing. Clients mint a session on every
+	// initialize and rarely send DELETE, so idle ones are reaped.
+	s.transport = mcpserver.NewStreamableHTTPServer(s.mcpServer,
+		mcpserver.WithEndpointPath("/"+cfg.Name+"/"),
+		mcpserver.WithSessionIdManager(&mcpserver.StatelessGeneratingSessionIdManager{}),
+		mcpserver.WithSessionIdleTTL(sessionIdleTTL),
+	)
 
 	return s
 }

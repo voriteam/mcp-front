@@ -24,7 +24,7 @@ func TestStreamableServerIntegration(t *testing.T) {
 	waitForMCPFront(t)
 	trace(t, "mcp-front is ready")
 
-	client := NewMCPStreamableClient("http://localhost:8080")
+	client := NewMCPClient("http://localhost:8080")
 	require.NotNil(t, client, "Failed to create streamable client")
 	defer client.Close()
 
@@ -86,7 +86,7 @@ func TestStreamableServerIntegration(t *testing.T) {
 	})
 
 	t.Run("Streamable POST with actual SSE response", func(t *testing.T) {
-		baseURL := "http://localhost:8080/test-streamable/sse"
+		baseURL := "http://localhost:8080/test-streamable"
 
 		request := map[string]any{
 			"jsonrpc": "2.0",
@@ -172,16 +172,16 @@ func TestStreamableServerIntegration(t *testing.T) {
 	})
 
 	t.Run("Streamable GET endpoint", func(t *testing.T) {
-		// The MCP client library we're using might not support GET requests directly
-		// This would typically be used for opening an SSE stream for server-initiated messages
-		// For now, we'll just verify the server is configured correctly
+		req, err := http.NewRequest(http.MethodGet, "http://localhost:8080/test-streamable", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer streamable-test-token")
+		req.Header.Set("Accept", "text/event-stream")
 
-		// Re-connect to ensure clean state
-		client.Close()
-		err := client.ConnectToServer("test-streamable")
-		require.NoError(t, err, "Failed to reconnect")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-		// The connection itself uses the transport, so if it works, the transport is configured correctly
-		assert.True(t, true, "Streamable transport is working")
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 	})
 }

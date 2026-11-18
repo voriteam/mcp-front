@@ -25,7 +25,7 @@ func TestAggregateBasic(t *testing.T) {
 		},
 		"mcp": map[string]any{
 			"type":          "aggregate",
-			"transportType": "sse",
+			"transportType": "streamable-http",
 			"discovery": map[string]any{
 				"timeout":  "10s",
 				"cacheTtl": "60s",
@@ -38,9 +38,22 @@ func TestAggregateBasic(t *testing.T) {
 	startMCPFront(t, configPath)
 	waitForMCPFront(t)
 
-	client := NewMCPSSEClient("http://localhost:8080")
+	client := NewMCPClient("http://localhost:8080")
 	require.NotNil(t, client)
 	defer client.Close()
+
+	t.Run("sse_endpoints_removed", func(t *testing.T) {
+		for _, path := range []string{"/mcp/sse", "/mcp/message", "/test-streamable/sse", "/test-streamable/message", "/test-sse/sse"} {
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				req, err := http.NewRequest(method, "http://localhost:8080"+path, nil)
+				require.NoError(t, err)
+				resp, err := http.DefaultClient.Do(req)
+				require.NoError(t, err)
+				resp.Body.Close()
+				assert.Equal(t, http.StatusNotFound, resp.StatusCode, "%s %s", method, path)
+			}
+		}
+	})
 
 	t.Run("tool_discovery", func(t *testing.T) {
 		err := client.ConnectToServer("mcp")
@@ -119,7 +132,7 @@ func TestAggregatePartialFailure(t *testing.T) {
 		},
 		"mcp": map[string]any{
 			"type":          "aggregate",
-			"transportType": "sse",
+			"transportType": "streamable-http",
 			"servers":       []string{"test-sse", "bad-backend"},
 			"discovery": map[string]any{
 				"timeout":  "3s",
@@ -133,7 +146,7 @@ func TestAggregatePartialFailure(t *testing.T) {
 	startMCPFront(t, configPath)
 	waitForMCPFront(t)
 
-	client := NewMCPSSEClient("http://localhost:8080")
+	client := NewMCPClient("http://localhost:8080")
 	require.NotNil(t, client)
 	defer client.Close()
 
@@ -185,7 +198,7 @@ func TestAggregateToolFilter(t *testing.T) {
 		},
 		"mcp": map[string]any{
 			"type":          "aggregate",
-			"transportType": "sse",
+			"transportType": "streamable-http",
 			"discovery": map[string]any{
 				"timeout":  "10s",
 				"cacheTtl": "60s",
@@ -198,7 +211,7 @@ func TestAggregateToolFilter(t *testing.T) {
 	startMCPFront(t, configPath)
 	waitForMCPFront(t)
 
-	client := NewMCPSSEClient("http://localhost:8080")
+	client := NewMCPClient("http://localhost:8080")
 	require.NotNil(t, client)
 	defer client.Close()
 
@@ -250,7 +263,7 @@ func TestAggregateSupersedes(t *testing.T) {
 		},
 		"mcp": map[string]any{
 			"type":          "aggregate",
-			"transportType": "sse",
+			"transportType": "streamable-http",
 			"discovery": map[string]any{
 				"timeout":  "1s",
 				"cacheTtl": cacheTTL.String(),
@@ -269,8 +282,8 @@ func TestAggregateSupersedes(t *testing.T) {
 	waitForMCPFront(t)
 
 	accessToken := getOAuthAccessToken(t, "http://localhost:8080/mcp")
-	connect := func(t *testing.T) *MCPSSEClient {
-		client := NewMCPSSEClient("http://localhost:8080")
+	connect := func(t *testing.T) *MCPClient {
+		client := NewMCPClient("http://localhost:8080")
 		client.SetAuthToken(accessToken)
 		require.NoError(t, client.ConnectToServer("mcp"))
 		t.Cleanup(client.Close)
@@ -307,7 +320,7 @@ func TestAggregateSupersedes(t *testing.T) {
 	assert.Contains(t, rpcErr["message"], "not found")
 }
 
-func aggregateToolNames(t *testing.T, client *MCPSSEClient) []string {
+func aggregateToolNames(t *testing.T, client *MCPClient) []string {
 	t.Helper()
 	result, err := client.SendMCPRequest("tools/list", map[string]any{})
 	require.NoError(t, err)

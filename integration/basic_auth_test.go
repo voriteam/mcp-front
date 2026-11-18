@@ -13,7 +13,7 @@ func TestAuthMatrix_ServiceAuthOnly(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-auth-matrix-service-only",
 		nil, // no global OAuth
 		map[string]any{
-			"postgres": testPostgresServer(
+			"postgres": testStreamableServer(
 				withBearerTokens("svc-bearer-1"),
 				withBasicAuth("svc-user", "SVC_PASSWORD"),
 			),
@@ -80,5 +80,5 @@ func TestAuthMatrix_ServiceAuthOnly(t *testing.T) {
 		},
 	}
 
-	runAuthMatrix(t, "http://localhost:8080/postgres/sse", cases)
+	runAuthMatrix(t, "http://localhost:8080/postgres", cases)
 }

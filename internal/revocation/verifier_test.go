@@ -16,14 +16,12 @@ import (
 type fakeStore struct {
 	identity map[string]string
 	tokens   map[string][]string // email -> services
-	sessions map[string]bool     // email -> has sessions
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		identity: map[string]string{},
 		tokens:   map[string][]string{},
-		sessions: map[string]bool{},
 	}
 }
 
@@ -53,10 +51,6 @@ func (f *fakeStore) DeleteUserToken(_ context.Context, email, service string) er
 		}
 	}
 	f.tokens[email] = rest
-	return nil
-}
-func (f *fakeStore) RevokeUserSessions(_ context.Context, email string) error {
-	delete(f.sessions, email)
 	return nil
 }
 
@@ -96,14 +90,12 @@ func TestVerifier_InvalidGrant_RevokesAndPurges(t *testing.T) {
 	store := newFakeStore()
 	store.identity["u@x.com"] = "rt"
 	store.tokens["u@x.com"] = []string{"linear", "sentry"}
-	store.sessions["u@x.com"] = true
 	v := NewVerifier(store, &fakeRefresher{err: invalidGrantErr()})
 
 	revoked, err := v.IsUserRevoked(ctx, "u@x.com", "google")
 	require.NoError(t, err)
 	assert.True(t, revoked)
 	assert.Empty(t, store.tokens["u@x.com"], "upstream tokens purged")
-	assert.False(t, store.sessions["u@x.com"], "sessions revoked")
 	_, ok := store.identity["u@x.com"]
 	assert.True(t, ok, "dead identity token kept so the lockout stays durable")
 }

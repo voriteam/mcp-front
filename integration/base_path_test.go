@@ -14,7 +14,10 @@ func TestBasePathRouting(t *testing.T) {
 	cfg := buildTestConfig(
 		"http://localhost:8080/mcp-api", "mcp-front-base-path-test",
 		nil,
-		map[string]any{"postgres": testPostgresServer(withBearerTokens("test-token"))},
+		map[string]any{
+			"pg":       testPostgresServer(),
+			"postgres": testAggregate([]string{"pg"}, withBearerTokens("test-token")),
+		},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg))
 	waitForMCPFront(t)
@@ -41,7 +44,7 @@ func TestBasePathRouting(t *testing.T) {
 	})
 
 	t.Run("MCP server at base path", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "http://localhost:8080/mcp-api/postgres/sse", nil)
+		req, err := http.NewRequest("GET", "http://localhost:8080/mcp-api/postgres", nil)
 		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer test-token")
 		req.Header.Set("Accept", "text/event-stream")
@@ -56,7 +59,7 @@ func TestBasePathRouting(t *testing.T) {
 	})
 
 	t.Run("MCP server not at root", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+		req, err := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer test-token")
 		req.Header.Set("Accept", "text/event-stream")
@@ -70,7 +73,7 @@ func TestBasePathRouting(t *testing.T) {
 	})
 
 	t.Run("full MCP connection", func(t *testing.T) {
-		client := NewMCPSSEClient("http://localhost:8080/mcp-api")
+		client := NewMCPClient("http://localhost:8080/mcp-api")
 		client.SetAuthToken("test-token")
 
 		err := client.ConnectToServer("postgres")

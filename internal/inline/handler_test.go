@@ -32,29 +32,32 @@ func TestHandler_ServeHTTP(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		path       string
+		method     string
+		body       string
 		wantStatus int
 	}{
 		{
-			name:       "Message endpoint",
-			path:       "/message",
-			wantStatus: http.StatusBadRequest, // Invalid JSON returns 400
+			name:       "invalid JSON",
+			method:     http.MethodPost,
+			body:       "",
+			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "Message endpoint with server name",
-			path:       "/test/message",
-			wantStatus: http.StatusBadRequest, // Invalid JSON returns 400
+			name:       "notification",
+			method:     http.MethodPost,
+			body:       `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			wantStatus: http.StatusAccepted,
 		},
 		{
-			name:       "Unknown endpoint",
-			path:       "/unknown",
-			wantStatus: http.StatusNotFound,
+			name:       "GET has no stream",
+			method:     http.MethodGet,
+			wantStatus: http.StatusMethodNotAllowed,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequest(tt.method, "/test/", bytes.NewReader([]byte(tt.body)))
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -87,7 +90,7 @@ func TestHandler_Message_Initialize(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(request)
-	req := httptest.NewRequest(http.MethodPost, "/message", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/test/", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -139,7 +142,7 @@ func TestHandler_Message_ToolsList(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(request)
-	req := httptest.NewRequest(http.MethodPost, "/message", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/test/", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -189,7 +192,7 @@ func TestHandler_Message_ToolCall(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(request)
-	req := httptest.NewRequest(http.MethodPost, "/message", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/test/", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -259,7 +262,7 @@ func TestHandler_Message_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/message", bytes.NewReader([]byte(tt.body)))
+			req := httptest.NewRequest(http.MethodPost, "/test/", bytes.NewReader([]byte(tt.body)))
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -300,77 +303,4 @@ func (m *MockServer) HandleToolCall(ctx context.Context, toolName string, args m
 
 func (m *MockServer) GetDescription() string {
 	return m.description
-}
-
-func TestHandler_SSE_Headers(t *testing.T) {
-	mockServer := &MockServer{
-		description: "Test server for SSE",
-		tools: map[string]Tool{
-			"test": {
-				Name:        "test",
-				Description: "Test tool",
-			},
-		},
-	}
-	handler := NewHandler("test", mockServer)
-
-	// Create a custom ResponseWriter that doesn't support flushing
-	// to test the error case
-	t.Run("no flusher support", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/sse", nil)
-		rec := httptest.NewRecorder()
-		// Wrap recorder to hide Flusher interface
-		nonFlushingWriter := struct{ http.ResponseWriter }{rec}
-
-		handler.handleSSE(nonFlushingWriter, req)
-
-		assert.Equal(t, http.StatusInternalServerError, rec.Code)
-		assert.Contains(t, rec.Body.String(), "Streaming unsupported")
-	})
-
-	// Test successful SSE setup
-	t.Run("successful setup", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/sse", nil)
-		// Use a recorder that we can inspect without running the loop
-		rec := &testSSERecorder{
-			ResponseRecorder: httptest.NewRecorder(),
-			messages:         []string{},
-		}
-
-		// Create a context that's already cancelled to prevent the loop from running
-		ctx, cancel := context.WithCancel(req.Context())
-		cancel()
-		req = req.WithContext(ctx)
-
-		handler.handleSSE(rec, req)
-
-		// Check headers
-		assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
-		assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
-		assert.Equal(t, "keep-alive", rec.Header().Get("Connection"))
-
-		// Check that initial endpoint message and message endpoint URL were sent
-		assert.Len(t, rec.messages, 2)
-		assert.Contains(t, rec.messages[0], `"type":"endpoint"`)
-		assert.Contains(t, rec.messages[0], `"name":"test"`)
-		assert.Contains(t, rec.messages[0], `"description":"Test server for SSE"`)
-
-		// Check that message endpoint path was sent (relative path)
-		assert.Contains(t, rec.messages[1], "/test/message?sessionId=")
-	})
-}
-
-// testSSERecorder captures SSE messages for testing
-type testSSERecorder struct {
-	*httptest.ResponseRecorder
-	messages []string
-}
-
-func (r *testSSERecorder) Write(p []byte) (n int, err error) {
-	r.messages = append(r.messages, string(p))
-	return r.ResponseRecorder.Write(p)
-}
-
-func (r *testSSERecorder) Flush() {
-	// Implement Flusher interface
 }

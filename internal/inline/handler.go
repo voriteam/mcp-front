@@ -5,13 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
-	"github.com/stainless-api/mcp-front/internal/crypto"
 	jsonwriter "github.com/stainless-api/mcp-front/internal/json"
 	"github.com/stainless-api/mcp-front/internal/jsonrpc"
 	"github.com/stainless-api/mcp-front/internal/log"
-	"github.com/stainless-api/mcp-front/internal/sse"
 )
 
 // MCPServer defines the interface that Handler depends on
@@ -35,94 +32,23 @@ func NewHandler(name string, server MCPServer) *Handler {
 	}
 }
 
-// ServeHTTP handles HTTP requests for the inline MCP server
+// ServeHTTP answers streamable-http POSTs with a JSON response. Inline servers
+// are stateless, so there is no session and no GET stream.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/sse", "/" + h.name + "/sse":
-		h.handleSSE(w, r)
-	case "/message", "/" + h.name + "/message":
-		h.handleMessage(w, r)
-	default:
-		jsonwriter.WriteNotFound(w, "Endpoint not found")
-	}
-}
-
-// handleSSE handles SSE connections
-func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request) {
-	// Set up SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		jsonwriter.WriteInternalServerError(w, "Streaming unsupported")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		jsonwriter.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
 		return
 	}
-
-	sessionID, err := crypto.GenerateSecureToken()
-	if err != nil {
-		log.LogError("Failed to generate session ID: %v", err)
-		jsonwriter.WriteInternalServerError(w, "Failed to create session")
-		return
-	}
-
-	// Send initial endpoint message
-	endpoint := map[string]any{
-		"type":        "endpoint",
-		"name":        h.name,
-		"version":     "1.0",
-		"description": h.server.GetDescription(),
-	}
-
-	if err := sse.WriteMessage(w, flusher, endpoint); err != nil {
-		log.LogError("Failed to write endpoint message: %v", err)
-		return
-	}
-
-	// Send message endpoint path for MCP protocol
-	// MCP clients expect to receive the message endpoint after the endpoint message
-	// Send as relative path - client will construct full URL based on where it connected
-	messageEndpointPath := fmt.Sprintf("/%s/message?sessionId=%s", h.name, sessionID)
-	if err := sse.WriteMessage(w, flusher, messageEndpointPath); err != nil {
-		log.LogError("Failed to write message endpoint path: %v", err)
-		return
-	}
-
-	// Start the SSE loop
-	h.runSSELoop(r.Context(), w, flusher)
-}
-
-// runSSELoop runs the SSE keep-alive loop
-func (h *Handler) runSSELoop(ctx context.Context, w http.ResponseWriter, flusher http.Flusher) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := sse.WriteMessage(w, flusher, map[string]any{
-				"type": "ping",
-			}); err != nil {
-				return
-			}
-		}
-	}
-}
-
-// handleMessage handles JSON-RPC messages
-func (h *Handler) handleMessage(w http.ResponseWriter, r *http.Request) {
-	// For inline servers, we accept any sessionId parameter without validation
-	// since inline servers are stateless and don't track sessions
-	_ = r.URL.Query().Get("sessionId") // Accept but don't validate
 
 	var request jsonrpc.Request
-
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		// Invalid JSON should return HTTP 400
 		jsonrpc.WriteInvalidJSON(w)
+		return
+	}
+
+	if request.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -177,12 +178,17 @@ func TestUserTokenFlow(t *testing.T) {
 	})
 }
 
-// TestToolAdvertisementWithUserTokens tests that tools are advertised even without user tokens
-// but fail gracefully when invoked without the required token, and succeed with the token
+// TestToolAdvertisementWithUserTokens tests that a token-gated backend's tools
+// stay hidden until the user stores a token, and then run with it.
 func TestToolAdvertisementWithUserTokens(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-oauth-usertoken-test",
 		testOAuthConfigFromEnv(),
-		map[string]any{"postgres": testPostgresServer(withUserToken())},
+		map[string]any{
+			"pg": testPostgresServer(withUserToken()),
+			"postgres": testAggregate([]string{"pg"}, func(s map[string]any) {
+				s["discovery"] = map[string]any{"timeout": "10s", "cacheTtl": "1s"}
+			}),
+		},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg),
 		"JWT_SECRET=demo-jwt-secret-32-bytes-exactly!",
@@ -200,96 +206,24 @@ func TestToolAdvertisementWithUserTokens(t *testing.T) {
 	// Complete OAuth flow to get a valid access token
 	accessToken := getOAuthAccessToken(t, "http://localhost:8080/postgres")
 
-	t.Run("ToolsAdvertisedWithoutToken", func(t *testing.T) {
-		// Create MCP client with OAuth token
-		mcpClient := NewMCPSSEClient("http://localhost:8080")
+	t.Run("ToolsHiddenWithoutToken", func(t *testing.T) {
+		mcpClient := NewMCPClient("http://localhost:8080")
 		mcpClient.SetAuthToken(accessToken)
 
-		// Connect to postgres SSE endpoint
 		err := mcpClient.Connect()
-		require.NoError(t, err, "Should connect to postgres SSE endpoint without user token")
+		require.NoError(t, err, "Should connect without a user token")
 		defer mcpClient.Close()
 
-		// Request tools list
 		toolsResp, err := mcpClient.SendMCPRequest("tools/list", map[string]any{})
 		require.NoError(t, err, "Should list tools without user token")
 
-		// Verify we got tools
 		resultMap, ok := toolsResp["result"].(map[string]any)
 		require.True(t, ok, "Expected result in tools response")
-
-		tools, ok := resultMap["tools"].([]any)
-		require.True(t, ok, "Expected tools array in result")
-		assert.NotEmpty(t, tools, "Should have tools advertised")
-
-		// Check for common postgres tools
-		var toolNames []string
+		tools, _ := resultMap["tools"].([]any)
 		for _, tool := range tools {
-			if toolMap, ok := tool.(map[string]any); ok {
-				if name, ok := toolMap["name"].(string); ok {
-					toolNames = append(toolNames, name)
-				}
-			}
+			name, _ := tool.(map[string]any)["name"].(string)
+			assert.NotEqual(t, "pg.execute_sql", name, "Token-gated tools should be hidden without a token")
 		}
-
-		assert.Contains(t, toolNames, "execute_sql", "Should have execute_sql tool")
-		t.Logf("Successfully advertised tools without user token: %v", toolNames)
-	})
-
-	t.Run("ToolInvocationFailsWithoutToken", func(t *testing.T) {
-		// Create MCP client with OAuth token
-		mcpClient := NewMCPSSEClient("http://localhost:8080")
-		mcpClient.SetAuthToken(accessToken)
-
-		// Connect to postgres SSE endpoint
-		err := mcpClient.Connect()
-		require.NoError(t, err)
-		defer mcpClient.Close()
-
-		// Try to invoke a tool without user token
-		queryParams := map[string]any{
-			"name": "execute_sql",
-			"arguments": map[string]any{
-				"sql": "SELECT 1",
-			},
-		}
-
-		result, err := mcpClient.SendMCPRequest("tools/call", queryParams)
-		require.NoError(t, err, "Should get response even without token")
-
-		// MCP protocol returns errors as successful responses with error content
-		require.NotNil(t, result["result"], "Should have result in response")
-
-		resultMap := result["result"].(map[string]any)
-		content := resultMap["content"].([]any)
-		require.NotEmpty(t, content, "Should have content in result")
-
-		contentItem := content[0].(map[string]any)
-		errorJSON := contentItem["text"].(string)
-
-		// Parse the error JSON
-		var errorData map[string]any
-		err = json.Unmarshal([]byte(errorJSON), &errorData)
-		require.NoError(t, err, "Error should be valid JSON")
-
-		// Verify error structure
-		errorInfo := errorData["error"].(map[string]any)
-		assert.Equal(t, "token_required", errorInfo["code"], "Error code should be token_required")
-
-		errorMessage := errorInfo["message"].(string)
-		assert.Contains(t, errorMessage, "token required", "Error should mention token required")
-		assert.Contains(t, errorMessage, "/my/tokens", "Error should mention token setup URL")
-		assert.Contains(t, errorMessage, "Test Service", "Error should mention service name")
-
-		// Verify error data
-		errData := errorInfo["data"].(map[string]any)
-		assert.Equal(t, "postgres", errData["service"], "Should identify the service")
-		assert.Contains(t, errData["tokenSetupUrl"].(string), "/my/tokens", "Should include token setup URL")
-
-		// Verify instructions
-		instructions := errData["instructions"].(map[string]any)
-		assert.Contains(t, instructions["ai"].(string), "CRITICAL", "Should have AI instructions")
-		assert.Contains(t, instructions["human"].(string), "token required", "Should have human instructions")
 	})
 
 	t.Run("ToolInvocationSucceedsWithUserToken", func(t *testing.T) {
@@ -345,7 +279,7 @@ func TestToolAdvertisementWithUserTokens(t *testing.T) {
 
 		// Step 2: POST to /my/tokens/set with test token
 		formData := url.Values{
-			"service":    {"postgres"},
+			"service":    {"pg"},
 			"token":      {"test-user-token-12345"},
 			"csrf_token": {csrfToken},
 		}
@@ -372,17 +306,18 @@ func TestToolAdvertisementWithUserTokens(t *testing.T) {
 			t.Fatalf("Unexpected response setting token: status=%d, body=%s", resp.StatusCode, string(body))
 		}
 
-		// Step 3: Now test tool invocation with the token
-		mcpClient := NewMCPSSEClient("http://localhost:8080")
+		// Step 3: Wait out the discovery cached before the token existed
+		time.Sleep(2 * time.Second)
+		mcpClient := NewMCPClient("http://localhost:8080")
 		mcpClient.SetAuthToken(accessToken)
 
 		err = mcpClient.Connect()
-		require.NoError(t, err, "Should connect to postgres SSE endpoint")
+		require.NoError(t, err, "Should connect to postgres")
 		defer mcpClient.Close()
 
 		// Call the query tool with a simple query
 		queryParams := map[string]any{
-			"name": "execute_sql",
+			"name": "pg.execute_sql",
 			"arguments": map[string]any{
 				"sql": "SELECT 1 as test",
 			},

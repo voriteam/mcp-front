@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/config"
 	"github.com/stretchr/testify/assert"
 )
@@ -446,84 +445,5 @@ func TestForwardSSEToBackend(t *testing.T) {
 				}
 			})
 		}
-	})
-}
-
-func TestHandleNonStdioSSERequest(t *testing.T) {
-	// Create a mock backend SSE server
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: {\"type\":\"endpoint\"}\n\n"))
-	}))
-	defer backend.Close()
-
-	// Create handler
-	config := &config.MCPClientConfig{
-		URL:           backend.URL,
-		TransportType: config.MCPClientTypeSSE,
-		Timeout:       5 * time.Second,
-	}
-
-	handler := createTestMCPHandler("test-sse", config)
-
-	// Create request
-	req := httptest.NewRequest(http.MethodGet, "/test-sse/sse", nil)
-	rec := httptest.NewRecorder()
-
-	// Handle request
-	handler.handleNonStdioSSERequest(context.Background(), rec, req, "user@example.com", config)
-
-	// Verify response
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
-	assert.Contains(t, rec.Body.String(), "data: {\"type\":\"endpoint\"}")
-}
-
-// TestSSEVsStdioRouting verifies that SSE and stdio servers are routed correctly
-func TestSSEVsStdioRouting(t *testing.T) {
-	t.Run("SSE server uses proxy", func(t *testing.T) {
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("data: from-backend\n\n"))
-		}))
-		defer backend.Close()
-
-		config := &config.MCPClientConfig{
-			URL:           backend.URL,
-			TransportType: config.MCPClientTypeSSE,
-		}
-
-		handler := createTestMCPHandler("test-sse", config)
-
-		req := httptest.NewRequest(http.MethodGet, "/test-sse/sse", nil)
-		rec := httptest.NewRecorder()
-
-		handler.ServeHTTP(rec, req)
-
-		// Should get response from backend
-		assert.Contains(t, rec.Body.String(), "from-backend")
-	})
-
-	t.Run("stdio server uses session management", func(t *testing.T) {
-		config := &config.MCPClientConfig{
-			Command:       "echo",
-			Args:          []string{"test"},
-			TransportType: config.MCPClientTypeStdio,
-		}
-
-		handler := createTestMCPHandler("test-stdio", config)
-
-		// For stdio, we need a shared SSE server
-		handler.sharedSSEServer = &server.SSEServer{}
-
-		req := httptest.NewRequest(http.MethodGet, "/test-stdio/sse", nil)
-		rec := httptest.NewRecorder()
-
-		handler.ServeHTTP(rec, req)
-
-		// Should not get the backend response (stdio doesn't proxy)
-		assert.NotContains(t, rec.Body.String(), "from-backend")
 	})
 }

@@ -41,7 +41,7 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 
 	t.Run("PerServiceProtectedResourceMetadataEndpoint", func(t *testing.T) {
 		// Per-service metadata endpoint should return service-specific resource URI
-		resp, err := http.Get("http://localhost:8080/.well-known/oauth-protected-resource/test-sse")
+		resp, err := http.Get("http://localhost:8080/.well-known/oauth-protected-resource/test-other")
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -52,7 +52,7 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 		require.NoError(t, err)
 
 		// Resource should be service-specific, not base URL
-		assert.Equal(t, "http://localhost:8080/test-sse", metadata["resource"],
+		assert.Equal(t, "http://localhost:8080/test-other", metadata["resource"],
 			"Resource should be service-specific URL")
 
 		authzServers, ok := metadata["authorization_servers"].([]any)
@@ -86,7 +86,7 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 			"code_challenge_method": {"S256"},
 			"scope":                 {"openid email profile"},
 			"state":                 {"test-state"},
-			"resource":              {"http://localhost:8080/test-sse"},
+			"resource":              {"http://localhost:8080/test-other"},
 		}
 
 		client := &http.Client{
@@ -134,26 +134,26 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 		err = json.NewDecoder(tokenResp.Body).Decode(&tokenData)
 		require.NoError(t, err)
 
-		testSSEToken := tokenData["access_token"].(string)
-		require.NotEmpty(t, testSSEToken, "Should have access token")
+		testOtherToken := tokenData["access_token"].(string)
+		require.NotEmpty(t, testOtherToken, "Should have access token")
 
-		t.Logf("Got token with test-sse audience: %s", testSSEToken[:20]+"...")
+		t.Logf("Got token with test-other audience: %s", testOtherToken[:20]+"...")
 
-		// Verify token works for test-sse (matching audience)
-		req, _ := http.NewRequest("GET", "http://localhost:8080/test-sse/sse", nil)
-		req.Header.Set("Authorization", "Bearer "+testSSEToken)
+		// Verify token works for test-other (matching audience)
+		req, _ := http.NewRequest("GET", "http://localhost:8080/test-other", nil)
+		req.Header.Set("Authorization", "Bearer "+testOtherToken)
 		req.Header.Set("Accept", "text/event-stream")
 
-		sseResp, err := client.Do(req)
+		otherResp, err := client.Do(req)
 		require.NoError(t, err)
-		defer sseResp.Body.Close()
+		defer otherResp.Body.Close()
 
-		assert.Equal(t, 200, sseResp.StatusCode,
-			"Token with test-sse audience should access /test-sse/sse")
+		assert.Equal(t, 200, otherResp.StatusCode,
+			"Token with test-other audience should access /test-other")
 
 		// Verify token does NOT work for test-streamable (wrong audience)
-		req, _ = http.NewRequest("GET", "http://localhost:8080/test-streamable/sse", nil)
-		req.Header.Set("Authorization", "Bearer "+testSSEToken)
+		req, _ = http.NewRequest("GET", "http://localhost:8080/test-streamable", nil)
+		req.Header.Set("Authorization", "Bearer "+testOtherToken)
 		req.Header.Set("Accept", "text/event-stream")
 
 		streamableResp, err := client.Do(req)
@@ -161,7 +161,7 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 		defer streamableResp.Body.Close()
 
 		assert.Equal(t, 401, streamableResp.StatusCode,
-			"Token with test-sse audience should NOT access /test-streamable/sse")
+			"Token with test-other audience should NOT access /test-streamable")
 
 		wwwAuth := streamableResp.Header.Get("WWW-Authenticate")
 		assert.Contains(t, wwwAuth, "Bearer resource_metadata=",
@@ -180,7 +180,7 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 			},
 		}
 
-		req, _ := http.NewRequest("GET", "http://localhost:8080/test-sse/sse", nil)
+		req, _ := http.NewRequest("GET", "http://localhost:8080/test-other", nil)
 		req.Header.Set("Accept", "text/event-stream")
 
 		resp, err := client.Do(req)
@@ -192,7 +192,7 @@ func TestRFC8707ResourceIndicators(t *testing.T) {
 		wwwAuth := resp.Header.Get("WWW-Authenticate")
 		assert.Contains(t, wwwAuth, "Bearer resource_metadata=",
 			"401 response should include RFC 9728 WWW-Authenticate header")
-		assert.Contains(t, wwwAuth, "/.well-known/oauth-protected-resource/test-sse",
-			"401 response should point to test-sse specific metadata endpoint")
+		assert.Contains(t, wwwAuth, "/.well-known/oauth-protected-resource/test-other",
+			"401 response should point to test-other specific metadata endpoint")
 	})
 }

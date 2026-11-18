@@ -441,105 +441,6 @@ func TestOAuthAuthConfig_ValidationErrors(t *testing.T) {
 	}
 }
 
-func TestSessionConfig_UnmarshalJSON(t *testing.T) {
-	tests := []struct {
-		name            string
-		input           string
-		expectedTimeout time.Duration
-		expectedCleanup time.Duration
-		expectedError   bool
-	}{
-		{
-			name: "valid durations",
-			input: `{
-				"timeout": "10m",
-				"cleanupInterval": "2m"
-			}`,
-			expectedTimeout: 10 * time.Minute,
-			expectedCleanup: 2 * time.Minute,
-		},
-		{
-			name: "empty strings",
-			input: `{
-				"timeout": "",
-				"cleanupInterval": ""
-			}`,
-			expectedTimeout: 0,
-			expectedCleanup: 0,
-		},
-		{
-			name:            "missing fields",
-			input:           `{}`,
-			expectedTimeout: 0,
-			expectedCleanup: 0,
-		},
-		{
-			name: "invalid duration format",
-			input: `{
-				"timeout": "invalid",
-				"cleanupInterval": "2m"
-			}`,
-			expectedError: true,
-		},
-		{
-			name: "numeric values rejected",
-			input: `{
-				"timeout": 600000000000,
-				"cleanupInterval": 120000000000
-			}`,
-			expectedError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var config SessionConfig
-			err := json.Unmarshal([]byte(tt.input), &config)
-
-			if tt.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedTimeout, config.Timeout)
-				assert.Equal(t, tt.expectedCleanup, config.CleanupInterval)
-			}
-		})
-	}
-}
-
-func TestProxyConfig_SessionConfigIntegration(t *testing.T) {
-	input := `{
-		"baseURL": "http://localhost:8080",
-		"addr": ":8080",
-		"auth": {
-			"kind": "oauth",
-			"issuer": "https://auth.example.com",
-			"idp": {
-				"provider": "google",
-				"clientId": "test-client",
-				"clientSecret": "test-secret",
-				"redirectUri": "https://test.example.com/callback"
-			},
-			"jwtSecret": "test-jwt-secret-must-be-32-bytes-long",
-			"encryptionKey": "test-encryption-key-32-bytes-ok!",
-			"allowedDomains": ["example.com"],
-			"allowedOrigins": ["https://test.example.com"]
-		},
-		"sessions": {
-			"timeout": "15m",
-			"cleanupInterval": "3m"
-		}
-	}`
-
-	var config ProxyConfig
-	err := json.Unmarshal([]byte(input), &config)
-	require.NoError(t, err)
-
-	require.NotNil(t, config.Sessions)
-	assert.Equal(t, 15*time.Minute, config.Sessions.Timeout)
-	assert.Equal(t, 3*time.Minute, config.Sessions.CleanupInterval)
-}
-
 func TestMCPClientConfig_AggregateDefaults(t *testing.T) {
 	input := `{
 		"type": "aggregate",
@@ -551,7 +452,7 @@ func TestMCPClientConfig_AggregateDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, ServerTypeAggregate, cfg.Type)
-	assert.Equal(t, MCPClientTypeSSE, cfg.TransportType)
+	assert.Equal(t, MCPClientTypeStreamable, cfg.TransportType)
 	assert.Equal(t, []string{"postgres", "linear"}, cfg.Servers)
 	require.NotNil(t, cfg.Discovery)
 	assert.Equal(t, 10*time.Second, cfg.Discovery.Timeout)

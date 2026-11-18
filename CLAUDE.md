@@ -99,7 +99,7 @@ mcp-front implements per-service audience claims per RFC 8707 and MCP Specificat
 **Token flow:**
 1. Claude requests token with resource=https://mcp-integrations.stainless.com/postgres
 2. mcp-front issues token with aud=["https://mcp-integrations.stainless.com/postgres"]
-3. Claude sends token to /postgres/sse
+3. Claude sends token to /postgres
 4. mcp-front validates audience claim matches "/postgres" path
 5. Proxies to postgres backend (trusted, no further validation needed)
 
@@ -143,7 +143,7 @@ LOG_FORMAT="text"           # json or text
 1. Check existing servers in config
 2. Add to mcpServers section
 3. Configure auth tokens if using bearer auth
-4. Test the SSE endpoint
+4. Test the streamable HTTP endpoint (stdio and SSE servers need an aggregate)
 
 #### Updating OAuth scopes
 
@@ -171,7 +171,7 @@ internal/
 ├── storage/        # Storage abstraction (memory, Firestore)
 ├── inline/         # Inline MCP server implementation
 ├── mcpfront.go     # Main application orchestration (imperative shell)
-└── [utility packages: cookie, email, envutil, json, jsonrpc, log, sse, testutil]
+└── [utility packages: cookie, email, envutil, json, jsonrpc, log, testutil]
 
 integration/        # Integration tests (OAuth, security, scenarios)
 cmd/mcp-front/      # Main application entry point
@@ -212,8 +212,8 @@ cmd/mcp-front/      # Main application entry point
 - ✅ "An MCP client can connect to MCP Front with a bearer token"
 - ❌ "Users log in with their Google account"
 - ✅ "Claude redirects users to Google for authentication"
-- ❌ "Claude establishes SSE connection"
-- ✅ "Claude connects via SSE"
+- ❌ "Claude establishes a streamable HTTP connection"
+- ✅ "Claude connects via streamable HTTP"
 
 **Key clarifications:**
 

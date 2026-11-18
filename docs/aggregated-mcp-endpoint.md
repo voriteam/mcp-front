@@ -2,7 +2,7 @@
 
 ## Motivation
 
-mcp-front was built as a transparent auth proxy — it sits in front of MCP servers, handles OAuth, and forwards connections. Each backend gets its own endpoint (`/postgres/`, `/linear/`, `/gong/`), its own OAuth token with per-service audience, and its own SSE connection from the client.
+mcp-front was built as a transparent auth proxy — it sits in front of MCP servers, handles OAuth, and forwards connections. Each backend gets its own endpoint (`/postgres/`, `/linear/`, `/gong/`), its own OAuth token with per-service audience, and its own connection from the client.
 
 This design is correct from a security perspective (per-service token isolation, RFC 8707 compliance) but the main user feedback over the past ~6 months has been about the authentication experience: every service requires a separate login flow. When all your internal MCP servers share the same Google Workspace identity, authenticating 8 times to prove you're the same person is painful. When Claude drops your session, you re-authenticate 8 times again. When Codex spams warnings about unauthenticated MCPs at the start of every session, it's 8 warnings. The friction scales linearly with the number of services, and we keep adding services.
 
@@ -30,7 +30,7 @@ Minimal config — aggregate all servers with defaults:
 }
 ```
 
-The server name determines the path — `all-tools` gets mounted at `/all-tools/`, same as every other server.
+The server name determines the path — `all-tools` gets mounted at `/all-tools`, same as every other server. Aggregates serve streamable HTTP only, so `transportType` defaults to `"streamable-http"` and any other value is rejected.
 
 Defaults:
 
@@ -86,10 +86,9 @@ The aggregate server acts as an MCP server to the client and an MCP client to ev
 
 ### Connection lifecycle
 
-1. Client opens SSE, receives a message endpoint URL
-2. Client sends `initialize` — aggregate responds with MCP capabilities
-3. Client sends `tools/list` — aggregate fans out to all backends in parallel, collects and namespaces tools, returns unified list
-4. Client sends `tools/call` with `linear.create_issue` — aggregate parses the prefix, routes to linear backend, returns result
+1. Client POSTs `initialize` to `/all-tools` — aggregate responds with MCP capabilities
+2. Client sends `tools/list` — aggregate fans out to all backends in parallel, collects and namespaces tools, returns unified list
+3. Client sends `tools/call` with `linear.create_issue` — aggregate parses the prefix, routes to linear backend, returns result
 
 ### Tool namespacing
 
@@ -117,7 +116,7 @@ User A's tokens are never mixed with user B's.
 
 Tool discovery fans out to all backends in parallel. After `discovery.timeout` (default 10s), the aggregate returns whatever tools have been collected. Backends that haven't responded are skipped — healthy backends aren't held hostage by broken ones.
 
-Results are cached globally for the duration of `discovery.cacheTtl` (default 60s). When the SSE connection first opens, discovery starts immediately in the background so `tools/list` is fast.
+Results are cached globally for the duration of `discovery.cacheTtl` (default 60s).
 
 ### User tokens
 
@@ -156,13 +155,13 @@ Each backend's own `options.toolFilter` applies during aggregation. The filter m
 
 ## What stays the same
 
-Per-service endpoints (`/postgres/`, `/linear/`, etc.) continue to work. The aggregate endpoint is additive. Some deployments may prefer per-service connections for token isolation or when a client only needs a single service.
+Per-service endpoints continue to work for streamable HTTP and inline servers. Stdio and SSE backends have no endpoint of their own and are reachable only through an aggregate. Some deployments may prefer per-service connections for token isolation or when a client only needs a single service.
 
 ## Scope
 
 **Tools only.** Prompts and resources are not aggregated. Tools are the primary use case, and namespacing resources (which have URI-based identities) is significantly more complex.
 
-**SSE transport.** Uses the SSE + POST message pattern. Streamable HTTP can be added later.
+**Streamable HTTP transport.** Clients connect over streamable HTTP. Backends can speak stdio, SSE, or streamable HTTP.
 
 ## Future
 

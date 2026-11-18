@@ -15,8 +15,8 @@ func TestAuthMatrix_OAuthOnly(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-auth-matrix-oauth-only",
 		testOAuthConfigFromEnv(),
 		map[string]any{
-			"postgres": testPostgresServer(),
-			"other":    testPostgresServer(),
+			"postgres": testStreamableServer(),
+			"other":    testStreamableServer(),
 		},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg),
@@ -84,5 +84,5 @@ func TestAuthMatrix_OAuthOnly(t *testing.T) {
 		},
 	}
 
-	runAuthMatrix(t, "http://localhost:8080/postgres/sse", cases)
+	runAuthMatrix(t, "http://localhost:8080/postgres", cases)
 }

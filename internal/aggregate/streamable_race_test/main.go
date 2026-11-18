@@ -49,12 +49,10 @@ func main() {
 	}
 	agg := aggregate.NewServer(aggregate.ServerConfig{
 		Name:            "aggregate",
-		TransportType:   config.MCPClientTypeStreamable,
 		Backends:        map[string]*config.MCPClientConfig{"backend": backendCfg},
 		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		Delimiter:       ".",
 		CreateTransport: client.DefaultTransportCreator,
-		BaseURL:         "http://localhost:0",
 	})
 	agg.Start()
 	defer func() { _ = agg.Shutdown(context.Background()) }()

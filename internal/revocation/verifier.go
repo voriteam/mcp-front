@@ -33,7 +33,6 @@ type Store interface {
 	DeleteIdentityToken(ctx context.Context, userEmail string) error
 	ListUserServices(ctx context.Context, userEmail string) ([]string, error)
 	DeleteUserToken(ctx context.Context, userEmail, service string) error
-	RevokeUserSessions(ctx context.Context, userEmail string) error
 }
 
 // IdentityRefresher replays a stored refresh token against the identity provider.
@@ -135,12 +134,6 @@ func (v *Verifier) purge(ctx context.Context, userEmail string) {
 				"error":   err.Error(),
 			})
 		}
-	}
-	if err := v.store.RevokeUserSessions(ctx, userEmail); err != nil {
-		log.LogErrorWithFields("revocation", "Failed to revoke sessions", map[string]any{
-			"email": userEmail,
-			"error": err.Error(),
-		})
 	}
 }
 

@@ -3,11 +3,11 @@ title: Server Types
 description: Transport types and aggregate servers
 ---
 
-MCP Front supports four transport types plus an aggregate type that combines multiple backends into a single endpoint.
+MCP Front supports four backend transport types plus an aggregate type that combines multiple backends into a single endpoint. MCP clients always connect to MCP Front over streamable HTTP at `/{server}`. Streamable HTTP and inline servers get their own endpoint. Stdio and SSE servers are reachable only through an aggregate.
 
 ## Stdio servers
 
-Stdio servers spawn an isolated subprocess per user. MCP Front communicates with the process over stdin/stdout using MCP's JSON-RPC protocol.
+Stdio servers run as a subprocess per user, started by the aggregate that references them. MCP Front communicates with the process over stdin/stdout using MCP's JSON-RPC protocol.
 
 ```json
 {
@@ -44,7 +44,7 @@ MCP Front spawns processes directly — for sandboxing, use containers or system
 
 ## SSE servers
 
-For MCP servers that expose a Server-Sent Events endpoint. MCP Front connects to the backend and proxies bidirectional messages.
+For backend MCP servers that expose a Server-Sent Events endpoint. MCP Front connects to the backend as an SSE client, so an SSE server must be referenced by an aggregate.
 
 ```json
 {
@@ -65,7 +65,7 @@ Headers and URL support `{"$env": "VAR"}` and `{"$userToken": "...{{token}}..."}
 
 ## Streamable HTTP servers
 
-For MCP servers using HTTP with streaming responses. Configuration is identical to SSE.
+For MCP servers using HTTP with streaming responses. Configuration is identical to SSE. MCP Front proxies `/{server}` directly to the backend.
 
 ```json
 {
@@ -115,7 +115,7 @@ Inline servers define tools directly in the config file. Each tool runs a comman
 
 Each tool needs a `name`, `description`, `inputSchema` (JSON Schema), and a `command`. The `args`, `env`, and `timeout` fields are optional and support `{"$env": "VAR"}` syntax.
 
-Inline servers cannot be referenced by aggregate servers.
+Inline servers answer each request statelessly with a JSON response and do not offer a server stream. They cannot be referenced by aggregate servers.
 
 ## Aggregate servers
 
@@ -141,7 +141,7 @@ Aggregate servers combine tools from multiple backends into a single endpoint. I
 }
 ```
 
-Connect to `/all/sse` to see tools from both backends. Tools are namespaced as `serverName.toolName` — a tool called `query` from postgres becomes `postgres.query`.
+Connect to `/all` to see tools from both backends. Tools are namespaced as `serverName.toolName` — a tool called `query` from postgres becomes `postgres.query`.
 
 ### Default behavior
 
@@ -194,13 +194,9 @@ An aggregate can offer a full backend that each user connects with their own tok
 
 Once a user's `notion` discovery returns tools, that user stops seeing `notion-read-only` tools, and calls to them fail as unknown tools. Users without a Notion token keep `notion-read-only`, and so does a user whose Notion discovery fails with no recent tools to fall back on. Every name in `supersedes` must be one of the aggregate's servers, and a superseded backend cannot supersede others.
 
-### Transport type
-
-Aggregate servers default to SSE. Set `"transportType": "streamable-http"` if your client prefers that protocol.
-
 ### Constraints
 
-Aggregates cannot reference themselves, other aggregates, or inline servers.
+Aggregates cannot reference themselves, other aggregates, or inline servers. An aggregate serves streamable HTTP only, so `transportType` can be omitted or set to `"streamable-http"`.
 
 ## Service authentication
 

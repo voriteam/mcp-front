@@ -61,6 +61,10 @@ func generateDefaultConfig(path string) error {
 					"POSTGRES_PASSWORD": map[string]string{"$env": "POSTGRES_PASSWORD"},
 				},
 			},
+			"gateway": map[string]any{
+				"type":    "aggregate",
+				"servers": []string{"postgres"},
+			},
 		},
 	}
 

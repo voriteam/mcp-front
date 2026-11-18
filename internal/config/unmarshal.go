@@ -89,7 +89,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		c.StreamlineResponses = raw.StreamlineResponses
 		c.Supersedes = raw.Supersedes
 		if c.TransportType == "" {
-			c.TransportType = MCPClientTypeSSE
+			c.TransportType = MCPClientTypeStreamable
 		}
 		if raw.Discovery != nil {
 			disc, err := parseDiscoveryConfig(raw.Discovery)
@@ -521,11 +521,10 @@ func parseIDPConfig(data json.RawMessage) (*IDPConfig, error) {
 func (p *ProxyConfig) UnmarshalJSON(data []byte) error {
 	// Use a raw type to parse references
 	type rawProxy struct {
-		BaseURL  json.RawMessage `json:"baseURL"`
-		Addr     json.RawMessage `json:"addr"`
-		Name     string          `json:"name"`
-		Auth     json.RawMessage `json:"auth"`
-		Sessions *SessionConfig  `json:"sessions"`
+		BaseURL json.RawMessage `json:"baseURL"`
+		Addr    json.RawMessage `json:"addr"`
+		Name    string          `json:"name"`
+		Auth    json.RawMessage `json:"auth"`
 	}
 
 	var raw rawProxy
@@ -534,7 +533,6 @@ func (p *ProxyConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	p.Name = raw.Name
-	p.Sessions = raw.Sessions
 
 	// Parse BaseURL
 	if raw.BaseURL != nil {
@@ -838,44 +836,6 @@ func (u *UserAuthentication) UnmarshalJSON(data []byte) error {
 
 	default:
 		return fmt.Errorf("unknown user auth type: %s", u.Type)
-	}
-
-	return nil
-}
-
-// UnmarshalJSON implements custom unmarshaling for SessionConfig
-func (s *SessionConfig) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Timeout         string `json:"timeout"`
-		CleanupInterval string `json:"cleanupInterval"`
-		MaxPerUser      *int   `json:"maxPerUser"` // Pointer to detect explicit 0
-	}
-
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-
-	// Parse timeout if present
-	if raw.Timeout != "" {
-		timeout, err := time.ParseDuration(raw.Timeout)
-		if err != nil {
-			return fmt.Errorf("parsing timeout: %w", err)
-		}
-		s.Timeout = timeout
-	}
-
-	// Parse cleanupInterval if present
-	if raw.CleanupInterval != "" {
-		interval, err := time.ParseDuration(raw.CleanupInterval)
-		if err != nil {
-			return fmt.Errorf("parsing cleanupInterval: %w", err)
-		}
-		s.CleanupInterval = interval
-	}
-
-	// Set MaxPerUser if present (0 is a valid value, means no upper bound)
-	if raw.MaxPerUser != nil {
-		s.MaxPerUser = *raw.MaxPerUser
 	}
 
 	return nil

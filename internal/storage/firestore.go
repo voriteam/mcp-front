@@ -20,7 +20,6 @@ import (
 )
 
 const (
-	sessionsCollection       = "mcp_front_sessions"
 	grantsCollection         = "mcp_front_grants"
 	serviceRegCollection     = "mcp_front_service_registrations"
 	identityTokensCollection = "mcp_front_identity_tokens"
@@ -627,59 +626,6 @@ func (s *FirestoreStorage) ListIdentityTokenUsers(ctx context.Context) ([]string
 
 	slices.Sort(users)
 	return users, nil
-}
-
-type SessionDoc struct {
-	SessionID  string    `firestore:"session_id"`
-	UserEmail  string    `firestore:"user_email"`
-	ServerName string    `firestore:"server_name"`
-	Created    time.Time `firestore:"created"`
-	LastActive time.Time `firestore:"last_active"`
-}
-
-func (s *FirestoreStorage) TrackSession(ctx context.Context, session ActiveSession) error {
-	now := time.Now()
-	if session.Created.IsZero() {
-		session.Created = now
-	}
-
-	sessionDoc := SessionDoc{
-		SessionID:  session.SessionID,
-		UserEmail:  session.UserEmail,
-		ServerName: session.ServerName,
-		Created:    session.Created,
-		LastActive: now,
-	}
-
-	_, err := s.client.Collection(sessionsCollection).Doc(session.SessionID).Set(ctx, sessionDoc)
-	return err
-}
-
-func (s *FirestoreStorage) RevokeSession(ctx context.Context, sessionID string) error {
-	_, err := s.client.Collection(sessionsCollection).Doc(sessionID).Delete(ctx)
-	if err != nil && status.Code(err) != codes.NotFound {
-		return err
-	}
-	return nil
-}
-
-func (s *FirestoreStorage) RevokeUserSessions(ctx context.Context, userEmail string) error {
-	iter := s.client.Collection(sessionsCollection).Where("user_email", "==", userEmail).Documents(ctx)
-	defer iter.Stop()
-
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to iterate sessions: %w", err)
-		}
-		if _, err := doc.Ref.Delete(ctx); err != nil && status.Code(err) != codes.NotFound {
-			return fmt.Errorf("failed to delete session %s: %w", doc.Ref.ID, err)
-		}
-	}
-	return nil
 }
 
 type IdentityTokenDoc struct {

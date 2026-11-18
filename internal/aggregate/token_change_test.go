@@ -22,7 +22,7 @@ func TestClientsSeeAConnectedServiceWithoutWaitingForTheCache(t *testing.T) {
 	for _, gc := range gatewayClients {
 		t.Run(gc.name, func(t *testing.T) {
 			var connected atomic.Bool
-			gw := startGateway(t, gc.transport, time.Hour, func(userEmail, backendName string) bool {
+			gw := startGateway(t, time.Hour, func(userEmail, backendName string) bool {
 				return backendName == "linear" && connected.Load()
 			})
 			alice := gc.connect(t, gw, "alice@vori.com")
@@ -74,8 +74,7 @@ func TestUserTokenChangedLeavesOtherUsersCachedViews(t *testing.T) {
 		"http://localhost/linear": newMockTransport([]mcp.Tool{{Name: "list_issues"}}),
 	}
 	srv := NewServer(ServerConfig{
-		Name:          "gw",
-		TransportType: config.MCPClientTypeStreamable,
+		Name: "gw",
 		Backends: map[string]*config.MCPClientConfig{
 			"docs":   {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/docs"},
 			"linear": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/linear", RequiresUserToken: true},

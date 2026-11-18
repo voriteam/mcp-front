@@ -2,7 +2,6 @@ package integration
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -44,6 +43,29 @@ func testPostgresServer(opts ...serverOption) map[string]any {
 		"transportType": "stdio",
 		"command":       "docker",
 		"args":          args,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// Stdio backends are reachable only through an aggregate.
+func testAggregate(servers []string, opts ...serverOption) map[string]any {
+	s := map[string]any{
+		"type":    "aggregate",
+		"servers": servers,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+func testStreamableServer(opts ...serverOption) map[string]any {
+	s := map[string]any{
+		"transportType": "streamable-http",
+		"url":           "http://localhost:3002",
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -251,45 +273,6 @@ func buildTestConfig(baseURL, name string, auth map[string]any, mcpServers map[s
 	}
 }
 
-// TestConfig holds all timeout configurations for integration tests
-type TestConfig struct {
-	SessionTimeout     string
-	CleanupInterval    string
-	CleanupWaitTime    string
-	TimerResetWaitTime string
-	MultiUserWaitTime  string
-}
-
-// GetTestConfig returns test configuration from environment variables or defaults
-func GetTestConfig() TestConfig {
-	c := TestConfig{
-		SessionTimeout:     "10s",
-		CleanupInterval:    "2s",
-		CleanupWaitTime:    "15s",
-		TimerResetWaitTime: "12s",
-		MultiUserWaitTime:  "15s",
-	}
-
-	// Override from environment if set
-	if v := os.Getenv("SESSION_TIMEOUT"); v != "" {
-		c.SessionTimeout = v
-	}
-	if v := os.Getenv("SESSION_CLEANUP_INTERVAL"); v != "" {
-		c.CleanupInterval = v
-	}
-	if v := os.Getenv("TEST_CLEANUP_WAIT_TIME"); v != "" {
-		c.CleanupWaitTime = v
-	}
-	if v := os.Getenv("TEST_TIMER_RESET_WAIT_TIME"); v != "" {
-		c.TimerResetWaitTime = v
-	}
-	if v := os.Getenv("TEST_MULTI_USER_WAIT_TIME"); v != "" {
-		c.MultiUserWaitTime = v
-	}
-
-	return c
-}
-
 func waitForDB(t *testing.T) {
 	waitForSec := 5
 	for range waitForSec {
@@ -318,34 +301,11 @@ func trace(t *testing.T, format string, args ...any) {
 	}
 }
 
-// tracef logs a formatted message to stdout if TRACE is set (for use outside tests)
-func tracef(format string, args ...any) {
-	if os.Getenv("TRACE") == "1" {
-		fmt.Printf("TRACE: "+format+"\n", args...)
-	}
-}
-
 // startMCPFront starts the mcp-front server with the given config
 func startMCPFront(t *testing.T, configPath string, extraEnv ...string) {
 	mcpCmd := exec.Command("../cmd/mcp-front/mcp-front", "-config", configPath)
 
-	// Get test config for session timeouts
-	testConfig := GetTestConfig()
-
-	// Build default environment with test timeouts
-	defaultEnv := []string{
-		"SESSION_TIMEOUT=" + testConfig.SessionTimeout,
-		"SESSION_CLEANUP_INTERVAL=" + testConfig.CleanupInterval,
-	}
-
-	// Start with system environment
-	mcpCmd.Env = os.Environ()
-
-	// Apply defaults first
-	mcpCmd.Env = append(mcpCmd.Env, defaultEnv...)
-
-	// Apply extra env (can override defaults)
-	mcpCmd.Env = append(mcpCmd.Env, extraEnv...)
+	mcpCmd.Env = append(os.Environ(), extraEnv...)
 
 	// Pass through LOG_LEVEL and LOG_FORMAT if set
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
@@ -462,7 +422,7 @@ func TestQuickSmoke(t *testing.T) {
 	t.Log("Running quick smoke test...")
 
 	// Just verify the test infrastructure works
-	client := NewMCPSSEClient("http://localhost:8080")
+	client := NewMCPClient("http://localhost:8080")
 	if client == nil {
 		t.Fatal("Failed to create client")
 	}

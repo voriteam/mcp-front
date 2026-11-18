@@ -89,24 +89,6 @@ Listen address, typically `":8080"` for port 8080 on all interfaces.
 
 Used as the MCP server implementation name. Optional.
 
-### `proxy.sessions`
-
-Session management configuration. All fields are optional.
-
-```json
-{
-  "proxy": {
-    "sessions": {
-      "timeout": "24h",
-      "cleanupInterval": "15m",
-      "maxPerUser": 5
-    }
-  }
-}
-```
-
-`timeout` controls how long sessions last (default: `"5m"`). `cleanupInterval` is how often expired sessions are garbage collected (default: `"1m"`). `maxPerUser` limits concurrent sessions per user (default: `10`, set to `0` for unlimited).
-
 ## Authentication
 
 Configure OAuth under `proxy.auth`.
@@ -269,8 +251,12 @@ Each server needs at least a `transportType`. See [Server Types](/mcp-front/serv
       }
     },
     "linear": {
-      "transportType": "sse",
-      "url": "http://linear-mcp:3000/sse"
+      "transportType": "streamable-http",
+      "url": "http://linear-mcp:3000/mcp"
+    },
+    "gateway": {
+      "type": "aggregate",
+      "servers": ["postgres"]
     }
   }
 }
@@ -278,7 +264,7 @@ Each server needs at least a `transportType`. See [Server Types](/mcp-front/serv
 
 ### Server names
 
-Server names must start with an alphanumeric character and contain only alphanumeric characters, underscores, and hyphens. A server named `"postgres"` is accessible at `/postgres/sse`.
+Server names must start with an alphanumeric character and contain only alphanumeric characters, underscores, and hyphens. A streamable HTTP, inline, or aggregate server named `"linear"` is accessible at `/linear`. Stdio and SSE servers have no endpoint of their own and are reachable through an aggregate, as `postgres` is through `/gateway` above.
 
 ### `serviceAuths`
 
@@ -418,6 +404,9 @@ LOG_FORMAT=json            # Options: json (structured) or text (human-readable)
       "env": {
         "NOTION_TOKEN": { "$userToken": "{{token}}" }
       }
+    },
+    "gateway": {
+      "type": "aggregate"
     }
   }
 }
@@ -449,4 +438,4 @@ This example adds an aggregate server to the production config. OAuth configurat
 }
 ```
 
-Claude connects to `/all/sse` and sees namespaced tools like `postgres.query` and `linear.create_issue`.
+Claude connects to `/all` and sees namespaced tools like `postgres.query` and `linear.create_issue`.

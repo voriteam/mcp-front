@@ -27,9 +27,9 @@
     }
   },
   "mcpServers": {
-    "test-sse": {
-      "transportType": "sse",
-      "url": "http://localhost:3001/sse"
+    "test-other": {
+      "transportType": "streamable-http",
+      "url": "http://localhost:3002"
     },
     "test-streamable": {
       "transportType": "streamable-http",

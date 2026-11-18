@@ -97,7 +97,7 @@ echo -e "${GREEN}🎉 Demo environment is ready!${NC}"
 echo "==========================================="
 echo ""
 echo "MCP Server URLs for Claude.ai:"
-echo -e "${YELLOW}  http://localhost:8080/postgres/sse${NC}"
+echo -e "${YELLOW}  http://localhost:8080/postgres${NC}"
 echo ""
 if [ "$USE_OAUTH" = true ]; then
     echo "Authentication: Google OAuth"
@@ -105,7 +105,7 @@ if [ "$USE_OAUTH" = true ]; then
     echo "  Allowed domains: test.com (see config/config.oauth-test.json)"
     echo ""
     echo "To connect from MCP Inspector:"
-    echo "1. Add MCP server: http://localhost:8080/postgres/sse"
+    echo "1. Add MCP server: http://localhost:8080/postgres"
     echo "2. The OAuth flow will start automatically"
     echo "3. Sign in with a Google account from an allowed domain"
 else
@@ -113,7 +113,7 @@ else
     echo "  Token: test-token (or demo-token)"
     echo ""
     echo "To connect from Claude.ai or MCP Inspector:"
-    echo "1. Add MCP server: http://localhost:8080/postgres/sse"
+    echo "1. Add MCP server: http://localhost:8080/postgres"
     echo "2. Use Bearer token: test-token"
 fi
 echo ""
