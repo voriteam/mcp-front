@@ -163,9 +163,13 @@ func ValidateConfig(config *Config) error {
 	hasOAuth := config.Proxy.Auth != nil
 
 	aggregateNames := make(map[string]bool)
+	aggregateMembers := make(map[string]bool)
 	for name, server := range config.MCPServers {
 		if server.IsAggregate() {
 			aggregateNames[name] = true
+			for _, ref := range server.Servers {
+				aggregateMembers[ref] = true
+			}
 		}
 	}
 
@@ -176,6 +180,16 @@ func ValidateConfig(config *Config) error {
 
 		if err := validateMCPServer(name, server); err != nil {
 			return err
+		}
+
+		if !server.IsAggregate() && !aggregateMembers[name] {
+			switch server.TransportType {
+			case MCPClientTypeStdio, MCPClientTypeSSE, MCPClientTypeBuiltin:
+				log.LogWarnWithFields("config", "Server is served only through an aggregate and no aggregate references it, so it has no route", map[string]any{
+					"server":         name,
+					"transport_type": server.TransportType,
+				})
+			}
 		}
 
 		if server.IsAggregate() {
