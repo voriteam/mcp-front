@@ -16,17 +16,19 @@ import (
 
 // ServiceAuthHandlers handles OAuth flows for external services
 type ServiceAuthHandlers struct {
-	oauthClient *auth.ServiceOAuthClient
-	mcpServers  map[string]*config.MCPClientConfig
-	storage     storage.Storage
+	oauthClient   *auth.ServiceOAuthClient
+	mcpServers    map[string]*config.MCPClientConfig
+	storage       storage.Storage
+	tokenListener UserTokenListener
 }
 
 // NewServiceAuthHandlers creates new service auth handlers
-func NewServiceAuthHandlers(oauthClient *auth.ServiceOAuthClient, mcpServers map[string]*config.MCPClientConfig, storage storage.Storage) *ServiceAuthHandlers {
+func NewServiceAuthHandlers(oauthClient *auth.ServiceOAuthClient, mcpServers map[string]*config.MCPClientConfig, storage storage.Storage, tokenListener UserTokenListener) *ServiceAuthHandlers {
 	return &ServiceAuthHandlers{
-		oauthClient: oauthClient,
-		mcpServers:  mcpServers,
-		storage:     storage,
+		oauthClient:   oauthClient,
+		mcpServers:    mcpServers,
+		storage:       storage,
+		tokenListener: tokenListener,
 	}
 }
 
@@ -173,6 +175,8 @@ func (h *ServiceAuthHandlers) CallbackHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	h.tokenListener.UserTokenChanged(result.UserEmail, serviceName)
+
 	// Log successful connection
 	log.LogInfoWithFields("oauth_handlers", "OAuth connection successful", map[string]any{
 		"service": serviceName,
@@ -267,6 +271,7 @@ func (h *ServiceAuthHandlers) DisconnectHandler(w http.ResponseWriter, r *http.R
 		jsonwriter.WriteInternalServerError(w, "Failed to disconnect")
 		return
 	}
+	h.tokenListener.UserTokenChanged(userEmail, serviceName)
 
 	log.LogInfoWithFields("oauth_handlers", "OAuth disconnection successful", map[string]any{
 		"service": serviceName,

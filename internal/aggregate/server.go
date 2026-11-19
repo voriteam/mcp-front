@@ -67,10 +67,12 @@ type conn struct {
 	lastAccessed atomic.Pointer[time.Time]
 }
 
-// cachedTools holds discovered tool schemas, valid until expires.
+// cachedTools holds discovered tool schemas, valid until expires. gen is the
+// user's token generation a token-gated discovery ran under.
 type cachedTools struct {
 	tools   map[string][]mcp.Tool // backendName -> filtered tools
 	expires time.Time
+	gen     uint64
 }
 
 // userView is the tool list one user is shown, built from the discoveries it
@@ -127,6 +129,7 @@ type Server struct {
 	cacheMu        sync.RWMutex
 	sharedCache    *cachedTools            // tools from backends needing no user token
 	userCache      map[string]*cachedTools // token-gated tools, keyed by userEmail
+	userGen        map[string]uint64       // bumped when a user's token changes
 	lastGood       map[lastGoodKey]*backendTools
 	views          map[string]*userView
 	discoveryGroup singleflight.Group
@@ -200,6 +203,7 @@ func NewServer(cfg ServerConfig) *Server {
 		createTransport:     cfg.CreateTransport,
 		baseURL:             cfg.BaseURL,
 		userCache:           make(map[string]*cachedTools),
+		userGen:             make(map[string]uint64),
 		lastGood:            make(map[lastGoodKey]*backendTools),
 		views:               make(map[string]*userView),
 		registered:          make(map[string]mcp.Tool),
@@ -327,13 +331,14 @@ func (s *Server) filterTools(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
 }
 
 // ensureView gives a tool call a view to check against, waiting on discovery
-// only when the user has none.
+// only when the user has none or their tokens changed since it was built.
 func (s *Server) ensureView(ctx context.Context, userEmail string) {
 	s.cacheMu.RLock()
 	view := s.views[userEmail]
+	tokenChanged := view != nil && view.user != nil && view.user.gen != s.userGen[userEmail]
 	s.cacheMu.RUnlock()
 
-	if view == nil {
+	if view == nil || tokenChanged {
 		s.refreshView(ctx, userEmail)
 		return
 	}
@@ -379,7 +384,12 @@ func (s *Server) logDiscoveryFailure(userEmail string, err error) {
 	})
 }
 
+// storeView holds registryMu throughout, so a caller that finds its view
+// already stored returns only after the tools it lists are registered.
 func (s *Server) storeView(userEmail string, shared, user *cachedTools) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+
 	s.cacheMu.RLock()
 	prev := s.views[userEmail]
 	s.cacheMu.RUnlock()
@@ -396,7 +406,7 @@ func (s *Server) storeView(userEmail string, shared, user *cachedTools) {
 	s.views[userEmail] = view
 	s.cacheMu.Unlock()
 
-	s.syncRegistry(prev != nil && !reflect.DeepEqual(prev.tools, view.tools))
+	s.syncRegistryLocked(prev != nil && !reflect.DeepEqual(prev.tools, view.tools))
 }
 
 func (s *Server) presentTools(tools map[string][]mcp.Tool) map[string]mcp.Tool {
@@ -434,7 +444,10 @@ func supersededBackends(supersedes map[string][]string, tools map[string][]mcp.T
 func (s *Server) syncRegistry(viewChanged bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
+	s.syncRegistryLocked(viewChanged)
+}
 
+func (s *Server) syncRegistryLocked(viewChanged bool) {
 	// Users can hold different definitions of one tool. Keeping the registered
 	// one while any view still has it stops the registry flapping between them.
 	s.cacheMu.RLock()
@@ -569,9 +582,12 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (*cachedToo
 		s.cacheMu.RUnlock()
 		return cached, nil
 	}
+	gen := s.userGen[userEmail]
 	s.cacheMu.RUnlock()
 
-	v, err, _ := s.discoveryGroup.Do("discover:user:"+userEmail, func() (any, error) {
+	// The generation keeps a discovery that began before a token change from
+	// being shared with, or cached for, requests made after it.
+	v, err, _ := s.discoveryGroup.Do(fmt.Sprintf("discover:user:%d:%s", gen, userEmail), func() (any, error) {
 		// Double-check inside singleflight.
 		s.cacheMu.RLock()
 		if cached, ok := s.userCache[userEmail]; ok && time.Now().Before(cached.expires) {
@@ -592,9 +608,12 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (*cachedToo
 		cached := &cachedTools{
 			tools:   tools,
 			expires: time.Now().Add(s.discoveryCacheTTL(complete)),
+			gen:     gen,
 		}
 		s.cacheMu.Lock()
-		s.userCache[userEmail] = cached
+		if s.userGen[userEmail] == gen {
+			s.userCache[userEmail] = cached
+		}
 		s.cacheMu.Unlock()
 		return cached, nil
 	})
@@ -603,6 +622,37 @@ func (s *Server) getUserTools(ctx context.Context, userEmail string) (*cachedToo
 		return nil, err
 	}
 	return v.(*cachedTools), nil
+}
+
+// UserTokenChanged drops the user's discovery and pooled connection for a
+// token-gated backend whose token was stored or removed, then rediscovers the
+// user's view so connected clients are told to re-list if it changed.
+func (s *Server) UserTokenChanged(userEmail, serviceName string) {
+	if s.userBackends[serviceName] == nil {
+		return
+	}
+
+	s.cacheMu.Lock()
+	delete(s.userCache, userEmail)
+	delete(s.lastGood, lastGoodKey{scope: userEmail, backendName: serviceName})
+	s.userGen[userEmail]++
+	_, hasView := s.views[userEmail]
+	s.cacheMu.Unlock()
+
+	key := connKey{userEmail: userEmail, backendName: serviceName}
+	s.connMu.RLock()
+	c, ok := s.conns[key]
+	s.connMu.RUnlock()
+	if ok {
+		s.evictConn(key, c)
+	}
+
+	if hasView {
+		select {
+		case s.refreshCh <- viewRefresh{ctx: context.Background(), userEmail: userEmail}:
+		default:
+		}
+	}
 }
 
 // backendsWithUserToken returns the subset of token-gated backends for which
