@@ -386,11 +386,9 @@ Don't list every file touched or documentation update unless that's the main cha
 4. **Build failures**: Usually missing imports or malformed frontmatter
 5. **Content not updating**: Astro dev server cache, restart required
 
-### Deployment
+### Build
 
-- Uses GitHub Pages with workflow in `.github/workflows/`
 - Build artifacts in `docs-site/dist/`
-- Base path: `/mcp-front` for GitHub Pages
 - Prettier formatting enforced
 
 Remember: The mascot is an easter egg, not a distraction. Subtle movements create personality without being annoying.
