@@ -232,7 +232,7 @@ func TestAggregateToolFilter(t *testing.T) {
 }
 
 func TestAggregateSupersedes(t *testing.T) {
-	const cacheTTL = 2 * time.Second
+	const cacheTTL = time.Hour
 	mcpServers := map[string]any{
 		"notes": map[string]any{
 			"transportType":     "sse",
@@ -283,9 +283,8 @@ func TestAggregateSupersedes(t *testing.T) {
 	require.Equal(t, readOnlyTools, aggregateToolNames(t, client), "a user without a notes token sees the read-only backend")
 
 	submitTokenForm(t, "set", url.Values{"service": {"notes"}, "token": {"notes-token"}})
-	time.Sleep(cacheTTL + 500*time.Millisecond)
 
-	assert.Equal(t, fullTools, aggregateToolNames(t, client), "the connected session swaps the read-only backend for the full one")
+	assert.Equal(t, fullTools, aggregateToolNames(t, client), "saving the token swaps the read-only backend for the full one on the next tools/list")
 
 	result, err := client.SendMCPRequest("tools/call", map[string]any{"name": "notes-read-only.get_time", "arguments": map[string]any{}})
 	require.NoError(t, err)
@@ -298,9 +297,14 @@ func TestAggregateSupersedes(t *testing.T) {
 	assert.NotContains(t, result, "error")
 
 	submitTokenForm(t, "delete", url.Values{"service": {"notes"}})
-	time.Sleep(cacheTTL + 500*time.Millisecond)
 
-	assert.Equal(t, readOnlyTools, aggregateToolNames(t, connect(t)), "a new session after disconnecting sees the read-only backend again")
+	assert.Equal(t, readOnlyTools, aggregateToolNames(t, client), "removing the token brings the read-only backend back on the next tools/list")
+
+	result, err = client.SendMCPRequest("tools/call", map[string]any{"name": "notes.echo_text", "arguments": map[string]any{"text": "hi"}})
+	require.NoError(t, err)
+	rpcErr, ok = result["error"].(map[string]any)
+	require.True(t, ok, "calling a disconnected backend's tool must fail, got %v", result)
+	assert.Contains(t, rpcErr["message"], "not found")
 }
 
 func aggregateToolNames(t *testing.T, client *MCPSSEClient) []string {

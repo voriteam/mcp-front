@@ -374,6 +374,61 @@ func buildHTTPHandler(
 		browserStateToken = &token
 	}
 
+	backendTokenSources, err := buildBackendTokenSources(context.Background(), cfg.MCPServers)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Built only when a server asks for it, so a deployment using no builtin
+	// starts without any of its environment set.
+	builtinRegistry := builtin.Registry{}
+	for _, serverConfig := range cfg.MCPServers {
+		if serverConfig.TransportType != config.MCPClientTypeBuiltin || serverConfig.Builtin != "onboarding" {
+			continue
+		}
+		tools, err := builtin.OnboardingTools(builtin.OnboardingConfig{
+			SigningKey:      []byte(os.Getenv("INVITATION_SIGNING_SECRET")),
+			DefaultTokenTTL: 7 * 24 * time.Hour,
+			AppRootURL:      os.Getenv("APP_ROOT_URL"),
+			Issuer:          os.Getenv("VORI_JWT_ISSUER"),
+			TinyURLAPIKey:   os.Getenv("TINYURL_API_KEY"),
+			ShortenerDomain: os.Getenv("URL_SHORTENER_DOMAIN"),
+			ShortenerTags:   []string{"gtm-onboarding"},
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		builtinRegistry["onboarding"] = tools
+		break
+	}
+	createTransport := builtin.TransportCreator(builtinRegistry, client.DefaultTransportCreator)
+
+	var aggregates aggregateServers
+	for serverName, serverConfig := range cfg.MCPServers {
+		if !serverConfig.IsAggregate() {
+			continue
+		}
+
+		backendConfigs := make(map[string]*config.MCPClientConfig, len(serverConfig.Servers))
+		for _, ref := range serverConfig.Servers {
+			backendConfigs[ref] = cfg.MCPServers[ref]
+		}
+
+		aggregates = append(aggregates, aggregate.NewServer(aggregate.ServerConfig{
+			Name:                serverName,
+			TransportType:       serverConfig.TransportType,
+			Backends:            backendConfigs,
+			Discovery:           serverConfig.Discovery,
+			Delimiter:           serverConfig.Delimiter,
+			StreamlineResponses: serverConfig.StreamlineResponses,
+			Supersedes:          serverConfig.Supersedes,
+			GetUserToken:        userTokenService.GetUserToken,
+			TokenSources:        backendTokenSources,
+			CreateTransport:     createTransport,
+			BaseURL:             baseURL,
+		}))
+	}
+
 	if authServer != nil {
 		oauthMiddleware := []server.MiddlewareFunc{
 			corsMiddleware,
@@ -408,7 +463,7 @@ func buildHTTPHandler(
 			mcpRecover,
 		}
 
-		tokenHandlers := server.NewTokenHandlers(storage, cfg.MCPServers, serviceOAuthClient, []byte(authConfig.EncryptionKey))
+		tokenHandlers := server.NewTokenHandlers(storage, aggregates, cfg.MCPServers, serviceOAuthClient, []byte(authConfig.EncryptionKey))
 
 		mux.Handle(route("/my/tokens"), server.ChainMiddleware(http.HandlerFunc(tokenHandlers.ListTokensHandler), tokenMiddleware...))
 		mux.Handle(route("/my/tokens/set"), server.ChainMiddleware(http.HandlerFunc(tokenHandlers.SetTokenHandler), tokenMiddleware...))
@@ -418,19 +473,13 @@ func buildHTTPHandler(
 		mux.Handle(route("/oauth/services"), server.ChainMiddleware(http.HandlerFunc(authHandlers.ServiceSelectionHandler), tokenMiddleware...))
 		mux.Handle(route("/oauth/complete"), server.ChainMiddleware(http.HandlerFunc(authHandlers.CompleteOAuthHandler), tokenMiddleware...))
 
-		serviceAuthHandlers := server.NewServiceAuthHandlers(serviceOAuthClient, cfg.MCPServers, storage)
+		serviceAuthHandlers := server.NewServiceAuthHandlers(serviceOAuthClient, cfg.MCPServers, storage, aggregates)
 		mux.HandleFunc(route("/oauth/callback/{service}"), serviceAuthHandlers.CallbackHandler)
 		mux.Handle(route("/oauth/connect"), server.ChainMiddleware(http.HandlerFunc(serviceAuthHandlers.ConnectHandler), tokenMiddleware...))
 		mux.Handle(route("/oauth/disconnect"), server.ChainMiddleware(http.HandlerFunc(serviceAuthHandlers.DisconnectHandler), tokenMiddleware...))
 	}
 
 	sseServers := make(map[string]*mcpserver.SSEServer)
-	var aggregates []*aggregate.Server
-
-	backendTokenSources, err := buildBackendTokenSources(context.Background(), cfg.MCPServers)
-	if err != nil {
-		return nil, nil, err
-	}
 
 	for serverName, serverConfig := range cfg.MCPServers {
 		if serverConfig.IsAggregate() {
@@ -491,55 +540,10 @@ func buildHTTPHandler(
 		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(handler, mcpMiddlewares...))
 	}
 
-	// Built only when a server asks for it, so a deployment using no builtin
-	// starts without any of its environment set.
-	builtinRegistry := builtin.Registry{}
-	for _, serverConfig := range cfg.MCPServers {
-		if serverConfig.TransportType != config.MCPClientTypeBuiltin || serverConfig.Builtin != "onboarding" {
-			continue
-		}
-		tools, err := builtin.OnboardingTools(builtin.OnboardingConfig{
-			SigningKey:      []byte(os.Getenv("INVITATION_SIGNING_SECRET")),
-			DefaultTokenTTL: 7 * 24 * time.Hour,
-			AppRootURL:      os.Getenv("APP_ROOT_URL"),
-			Issuer:          os.Getenv("VORI_JWT_ISSUER"),
-			TinyURLAPIKey:   os.Getenv("TINYURL_API_KEY"),
-			ShortenerDomain: os.Getenv("URL_SHORTENER_DOMAIN"),
-			ShortenerTags:   []string{"gtm-onboarding"},
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		builtinRegistry["onboarding"] = tools
-		break
-	}
-	createTransport := builtin.TransportCreator(builtinRegistry, client.DefaultTransportCreator)
-
-	for serverName, serverConfig := range cfg.MCPServers {
-		if !serverConfig.IsAggregate() {
-			continue
-		}
-
-		backendConfigs := make(map[string]*config.MCPClientConfig, len(serverConfig.Servers))
-		for _, ref := range serverConfig.Servers {
-			backendConfigs[ref] = cfg.MCPServers[ref]
-		}
-
-		agg := aggregate.NewServer(aggregate.ServerConfig{
-			Name:                serverName,
-			TransportType:       serverConfig.TransportType,
-			Backends:            backendConfigs,
-			Discovery:           serverConfig.Discovery,
-			Delimiter:           serverConfig.Delimiter,
-			StreamlineResponses: serverConfig.StreamlineResponses,
-			Supersedes:          serverConfig.Supersedes,
-			GetUserToken:        userTokenService.GetUserToken,
-			TokenSources:        backendTokenSources,
-			CreateTransport:     createTransport,
-			BaseURL:             baseURL,
-		})
+	for _, agg := range aggregates {
+		serverName := agg.Name()
+		serverConfig := cfg.MCPServers[serverName]
 		agg.Start()
-		aggregates = append(aggregates, agg)
 
 		// CORS must wrap the auth chain so OPTIONS preflights short-circuit
 		// with 200 instead of being rejected as unauthenticated by the
@@ -574,6 +578,15 @@ func buildHTTPHandler(
 
 	log.LogInfoWithFields("server", "MCP proxy server initialized", nil)
 	return mux, aggregates, nil
+}
+
+// aggregateServers tells every aggregate when a user's token changes.
+type aggregateServers []*aggregate.Server
+
+func (a aggregateServers) UserTokenChanged(userEmail, serviceName string) {
+	for _, agg := range a {
+		agg.UserTokenChanged(userEmail, serviceName)
+	}
 }
 
 func buildInlineHandler(serverName string, serverConfig *config.MCPClientConfig) (http.Handler, error) {

@@ -35,7 +35,7 @@ func TestConnectHandler(t *testing.T) {
 		},
 	}
 
-	handlers := NewServiceAuthHandlers(oauthClient, mcpServers, store)
+	handlers := NewServiceAuthHandlers(oauthClient, mcpServers, store, &recordingTokenListener{})
 
 	t.Run("unauthorized without session", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/oauth/connect?service=test-service", nil)
@@ -74,7 +74,7 @@ func TestConnectHandler(t *testing.T) {
 	t.Run("service doesn't support OAuth", func(t *testing.T) {
 		handlersNoOAuth := NewServiceAuthHandlers(oauthClient, map[string]*config.MCPClientConfig{
 			"no-oauth": {RequiresUserToken: false},
-		}, store)
+		}, store, &recordingTokenListener{})
 
 		req := httptest.NewRequest(http.MethodGet, "/oauth/connect?service=no-oauth", nil)
 		ctx := context.WithValue(req.Context(), oauth.GetUserContextKey(), "user@example.com")
@@ -101,7 +101,7 @@ func TestConnectHandler(t *testing.T) {
 func TestDisconnectHandler(t *testing.T) {
 	store := storage.NewMemoryStorage()
 	oauthClient := auth.NewServiceOAuthClient(store, "https://mcp-front.example.com", []byte(strings.Repeat("k", 32)))
-	handlers := NewServiceAuthHandlers(oauthClient, map[string]*config.MCPClientConfig{}, store)
+	handlers := NewServiceAuthHandlers(oauthClient, map[string]*config.MCPClientConfig{}, store, &recordingTokenListener{})
 
 	t.Run("unauthorized without session", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/oauth/disconnect", nil)

@@ -497,6 +497,7 @@ func whoamiBackend(t *testing.T) string {
 }
 
 type testGateway struct {
+	srv     *Server
 	url     string
 	methods func() []string
 }
@@ -557,7 +558,7 @@ func startGateway(t *testing.T, transportType config.MCPClientType, cacheTTL tim
 	}))
 	t.Cleanup(front.Close)
 
-	return testGateway{url: front.URL, methods: func() []string {
+	return testGateway{srv: srv, url: front.URL, methods: func() []string {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(methods)

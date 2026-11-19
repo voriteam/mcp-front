@@ -17,18 +17,26 @@ import (
 	"github.com/stainless-api/mcp-front/internal/storage"
 )
 
+// UserTokenListener learns that a user's token for a service was stored or
+// removed, so anything derived from the old credential can be dropped.
+type UserTokenListener interface {
+	UserTokenChanged(userEmail, serviceName string)
+}
+
 // TokenHandlers handles the web UI for token management
 type TokenHandlers struct {
 	tokenStore         storage.UserTokenStore
+	tokenListener      UserTokenListener
 	mcpServers         map[string]*config.MCPClientConfig
 	csrf               crypto.CSRFProtection
 	serviceOAuthClient *auth.ServiceOAuthClient
 }
 
 // NewTokenHandlers creates a new token handlers instance
-func NewTokenHandlers(tokenStore storage.UserTokenStore, mcpServers map[string]*config.MCPClientConfig, serviceOAuthClient *auth.ServiceOAuthClient, csrfKey []byte) *TokenHandlers {
+func NewTokenHandlers(tokenStore storage.UserTokenStore, tokenListener UserTokenListener, mcpServers map[string]*config.MCPClientConfig, serviceOAuthClient *auth.ServiceOAuthClient, csrfKey []byte) *TokenHandlers {
 	return &TokenHandlers{
 		tokenStore:         tokenStore,
+		tokenListener:      tokenListener,
 		mcpServers:         mcpServers,
 		serviceOAuthClient: serviceOAuthClient,
 		csrf:               crypto.NewCSRFProtection(csrfKey, 15*time.Minute),
@@ -271,6 +279,7 @@ func (h *TokenHandlers) SetTokenHandler(w http.ResponseWriter, r *http.Request) 
 		redirectWithMessage(w, r, "Failed to save token", "error")
 		return
 	}
+	h.tokenListener.UserTokenChanged(userEmail, serviceName)
 
 	displayName := serviceName
 	if serviceConfig.UserAuthentication != nil && serviceConfig.UserAuthentication.DisplayName != "" {
@@ -333,6 +342,7 @@ func (h *TokenHandlers) DeleteTokenHandler(w http.ResponseWriter, r *http.Reques
 		redirectWithMessage(w, r, "Failed to delete token", "error")
 		return
 	}
+	h.tokenListener.UserTokenChanged(userEmail, serviceName)
 
 	displayName := serviceName
 	if serviceConfig.UserAuthentication != nil && serviceConfig.UserAuthentication.DisplayName != "" {

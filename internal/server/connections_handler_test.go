@@ -164,7 +164,7 @@ func TestConnectionsSessionAuth(t *testing.T) {
 
 	t.Run("no user in context responds like /my/tokens", func(t *testing.T) {
 		tokensRec := httptest.NewRecorder()
-		NewTokenHandlers(store, servers, nil, encKey).ListTokensHandler(tokensRec, httptest.NewRequest(http.MethodGet, "/my/tokens", nil))
+		NewTokenHandlers(store, &recordingTokenListener{}, servers, nil, encKey).ListTokensHandler(tokensRec, httptest.NewRequest(http.MethodGet, "/my/tokens", nil))
 
 		connRec := httptest.NewRecorder()
 		NewConnectionsHandler(store, servers).ServeHTTP(connRec, httptest.NewRequest(http.MethodGet, "/connections", nil))
@@ -182,7 +182,7 @@ func TestConnectionsSessionAuth(t *testing.T) {
 	sso := NewBrowserSSOMiddleware(oauthConfig, &mockIDPProvider{}, sessionEncryptor, &browserStateToken)
 
 	mux := http.NewServeMux()
-	mux.Handle("/my/tokens", ChainMiddleware(http.HandlerFunc(NewTokenHandlers(store, servers, nil, encKey).ListTokensHandler), sso))
+	mux.Handle("/my/tokens", ChainMiddleware(http.HandlerFunc(NewTokenHandlers(store, &recordingTokenListener{}, servers, nil, encKey).ListTokensHandler), sso))
 	mux.Handle("/connections", ChainMiddleware(NewConnectionsHandler(store, servers), sso))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

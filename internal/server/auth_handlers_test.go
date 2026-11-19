@@ -134,7 +134,7 @@ func TestAuthenticationBoundaries(t *testing.T) {
 		nil,
 	)
 
-	tokenHandlers := NewTokenHandlers(store, map[string]*config.MCPClientConfig{}, serviceOAuthClient, []byte(oauthConfig.EncryptionKey))
+	tokenHandlers := NewTokenHandlers(store, &recordingTokenListener{}, map[string]*config.MCPClientConfig{}, serviceOAuthClient, []byte(oauthConfig.EncryptionKey))
 
 	// Build mux with middlewares
 	mux := http.NewServeMux()
@@ -641,7 +641,7 @@ func TestListTokensAuthType(t *testing.T) {
 		},
 	}
 
-	handlers := NewTokenHandlers(store, mcpServers, nil, encKey)
+	handlers := NewTokenHandlers(store, &recordingTokenListener{}, mcpServers, nil, encKey)
 
 	ctx := context.WithValue(context.Background(), oauth.GetUserContextKey(), userEmail)
 	req := httptest.NewRequest(http.MethodGet, "/my/tokens", nil).WithContext(ctx)
@@ -995,7 +995,7 @@ func TestListTokensOrdersOAuthFirstThenAlphabetically(t *testing.T) {
 		"bigquery": {},
 	}
 
-	handlers := NewTokenHandlers(storage.NewMemoryStorage(), mcpServers, nil, []byte(strings.Repeat("k", 32)))
+	handlers := NewTokenHandlers(storage.NewMemoryStorage(), &recordingTokenListener{}, mcpServers, nil, []byte(strings.Repeat("k", 32)))
 	ctx := context.WithValue(context.Background(), oauth.GetUserContextKey(), "user@example.com")
 	req := httptest.NewRequest(http.MethodGet, "/my/tokens", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
