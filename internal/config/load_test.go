@@ -361,7 +361,7 @@ func supersedesConfig(servers []string, supersedes map[string][]string) *Config 
 			"notion":           {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3001"},
 			"notion-read-only": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3002"},
 			"mcp": {
-				Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+				Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable,
 				Discovery:  &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 				Servers:    servers,
 				Supersedes: supersedes,
