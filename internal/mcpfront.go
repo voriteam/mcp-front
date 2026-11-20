@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stainless-api/mcp-front/internal/aggregate"
 	"github.com/stainless-api/mcp-front/internal/auth"
 	"github.com/stainless-api/mcp-front/internal/builtin"
@@ -38,7 +36,6 @@ import (
 type MCPFront struct {
 	config            config.Config
 	httpServer        *server.HTTPServer
-	sessionManager    *client.StdioSessionManager
 	aggregates        []*aggregate.Server
 	storage           storage.Storage
 	telemetryProvider *telemetry.Provider
@@ -61,8 +58,7 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 		"mcpServers": len(cfg.MCPServers),
 	})
 
-	baseURL, err := url.Parse(cfg.Proxy.BaseURL)
-	if err != nil {
+	if _, err := url.Parse(cfg.Proxy.BaseURL); err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
@@ -76,39 +72,7 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 		return nil, fmt.Errorf("failed to setup authentication: %w", err)
 	}
 
-	sessionTimeout := 5 * time.Minute
-	cleanupInterval := 1 * time.Minute
-	maxPerUser := 10
-
-	if cfg.Proxy.Sessions != nil {
-		if cfg.Proxy.Sessions.Timeout > 0 {
-			sessionTimeout = cfg.Proxy.Sessions.Timeout
-			log.LogInfoWithFields("mcpfront", "Using configured session timeout", map[string]any{
-				"timeout": sessionTimeout,
-			})
-		}
-		if cfg.Proxy.Sessions.CleanupInterval > 0 {
-			cleanupInterval = cfg.Proxy.Sessions.CleanupInterval
-			log.LogInfoWithFields("mcpfront", "Using configured cleanup interval", map[string]any{
-				"interval": cleanupInterval,
-			})
-		}
-		maxPerUser = cfg.Proxy.Sessions.MaxPerUser
-	}
-
-	sessionManager := client.NewStdioSessionManager(
-		client.WithTimeout(sessionTimeout),
-		client.WithMaxPerUser(maxPerUser),
-		client.WithCleanupInterval(cleanupInterval),
-	)
-	sessionManager.Start()
-
 	userTokenService := server.NewUserTokenService(store, serviceOAuthClient)
-
-	info := mcp.Implementation{
-		Name:    cfg.Proxy.Name,
-		Version: "dev",
-	}
 
 	mux, aggregates, err := buildHTTPHandler(
 		cfg,
@@ -119,10 +83,7 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 		authConfig,
 		serviceOAuthClient,
 		gcpValidator,
-		sessionManager,
 		userTokenService,
-		baseURL.String(),
-		info,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build HTTP handler: %w", err)
@@ -140,7 +101,6 @@ func NewMCPFront(ctx context.Context, cfg config.Config, buildVersion string) (*
 	return &MCPFront{
 		config:            cfg,
 		httpServer:        httpServer,
-		sessionManager:    sessionManager,
 		aggregates:        aggregates,
 		storage:           store,
 		telemetryProvider: telemetryProvider,
@@ -206,10 +166,6 @@ func (m *MCPFront) Run() error {
 			})
 			shutdownErrors = append(shutdownErrors, err)
 		}
-	}
-
-	if m.sessionManager != nil {
-		m.sessionManager.Shutdown()
 	}
 
 	if err := m.telemetryProvider.Shutdown(shutdownCtx); err != nil {
@@ -344,10 +300,7 @@ func buildHTTPHandler(
 	authConfig config.OAuthAuthConfig,
 	serviceOAuthClient *auth.ServiceOAuthClient,
 	gcpValidator *oauth.GCPAccessTokenValidator,
-	sessionManager *client.StdioSessionManager,
 	userTokenService *server.UserTokenService,
-	baseURL string,
-	info mcp.Implementation,
 ) (http.Handler, []*aggregate.Server, error) {
 	mux := http.NewServeMux()
 	basePath := cfg.Proxy.BasePath
@@ -416,7 +369,6 @@ func buildHTTPHandler(
 
 		aggregates = append(aggregates, aggregate.NewServer(aggregate.ServerConfig{
 			Name:                serverName,
-			TransportType:       serverConfig.TransportType,
 			Backends:            backendConfigs,
 			Discovery:           serverConfig.Discovery,
 			Delimiter:           serverConfig.Delimiter,
@@ -425,7 +377,6 @@ func buildHTTPHandler(
 			GetUserToken:        userTokenService.GetUserToken,
 			TokenSources:        backendTokenSources,
 			CreateTransport:     createTransport,
-			BaseURL:             baseURL,
 		}))
 	}
 
@@ -479,16 +430,23 @@ func buildHTTPHandler(
 		mux.Handle(route("/oauth/disconnect"), server.ChainMiddleware(http.HandlerFunc(serviceAuthHandlers.DisconnectHandler), tokenMiddleware...))
 	}
 
-	sseServers := make(map[string]*mcpserver.SSEServer)
 
 	for serverName, serverConfig := range cfg.MCPServers {
 		if serverConfig.IsAggregate() {
 			continue
 		}
 
-		// Builtins are reachable only through an aggregate; NewMCPHandler would
-		// get a config with neither command nor URL.
-		if serverConfig.TransportType == config.MCPClientTypeBuiltin {
+		var handler http.Handler
+		switch serverConfig.TransportType {
+		case config.MCPClientTypeStreamable:
+			handler = server.NewMCPHandler(serverName, serverConfig, userTokenService.GetUserToken)
+		case config.MCPClientTypeInline:
+			handler, err = buildInlineHandler(serverName, serverConfig)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to create inline handler for %s: %w", serverName, err)
+			}
+		default:
+			// Stdio, SSE and builtin backends are served only through an aggregate.
 			continue
 		}
 
@@ -498,46 +456,13 @@ func buildHTTPHandler(
 			"requires_user_token": serverConfig.RequiresUserToken,
 		})
 
-		var handler http.Handler
-		var err error
-		var mcpSrv *mcpserver.MCPServer
-		var sseServer *mcpserver.SSEServer
-
-		if serverConfig.TransportType == config.MCPClientTypeInline {
-			handler, err = buildInlineHandler(serverName, serverConfig)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to create inline handler for %s: %w", serverName, err)
-			}
-		} else {
-			if serverConfig.IsStdio() {
-				sseServer, mcpSrv, err = buildStdioSSEServer(serverName, baseURL, sessionManager)
-				if err != nil {
-					return nil, nil, fmt.Errorf("failed to create SSE server for %s: %w", serverName, err)
-				}
-				sseServers[serverName] = sseServer
-			}
-
-			handler = server.NewMCPHandler(
-				serverName,
-				serverConfig,
-				storage,
-				baseURL,
-				info,
-				sessionManager,
-				sseServers[serverName],
-				mcpSrv,
-				userTokenService.GetUserToken,
-			)
-			if serverConfig.IsStdio() {
-				handler = httputil.RequireSessionProtocol(handler)
-			}
-		}
-
 		mcpMiddlewares := []server.MiddlewareFunc{mcpLogger, corsMiddleware}
 		mcpMiddlewares = append(mcpMiddlewares, buildAuthMiddlewares(serverName, authServer, authConfig, gcpValidator, serverConfig.ServiceAuths)...)
 		mcpMiddlewares = append(mcpMiddlewares, mcpRecover)
 
-		mux.Handle(route("/"+serverName+"/"), server.ChainMiddleware(handler, mcpMiddlewares...))
+		mcpHandler := server.ChainMiddleware(handler, mcpMiddlewares...)
+		mux.Handle(route("/"+serverName+"/{$}"), mcpHandler)
+		mux.Handle(route("/"+serverName), mcpHandler)
 	}
 
 	for _, agg := range aggregates {
@@ -553,7 +478,7 @@ func buildHTTPHandler(
 		aggMiddlewares = append(aggMiddlewares, corsMiddleware, mcpRecover)
 
 		aggHandler := server.ChainMiddleware(agg.Handler(), aggMiddlewares...)
-		mux.Handle(route("/"+serverName+"/"), aggHandler)
+		mux.Handle(route("/"+serverName+"/{$}"), aggHandler)
 		// Also register the no-trailing-slash variant so POST requests without a
 		// trailing slash don't get 301-redirected (which HTTP clients often turn
 		// into GET, breaking MCP handshakes).
@@ -634,70 +559,6 @@ func buildAuthMiddlewares(serverName string, authServer *oauth.AuthorizationServ
 		mws = append(mws, server.NewServiceAuthMiddleware(serverName, serviceAuths))
 	}
 	return mws
-}
-
-func buildStdioSSEServer(serverName, baseURL string, sessionManager *client.StdioSessionManager) (*mcpserver.SSEServer, *mcpserver.MCPServer, error) {
-	hooks := &mcpserver.Hooks{}
-	currentServerName := serverName
-
-	hooks.AddOnRegisterSession(func(sessionCtx context.Context, session mcpserver.ClientSession) {
-		if handler, ok := sessionCtx.Value(server.SessionHandlerKey{}).(*server.SessionRequestHandler); ok {
-			server.HandleSessionRegistration(sessionCtx, session, handler, sessionManager)
-		} else {
-			log.LogErrorWithFields("server", "No session handler in context", map[string]any{
-				"sessionID": session.SessionID(),
-				"server":    currentServerName,
-			})
-		}
-	})
-
-	hooks.AddOnUnregisterSession(func(sessionCtx context.Context, session mcpserver.ClientSession) {
-		if handler, ok := sessionCtx.Value(server.SessionHandlerKey{}).(*server.SessionRequestHandler); ok {
-			key := client.SessionKey{
-				UserEmail:  handler.GetUserEmail(),
-				ServerName: handler.GetServerName(),
-				SessionID:  session.SessionID(),
-			}
-			if err := sessionManager.RemoveSession(key); err != nil {
-				log.LogErrorWithFields("server", "Failed to remove session on unregister", map[string]any{
-					"sessionID": session.SessionID(),
-					"user":      handler.GetUserEmail(),
-					"error":     err.Error(),
-				})
-			}
-
-			if storage := handler.GetStorage(); storage != nil {
-				if err := storage.RevokeSession(sessionCtx, session.SessionID()); err != nil {
-					log.LogWarnWithFields("server", "Failed to revoke session from storage", map[string]any{
-						"error":     err.Error(),
-						"sessionID": session.SessionID(),
-						"user":      handler.GetUserEmail(),
-					})
-				}
-			}
-
-			log.LogInfoWithFields("server", "Session unregistered and cleaned up", map[string]any{
-				"sessionID": session.SessionID(),
-				"server":    currentServerName,
-				"user":      handler.GetUserEmail(),
-			})
-		}
-	})
-
-	mcpServer := mcpserver.NewMCPServer(serverName, "1.0.0",
-		mcpserver.WithHooks(hooks),
-		mcpserver.WithPromptCapabilities(true),
-		mcpserver.WithResourceCapabilities(true, true),
-		mcpserver.WithToolCapabilities(true),
-		mcpserver.WithLogging(),
-	)
-
-	sseServer := mcpserver.NewSSEServer(mcpServer,
-		mcpserver.WithStaticBasePath(serverName),
-		mcpserver.WithBaseURL(baseURL),
-	)
-
-	return sseServer, mcpServer, nil
 }
 
 func buildClientCredentialsSources(servers map[string]*config.MCPClientConfig) map[string]oauth2.TokenSource {

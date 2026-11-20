@@ -23,16 +23,16 @@ Returns service health. Use for monitoring and load balancer health checks.
 
 - `200` - Service is healthy
 
-### SSE endpoint
+### MCP endpoint
 
 ```
-GET /{server}/sse
+POST /{server}
+GET /{server}
 
 Authorization: Bearer <token>
-Accept: text/event-stream
 ```
 
-MCP protocol communication over Server-Sent Events. The `{server}` path segment must match a server name from your config.
+MCP protocol communication over streamable HTTP. The `{server}` path segment must match a streamable HTTP, inline, or aggregate server name from your config. A POST carries a JSON-RPC message. A GET with `Accept: text/event-stream` opens the server stream. Any other path under `/{server}` returns 404.
 
 **Request routing:**
 
@@ -40,21 +40,11 @@ MCP protocol communication over Server-Sent Events. The `{server}` path segment 
 
 The request flow:
 
-1. Claude connects via SSE to `/{server}/sse`
+1. Claude sends a request to `/{server}`
 2. MCP Front validates auth token (OAuth or bearer)
 3. MCP Front validates token audience matches requested server (RFC 8707)
-4. MCP Front connects to configured MCP server
-5. Bidirectional message streaming between Claude and MCP server
-
-**Example stream:**
-
-```
-event: message
-data: {"jsonrpc":"2.0","method":"tools/list","id":1}
-
-event: message
-data: {"jsonrpc":"2.0","result":{"tools":[...]},"id":1}
-```
+4. MCP Front forwards the request to the configured MCP server, or to each backend of an aggregate
+5. MCP Front returns the response as JSON or a streamed event
 
 ## OAuth endpoints
 
@@ -213,7 +203,7 @@ Standard flow:
 1. Register client via `/register`
 2. Direct user to `/authorize` with `resource` parameter (RFC 8707)
 3. Exchange code for token at `/token`
-4. Use access token in Authorization header for `/{server}/sse` requests
+4. Use access token in Authorization header for `/{server}` requests
 
 PKCE is required for public clients. Tokens include per-service audience claims (RFC 8707).
 

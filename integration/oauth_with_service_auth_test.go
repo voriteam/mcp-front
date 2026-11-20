@@ -95,11 +95,11 @@ func TestAuthMatrix_Both_DirectRoute(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-auth-matrix-both-direct",
 		testOAuthConfigFromEnv(),
 		map[string]any{
-			"postgres": testPostgresServer(
+			"postgres": testStreamableServer(
 				withBearerTokens("svc-bearer-1"),
 				withBasicAuth("svc-user", "SVC_PASSWORD"),
 			),
-			"other": testPostgresServer(),
+			"other": testStreamableServer(),
 		},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg),
@@ -116,7 +116,7 @@ func TestAuthMatrix_Both_DirectRoute(t *testing.T) {
 	otherToken := getOAuthAccessToken(t, "http://localhost:8080/other")
 
 	runAuthMatrix(t,
-		"http://localhost:8080/postgres/sse",
+		"http://localhost:8080/postgres",
 		authMatrixBoth("postgres", validOAuthToken, otherToken),
 	)
 }
@@ -133,7 +133,7 @@ func TestAuthMatrix_Both_AggregateRoute(t *testing.T) {
 			"other":    testPostgresServer(),
 			"mcp": map[string]any{
 				"type":          "aggregate",
-				"transportType": "sse",
+				"transportType": "streamable-http",
 				"servers":       []string{"postgres"},
 				"discovery": map[string]any{
 					"timeout":  "10s",
@@ -160,7 +160,7 @@ func TestAuthMatrix_Both_AggregateRoute(t *testing.T) {
 	otherToken := getOAuthAccessToken(t, "http://localhost:8080/other")
 
 	runAuthMatrix(t,
-		"http://localhost:8080/mcp/sse",
+		"http://localhost:8080/mcp",
 		authMatrixBoth("mcp", validOAuthToken, otherToken),
 	)
 }

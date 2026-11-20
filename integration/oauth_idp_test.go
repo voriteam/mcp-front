@@ -37,14 +37,14 @@ var idpEnvAzure = []string{
 func TestGitHubOAuthFlow(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-github-test",
 		testGitHubOAuthConfig("test-org"),
-		map[string]any{"postgres": testPostgresServer()},
+		map[string]any{"postgres": testStreamableServer()},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg), idpEnvGitHub...)
 	waitForMCPFront(t)
 
 	accessToken := getOAuthAccessTokenForIDP(t, "http://localhost:8080/postgres", "localhost:9092")
 
-	mcpClient := NewMCPSSEClient("http://localhost:8080")
+	mcpClient := NewMCPClient("http://localhost:8080")
 	mcpClient.SetAuthToken(accessToken)
 
 	err := mcpClient.Connect()
@@ -65,7 +65,7 @@ func TestGitHubOAuthFlow(t *testing.T) {
 func TestGitHubOrgDenial(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-github-org-deny",
 		testGitHubOAuthConfig("org-that-doesnt-match"),
-		map[string]any{"postgres": testPostgresServer()},
+		map[string]any{"postgres": testStreamableServer()},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg), idpEnvGitHub...)
 	waitForMCPFront(t)
@@ -116,14 +116,14 @@ func TestGitHubOrgDenial(t *testing.T) {
 func TestOIDCOAuthFlow(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-oidc-test",
 		testOIDCOAuthConfig(),
-		map[string]any{"postgres": testPostgresServer()},
+		map[string]any{"postgres": testStreamableServer()},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg), idpEnvOIDC...)
 	waitForMCPFront(t)
 
 	accessToken := getOAuthAccessTokenForIDP(t, "http://localhost:8080/postgres", "localhost:9093")
 
-	mcpClient := NewMCPSSEClient("http://localhost:8080")
+	mcpClient := NewMCPClient("http://localhost:8080")
 	mcpClient.SetAuthToken(accessToken)
 
 	err := mcpClient.Connect()
@@ -144,14 +144,14 @@ func TestOIDCOAuthFlow(t *testing.T) {
 func TestAzureOAuthFlow(t *testing.T) {
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-azure-test",
 		testAzureOAuthConfig(),
-		map[string]any{"postgres": testPostgresServer()},
+		map[string]any{"postgres": testStreamableServer()},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg), idpEnvAzure...)
 	waitForMCPFront(t)
 
 	accessToken := getOAuthAccessTokenForIDP(t, "http://localhost:8080/postgres", "localhost:9093")
 
-	mcpClient := NewMCPSSEClient("http://localhost:8080")
+	mcpClient := NewMCPClient("http://localhost:8080")
 	mcpClient.SetAuthToken(accessToken)
 
 	err := mcpClient.Connect()
@@ -212,7 +212,7 @@ func TestIDPDomainDenial(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := buildTestConfig("http://localhost:8080", "mcp-front-domain-deny-"+tt.name,
 				tt.authConfig,
-				map[string]any{"postgres": testPostgresServer()},
+				map[string]any{"postgres": testStreamableServer()},
 			)
 			startMCPFront(t, writeTestConfig(t, cfg), tt.env...)
 			waitForMCPFront(t)

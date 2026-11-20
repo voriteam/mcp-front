@@ -22,8 +22,6 @@ type MemoryStorage struct {
 	grantsMutex      sync.Mutex
 	userTokens       map[string]*StoredToken
 	userTokensMutex  sync.RWMutex
-	sessions         map[string]*ActiveSession
-	sessionsMutex    sync.RWMutex
 	serviceRegs      map[string]*ServiceRegistration
 	serviceRegsMu    sync.RWMutex
 	identityTokens   map[string]string
@@ -35,7 +33,6 @@ func NewMemoryStorage() *MemoryStorage {
 		clients:        make(map[string]*Client),
 		grants:         make(map[string]*oauth.Grant),
 		userTokens:     make(map[string]*StoredToken),
-		sessions:       make(map[string]*ActiveSession),
 		serviceRegs:    make(map[string]*ServiceRegistration),
 		identityTokens: make(map[string]string),
 	}
@@ -203,44 +200,6 @@ func (s *MemoryStorage) ListIdentityTokenUsers(ctx context.Context) ([]string, e
 	users := slices.Collect(maps.Keys(s.identityTokens))
 	slices.Sort(users)
 	return users, nil
-}
-
-func (s *MemoryStorage) TrackSession(ctx context.Context, session ActiveSession) error {
-	s.sessionsMutex.Lock()
-	defer s.sessionsMutex.Unlock()
-
-	now := time.Now()
-	if existing, exists := s.sessions[session.SessionID]; exists {
-		existing.LastActive = now
-	} else {
-		sessionCopy := session
-		if sessionCopy.Created.IsZero() {
-			sessionCopy.Created = now
-		}
-		sessionCopy.LastActive = now
-		s.sessions[session.SessionID] = &sessionCopy
-	}
-	return nil
-}
-
-func (s *MemoryStorage) RevokeSession(ctx context.Context, sessionID string) error {
-	s.sessionsMutex.Lock()
-	defer s.sessionsMutex.Unlock()
-
-	delete(s.sessions, sessionID)
-	return nil
-}
-
-func (s *MemoryStorage) RevokeUserSessions(ctx context.Context, userEmail string) error {
-	s.sessionsMutex.Lock()
-	defer s.sessionsMutex.Unlock()
-
-	for id, session := range s.sessions {
-		if session.UserEmail == userEmail {
-			delete(s.sessions, id)
-		}
-	}
-	return nil
 }
 
 func (s *MemoryStorage) SetIdentityToken(ctx context.Context, userEmail, refreshToken string) error {

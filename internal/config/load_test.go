@@ -87,165 +87,6 @@ func TestValidateConfig_UserTokensRequireOAuth(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_SessionConfig(t *testing.T) {
-	tests := []struct {
-		name          string
-		config        *Config
-		expectError   string
-		expectTimeout time.Duration
-		expectCleanup time.Duration
-	}{
-		{
-			name: "valid_session_config",
-			config: &Config{
-				Proxy: ProxyConfig{
-					BaseURL: "https://test.example.com",
-					Addr:    ":8080",
-					Auth: &OAuthAuthConfig{
-						Kind:   "oauth",
-						Issuer: "https://auth.example.com",
-						IDP: IDPConfig{
-							Provider:     "google",
-							ClientID:     "test-client",
-							ClientSecret: "test-secret",
-							RedirectURI:  "https://test.example.com/callback",
-						},
-						JWTSecret:               "test-jwt-secret-must-be-32-bytes-long",
-						EncryptionKey:           "test-encryption-key-32-bytes-ok!",
-						AllowedDomains:          []string{"example.com"},
-						AllowedOrigins:          []string{"https://test.example.com"},
-						AllowAnyRedirectURIHost: true,
-						TokenTTL:                time.Hour,
-						RefreshTokenTTL:         30 * 24 * time.Hour,
-					},
-					Sessions: &SessionConfig{
-						Timeout:         10 * time.Minute,
-						CleanupInterval: 2 * time.Minute,
-					},
-				},
-				MCPServers: map[string]*MCPClientConfig{},
-			},
-			expectError:   "",
-			expectTimeout: 10 * time.Minute,
-			expectCleanup: 2 * time.Minute,
-		},
-		{
-			name: "negative_timeout",
-			config: &Config{
-				Proxy: ProxyConfig{
-					BaseURL: "https://test.example.com",
-					Addr:    ":8080",
-					Auth: &OAuthAuthConfig{
-						Kind:   "oauth",
-						Issuer: "https://auth.example.com",
-						IDP: IDPConfig{
-							Provider:     "google",
-							ClientID:     "test-client",
-							ClientSecret: "test-secret",
-							RedirectURI:  "https://test.example.com/callback",
-						},
-						JWTSecret:               "test-jwt-secret-must-be-32-bytes-long",
-						EncryptionKey:           "test-encryption-key-32-bytes-ok!",
-						AllowedDomains:          []string{"example.com"},
-						AllowedOrigins:          []string{"https://test.example.com"},
-						AllowAnyRedirectURIHost: true,
-						TokenTTL:                time.Hour,
-						RefreshTokenTTL:         30 * 24 * time.Hour,
-					},
-					Sessions: &SessionConfig{
-						Timeout:         -1 * time.Minute,
-						CleanupInterval: 2 * time.Minute,
-					},
-				},
-				MCPServers: map[string]*MCPClientConfig{},
-			},
-			expectError: "proxy.sessions.timeout cannot be negative",
-		},
-		{
-			name: "negative_cleanup_interval",
-			config: &Config{
-				Proxy: ProxyConfig{
-					BaseURL: "https://test.example.com",
-					Addr:    ":8080",
-					Auth: &OAuthAuthConfig{
-						Kind:   "oauth",
-						Issuer: "https://auth.example.com",
-						IDP: IDPConfig{
-							Provider:     "google",
-							ClientID:     "test-client",
-							ClientSecret: "test-secret",
-							RedirectURI:  "https://test.example.com/callback",
-						},
-						JWTSecret:               "test-jwt-secret-must-be-32-bytes-long",
-						EncryptionKey:           "test-encryption-key-32-bytes-ok!",
-						AllowedDomains:          []string{"example.com"},
-						AllowedOrigins:          []string{"https://test.example.com"},
-						AllowAnyRedirectURIHost: true,
-						TokenTTL:                time.Hour,
-						RefreshTokenTTL:         30 * 24 * time.Hour,
-					},
-					Sessions: &SessionConfig{
-						Timeout:         10 * time.Minute,
-						CleanupInterval: -30 * time.Second,
-					},
-				},
-				MCPServers: map[string]*MCPClientConfig{},
-			},
-			expectError: "proxy.sessions.cleanupInterval cannot be negative",
-		},
-		{
-			name: "empty_session_config",
-			config: &Config{
-				Proxy: ProxyConfig{
-					BaseURL: "https://test.example.com",
-					Addr:    ":8080",
-					Auth: &OAuthAuthConfig{
-						Kind:   "oauth",
-						Issuer: "https://auth.example.com",
-						IDP: IDPConfig{
-							Provider:     "google",
-							ClientID:     "test-client",
-							ClientSecret: "test-secret",
-							RedirectURI:  "https://test.example.com/callback",
-						},
-						JWTSecret:               "test-jwt-secret-must-be-32-bytes-long",
-						EncryptionKey:           "test-encryption-key-32-bytes-ok!",
-						AllowedDomains:          []string{"example.com"},
-						AllowedOrigins:          []string{"https://test.example.com"},
-						AllowAnyRedirectURIHost: true,
-						TokenTTL:                time.Hour,
-						RefreshTokenTTL:         30 * 24 * time.Hour,
-					},
-					Sessions: &SessionConfig{
-						Timeout:         0,
-						CleanupInterval: 0,
-					},
-				},
-				MCPServers: map[string]*MCPClientConfig{},
-			},
-			expectError:   "",
-			expectTimeout: 0,
-			expectCleanup: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateConfig(tt.config)
-			if tt.expectError != "" {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.expectError)
-			} else {
-				assert.NoError(t, err)
-				if tt.config.Proxy.Sessions != nil {
-					assert.Equal(t, tt.expectTimeout, tt.config.Proxy.Sessions.Timeout)
-					assert.Equal(t, tt.expectCleanup, tt.config.Proxy.Sessions.CleanupInterval)
-				}
-			}
-		})
-	}
-}
-
 func TestValidateConfig_AggregateServer(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -272,7 +113,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 					},
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeSSE,
+						TransportType: MCPClientTypeStreamable,
 						Discovery:     &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 					},
 				},
@@ -288,7 +129,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				MCPServers: map[string]*MCPClientConfig{
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeSSE,
+						TransportType: MCPClientTypeStreamable,
 						Discovery:     &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 						Servers:       []string{"mcp"},
 					},
@@ -306,7 +147,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				MCPServers: map[string]*MCPClientConfig{
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeSSE,
+						TransportType: MCPClientTypeStreamable,
 						Discovery:     &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 						Servers:       []string{"ghost"},
 					},
@@ -324,12 +165,12 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				MCPServers: map[string]*MCPClientConfig{
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeStdio,
+						TransportType: MCPClientTypeSSE,
 						Discovery:     &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 					},
 				},
 			},
-			expectError: "must use 'sse' or 'streamable-http'",
+			expectError: "must use 'streamable-http'",
 		},
 		{
 			name: "aggregate_references_inline_server",
@@ -346,7 +187,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 					},
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeSSE,
+						TransportType: MCPClientTypeStreamable,
 						Discovery:     &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 						Servers:       []string{"tools"},
 					},
@@ -369,7 +210,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 					},
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeSSE,
+						TransportType: MCPClientTypeStreamable,
 						Servers:       []string{"postgres"},
 					},
 				},
@@ -391,7 +232,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 					},
 					"mcp": {
 						Type:          ServerTypeAggregate,
-						TransportType: MCPClientTypeSSE,
+						TransportType: MCPClientTypeStreamable,
 						Servers:       []string{},
 						Discovery:     &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 					},
@@ -455,7 +296,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				MCPServers: map[string]*MCPClientConfig{
 					"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
 					"mcp": {
-						Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+						Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable,
 						Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 						Servers:   []string{"postgres", "postgres"},
 					},
@@ -470,7 +311,7 @@ func TestValidateConfig_AggregateServer(t *testing.T) {
 				MCPServers: map[string]*MCPClientConfig{
 					"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
 					"mcp": {
-						Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+						Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable,
 						Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 						Options:   &Options{ToolFilter: &ToolFilterConfig{Mode: ToolFilterModeBlock, List: []string{"postgres.drop_table"}}},
 					},
@@ -520,7 +361,7 @@ func supersedesConfig(servers []string, supersedes map[string][]string) *Config 
 			"notion":           {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3001"},
 			"notion-read-only": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3002"},
 			"mcp": {
-				Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE,
+				Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable,
 				Discovery:  &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second},
 				Servers:    servers,
 				Supersedes: supersedes,
@@ -535,7 +376,7 @@ func TestResolveDefaults(t *testing.T) {
 			MCPServers: map[string]*MCPClientConfig{
 				"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
 				"linear":   {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3000"},
-				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
 			},
 		}
 		ResolveDefaults(cfg)
@@ -549,7 +390,7 @@ func TestResolveDefaults(t *testing.T) {
 			MCPServers: map[string]*MCPClientConfig{
 				"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
 				"linear":   {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:3000"},
-				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Servers: []string{"postgres"}, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Servers: []string{"postgres"}, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
 			},
 		}
 		ResolveDefaults(cfg)
@@ -562,7 +403,7 @@ func TestResolveDefaults(t *testing.T) {
 		cfg := &Config{
 			MCPServers: map[string]*MCPClientConfig{
 				"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
-				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
 			},
 		}
 		ResolveDefaults(cfg)
@@ -579,7 +420,7 @@ func TestResolveDefaults(t *testing.T) {
 			MCPServers: map[string]*MCPClientConfig{
 				"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
 				"tools":    {Type: ServerTypeDirect, TransportType: MCPClientTypeInline, InlineConfig: []byte(`{"tools":[]}`)},
-				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
 			},
 		}
 		ResolveDefaults(cfg)
@@ -592,7 +433,7 @@ func TestResolveDefaults(t *testing.T) {
 		cfg := &Config{
 			MCPServers: map[string]*MCPClientConfig{
 				"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
-				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Servers: []string{}, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"mcp":      {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Servers: []string{}, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
 			},
 		}
 		ResolveDefaults(cfg)
@@ -605,8 +446,8 @@ func TestResolveDefaults(t *testing.T) {
 		cfg := &Config{
 			MCPServers: map[string]*MCPClientConfig{
 				"postgres": {Type: ServerTypeDirect, TransportType: MCPClientTypeSSE, URL: "http://localhost:5432"},
-				"agg1":     {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
-				"agg2":     {Type: ServerTypeAggregate, TransportType: MCPClientTypeSSE, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"agg1":     {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
+				"agg2":     {Type: ServerTypeAggregate, TransportType: MCPClientTypeStreamable, Discovery: &DiscoveryConfig{Timeout: 10 * time.Second, CacheTTL: 60 * time.Second}},
 			},
 		}
 		ResolveDefaults(cfg)
@@ -920,7 +761,7 @@ func TestValidateConfig_BuiltinServer(t *testing.T) {
 				"gtm": server,
 				"all": {
 					Type:          ServerTypeAggregate,
-					TransportType: MCPClientTypeSSE,
+					TransportType: MCPClientTypeStreamable,
 					Servers:       []string{"gtm"},
 					Discovery:     &DiscoveryConfig{Timeout: time.Second, CacheTTL: time.Second},
 				},

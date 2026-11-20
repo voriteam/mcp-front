@@ -24,12 +24,12 @@ The demo starts:
 - Mock OAuth server on port 9090
 - mcp-front on port 8080
 
-Connect Claude.ai to: `http://localhost:8080/postgres/sse`
+Connect Claude.ai to: `http://localhost:8080/postgres`
 
 ## Test Coverage
 
 The integration tests validate:
-- End-to-end MCP communication with stdio and SSE
+- End-to-end MCP communication over streamable HTTP, with stdio, SSE and streamable-http backends
 - Security scenarios and authentication bypass protection
 - OAuth flow as used by Claude.ai
 - Dynamic client registration (RFC 7591)

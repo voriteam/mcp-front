@@ -103,11 +103,6 @@ func validateProxyStructure(rawConfig map[string]any, result *ValidationResult) 
 		validateAuthStructure(auth, result)
 	}
 
-	// Check sessions configuration if present
-	if sessions, ok := proxy["sessions"].(map[string]any); ok {
-		validateSessionsConfig(sessions, result)
-	}
-
 }
 
 // validateAuthStructure checks auth configuration structure
@@ -521,10 +516,10 @@ func validateAggregateServerStructure(name string, srv map[string]any, allServer
 
 	// Validate transportType if present
 	if tt, ok := srv["transportType"].(string); ok {
-		if tt != "sse" && tt != "streamable-http" {
+		if tt != "streamable-http" {
 			result.Errors = append(result.Errors, ValidationError{
 				Path:    path + ".transportType",
-				Message: "aggregate servers only support 'sse' or 'streamable-http' transport",
+				Message: "aggregate servers only support 'streamable-http' transport",
 			})
 		}
 	}
@@ -1056,41 +1051,6 @@ func checkBashStyleSyntax(value any, path string, result *ValidationResult) {
 		for i, item := range v {
 			newPath := fmt.Sprintf("%s[%d]", path, i)
 			checkBashStyleSyntax(item, newPath, result)
-		}
-	}
-}
-
-// validateSessionsConfig checks session management configuration
-func validateSessionsConfig(sessions map[string]any, result *ValidationResult) {
-	// Parse timeout and cleanupInterval if both present
-	var timeoutStr, cleanupStr string
-	var hasTimeout, hasCleanup bool
-
-	if t, ok := sessions["timeout"].(string); ok {
-		timeoutStr = t
-		hasTimeout = true
-	}
-
-	if c, ok := sessions["cleanupInterval"].(string); ok {
-		cleanupStr = c
-		hasCleanup = true
-	}
-
-	// Only validate if both are present
-	if hasTimeout && hasCleanup {
-		timeoutDur, err1 := time.ParseDuration(timeoutStr)
-		cleanupDur, err2 := time.ParseDuration(cleanupStr)
-
-		if err1 == nil && err2 == nil {
-			if cleanupDur > timeoutDur {
-				result.Warnings = append(result.Warnings, ValidationError{
-					Path: "proxy.sessions",
-					Message: fmt.Sprintf(
-						"cleanupInterval (%s) is longer than timeout (%s). Expired sessions will remain in memory until cleanup runs.",
-						cleanupStr, timeoutStr,
-					),
-				})
-			}
 		}
 	}
 }

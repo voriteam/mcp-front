@@ -4,7 +4,7 @@
 // At login mcp-front stores the user's IdP refresh token. When an mcp-front token
 // is refreshed, the Verifier replays that stored token against the IdP: the
 // provider rejects it once the account is suspended, deleted, or its consent is
-// revoked. On rejection the user's stored upstream tokens and sessions are purged
+// revoked. On rejection the user's stored upstream tokens are purged
 // and the refresh is denied; the dead identity token is kept so every later
 // refresh stays denied until a genuine re-login replaces it. This keys off the
 // user's own authentication, so it needs no directory access or admin privileges.
@@ -33,7 +33,6 @@ type Store interface {
 	DeleteIdentityToken(ctx context.Context, userEmail string) error
 	ListUserServices(ctx context.Context, userEmail string) ([]string, error)
 	DeleteUserToken(ctx context.Context, userEmail, service string) error
-	RevokeUserSessions(ctx context.Context, userEmail string) error
 }
 
 // IdentityRefresher replays a stored refresh token against the identity provider.
@@ -111,7 +110,7 @@ func (v *Verifier) IsUserRevoked(ctx context.Context, userEmail, providerType st
 	return false, nil
 }
 
-// purge removes a revoked user's stored upstream service tokens and sessions.
+// purge removes a revoked user's stored upstream service tokens.
 //
 // It deliberately leaves the identity token in place: that token is what failed
 // the probe, so keeping it makes the lockout durable — every subsequent refresh
@@ -135,12 +134,6 @@ func (v *Verifier) purge(ctx context.Context, userEmail string) {
 				"error":   err.Error(),
 			})
 		}
-	}
-	if err := v.store.RevokeUserSessions(ctx, userEmail); err != nil {
-		log.LogErrorWithFields("revocation", "Failed to revoke sessions", map[string]any{
-			"email": userEmail,
-			"error": err.Error(),
-		})
 	}
 }
 

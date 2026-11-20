@@ -1098,11 +1098,11 @@ func TestValidateFile_AggregateServer(t *testing.T) {
 				"mcpServers": {
 					"mcp": {
 						"type": "aggregate",
-						"transportType": "stdio"
+						"transportType": "sse"
 					}
 				}
 			}`,
-			wantErrors: []string{"only support 'sse' or 'streamable-http'"},
+			wantErrors: []string{"only support 'streamable-http'"},
 		},
 		{
 			name: "delimiter_valid_dot",

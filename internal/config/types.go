@@ -303,13 +303,6 @@ func (c *MCPClientConfig) NeedsUserEmail() bool {
 	return false
 }
 
-// SessionConfig represents session management configuration
-type SessionConfig struct {
-	Timeout         time.Duration
-	CleanupInterval time.Duration
-	MaxPerUser      int
-}
-
 // IDPConfig represents identity provider configuration.
 type IDPConfig struct {
 	// Provider type: "google", "azure", "github", or "oidc"
@@ -404,7 +397,6 @@ type ProxyConfig struct {
 	Addr     string           `json:"addr"`
 	Name     string           `json:"name"`
 	Auth     *OAuthAuthConfig `json:"auth,omitempty"` // Only OAuth is supported
-	Sessions *SessionConfig   `json:"sessions,omitempty"`
 }
 
 // Config represents the config structure with resolved values

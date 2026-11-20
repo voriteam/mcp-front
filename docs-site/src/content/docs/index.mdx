@@ -40,7 +40,7 @@ Organization-wide access control with per-user isolation. No modifications to yo
 
 ## How it works
 
-1. User adds `https://your-domain.com/<service>/sse` to Claude
+1. User adds `https://your-domain.com/<service>` to Claude
 2. Claude redirects to the identity provider for login (first time only)
 3. mcp-front validates the user belongs to your organization
 4. If the service needs a user API key (Notion, Linear), user connects it through a web page
@@ -61,7 +61,11 @@ Save this as `config.json`:
     "filesystem": {
       "transportType": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "gateway": {
+      "type": "aggregate",
+      "servers": ["filesystem"],
       "serviceAuths": [
         {
           "type": "bearer",

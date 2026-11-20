@@ -35,22 +35,6 @@ func TestMemoryStorageIdentityToken(t *testing.T) {
 	assert.ErrorIs(t, err, ErrIdentityTokenNotFound)
 }
 
-func TestMemoryStorageRevokeUserSessions(t *testing.T) {
-	ctx := context.Background()
-	s := NewMemoryStorage()
-
-	assert.NoError(t, s.TrackSession(ctx, ActiveSession{SessionID: "s1", UserEmail: "a@x.com"}))
-	assert.NoError(t, s.TrackSession(ctx, ActiveSession{SessionID: "s2", UserEmail: "a@x.com"}))
-	assert.NoError(t, s.TrackSession(ctx, ActiveSession{SessionID: "s3", UserEmail: "b@x.com"}))
-
-	assert.NoError(t, s.RevokeUserSessions(ctx, "a@x.com"))
-
-	_, aStillThere := s.sessions["s1"]
-	assert.False(t, aStillThere)
-	_, bStillThere := s.sessions["s3"]
-	assert.True(t, bStillThere)
-}
-
 func TestMemoryStorageConnectionDirectory(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStorage()

@@ -11,7 +11,7 @@ Some services need users to authenticate with their own accounts — Notion API 
 
 When a user first accesses a service with `requiresUserToken: true`, they go through a one-time setup flow:
 
-1. The user connects to an MCP server endpoint (e.g., `/notion/sse`) through Claude.
+1. The user connects to an MCP server endpoint (e.g., `/notion`) through Claude.
 2. MCP Front redirects them to the identity provider for organization login.
 3. After login, if any OAuth-type services have `requiresUserToken: true` and the user hasn't connected them yet, MCP Front shows an interstitial page listing those services.
 4. The user clicks "Connect" and gets redirected to the service's authorization page (e.g., Stainless OAuth). After approving, they return to MCP Front automatically.

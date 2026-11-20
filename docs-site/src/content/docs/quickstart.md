@@ -20,7 +20,11 @@ Create `config.json`:
     "filesystem": {
       "transportType": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "gateway": {
+      "type": "aggregate",
+      "servers": ["filesystem"],
       "serviceAuths": [
         {
           "type": "bearer",
@@ -33,7 +37,7 @@ Create `config.json`:
 }
 ```
 
-The server name `filesystem` determines the URL path: `/filesystem/sse`.
+Stdio servers are reachable through an aggregate. The aggregate name `gateway` determines the URL path: `/gateway`.
 
 ## 2. Run MCP Front
 
@@ -63,7 +67,7 @@ go build -o mcp-front ./cmd/mcp-front
 
 ## 3. Connect from Claude
 
-In Claude.ai, go to Settings and add a new MCP server. Set the URL to `http://localhost:8080/filesystem/sse`, auth type to Bearer Token, and token to `dev-token-123`.
+In Claude.ai, go to Settings and add a new MCP server. Set the URL to `http://localhost:8080/gateway`, auth type to Bearer Token, and token to `dev-token-123`.
 
 ## 4. Test it
 

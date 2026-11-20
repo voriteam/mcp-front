@@ -17,7 +17,10 @@ func TestSecurityScenarios(t *testing.T) {
 	// Start mcp-front
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-test",
 		nil,
-		map[string]any{"postgres": testPostgresServer(withBearerTokens("test-token", "alt-test-token"), withLogEnabled())},
+		map[string]any{
+			"pg":       testPostgresServer(withLogEnabled()),
+			"postgres": testAggregate([]string{"pg"}, withBearerTokens("test-token", "alt-test-token")),
+		},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg))
 
@@ -27,7 +30,7 @@ func TestSecurityScenarios(t *testing.T) {
 	t.Run("NoAuthToken", func(t *testing.T) {
 		// Test:
 
-		resp, err := http.Get("http://localhost:8080/postgres/sse")
+		resp, err := http.Get("http://localhost:8080/postgres")
 		require.NoError(t, err, "Request failed")
 		resp.Body.Close()
 
@@ -38,7 +41,7 @@ func TestSecurityScenarios(t *testing.T) {
 		// Test:
 
 		client := &http.Client{}
-		req, _ := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+		req, _ := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 		req.Header.Set("Authorization", "Bearer invalid-token-12345")
 		req.Header.Set("Accept", "text/event-stream")
 
@@ -65,7 +68,7 @@ func TestSecurityScenarios(t *testing.T) {
 			// Testing malformed header
 
 			client := &http.Client{}
-			req, _ := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+			req, _ := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 			req.Header.Set("Authorization", authHeader)
 			req.Header.Set("Accept", "text/event-stream")
 
@@ -84,7 +87,7 @@ func TestSecurityScenarios(t *testing.T) {
 	t.Run("SQLInjectionAttempts", func(t *testing.T) {
 		t.Skip("Skipping SQL injection tests, it's not a responsibility of mcp-front to guard toolbox")
 
-		client := NewMCPSSEClient("http://localhost:8080")
+		client := NewMCPClient("http://localhost:8080")
 		_ = client.Authenticate()
 
 		// Validate backend connectivity first
@@ -105,7 +108,7 @@ func TestSecurityScenarios(t *testing.T) {
 
 			// Try to inject via the query parameter
 			_, err := client.SendMCPRequest("tools/call", map[string]any{
-				"name": "execute_sql",
+				"name": "pg.execute_sql",
 				"arguments": map[string]any{
 					"query": payload,
 				},
@@ -136,7 +139,7 @@ func TestSecurityScenarios(t *testing.T) {
 			// Testing header injection
 
 			client := &http.Client{}
-			req, _ := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+			req, _ := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 			req.Header.Set("Authorization", "Bearer "+maliciousAuth)
 			req.Header.Set("Accept", "text/event-stream")
 
@@ -195,10 +198,10 @@ func TestSecurityScenarios(t *testing.T) {
 		// Test:
 
 		// Test that the same token works consistently
-		client1 := NewMCPSSEClient("http://localhost:8080")
+		client1 := NewMCPClient("http://localhost:8080")
 		client1.token = "test-token"
 
-		client2 := NewMCPSSEClient("http://localhost:8080")
+		client2 := NewMCPClient("http://localhost:8080")
 		client2.token = "test-token"
 
 		// Both should work with same token
@@ -215,7 +218,7 @@ func TestSecurityScenarios(t *testing.T) {
 		// Test case: token without Bearer prefix should be rejected
 		t.Run("RejectsTokenWithoutBearer", func(t *testing.T) {
 			client := &http.Client{}
-			req, _ := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+			req, _ := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 			req.Header.Set("Authorization", "test-token") // Missing "Bearer " prefix
 			req.Header.Set("Accept", "text/event-stream")
 
@@ -251,7 +254,7 @@ func TestSecurityScenarios(t *testing.T) {
 		for _, tc := range malformedCases {
 			t.Run(tc.name, func(t *testing.T) {
 				client := &http.Client{}
-				req, _ := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+				req, _ := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 				req.Header.Set("Authorization", tc.authHeader)
 				req.Header.Set("Accept", "text/event-stream")
 
@@ -273,7 +276,7 @@ func TestSecurityScenarios(t *testing.T) {
 	t.Run("RateLimitingCheck", func(t *testing.T) {
 		// Test:
 
-		client := NewMCPSSEClient("http://localhost:8080")
+		client := NewMCPClient("http://localhost:8080")
 		_ = client.Authenticate()
 
 		successCount := 0
@@ -303,7 +306,10 @@ func TestFailureScenarios(t *testing.T) {
 
 		cfg := buildTestConfig("http://localhost:8080", "mcp-front-test",
 			nil,
-			map[string]any{"postgres": testPostgresServer(withBearerTokens("test-token", "alt-test-token"), withLogEnabled())},
+			map[string]any{
+				"pg":       testPostgresServer(withLogEnabled()),
+				"postgres": testAggregate([]string{"pg"}, withBearerTokens("test-token", "alt-test-token")),
+			},
 		)
 		startMCPFront(t, writeTestConfig(t, cfg))
 
@@ -327,7 +333,7 @@ func TestFailureScenarios(t *testing.T) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				client := &http.Client{}
-				req, _ := http.NewRequest("GET", "http://localhost:8080/postgres/sse", nil)
+				req, _ := http.NewRequest("GET", "http://localhost:8080/postgres", nil)
 
 				if tc.token != "" {
 					req.Header.Set("Authorization", "Bearer "+tc.token)

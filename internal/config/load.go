@@ -163,9 +163,13 @@ func ValidateConfig(config *Config) error {
 	hasOAuth := config.Proxy.Auth != nil
 
 	aggregateNames := make(map[string]bool)
+	aggregateMembers := make(map[string]bool)
 	for name, server := range config.MCPServers {
 		if server.IsAggregate() {
 			aggregateNames[name] = true
+			for _, ref := range server.Servers {
+				aggregateMembers[ref] = true
+			}
 		}
 	}
 
@@ -176,6 +180,16 @@ func ValidateConfig(config *Config) error {
 
 		if err := validateMCPServer(name, server); err != nil {
 			return err
+		}
+
+		if !server.IsAggregate() && !aggregateMembers[name] {
+			switch server.TransportType {
+			case MCPClientTypeStdio, MCPClientTypeSSE, MCPClientTypeBuiltin:
+				log.LogWarnWithFields("config", "Server is served only through an aggregate and no aggregate references it, so it has no route", map[string]any{
+					"server":         name,
+					"transport_type": server.TransportType,
+				})
+			}
 		}
 
 		if server.IsAggregate() {
@@ -242,25 +256,6 @@ func ValidateConfig(config *Config) error {
 
 		if server.RequiresUserToken && !hasOAuth {
 			return fmt.Errorf("server %s requires user tokens but OAuth is not configured - user tokens require OAuth authentication", name)
-		}
-	}
-
-	// Validate proxy session configuration
-	if config.Proxy.Sessions != nil {
-		if config.Proxy.Sessions.Timeout < 0 {
-			return fmt.Errorf("proxy.sessions.timeout cannot be negative")
-		}
-		if config.Proxy.Sessions.CleanupInterval < 0 {
-			return fmt.Errorf("proxy.sessions.cleanupInterval cannot be negative")
-		}
-		if config.Proxy.Sessions.Timeout > 0 && config.Proxy.Sessions.CleanupInterval > config.Proxy.Sessions.Timeout {
-			log.LogWarn("Session cleanup interval is greater than session timeout")
-		}
-		if config.Proxy.Sessions.MaxPerUser < 0 {
-			return fmt.Errorf("proxy.sessions.maxPerUser cannot be negative")
-		}
-		if config.Proxy.Sessions.MaxPerUser == 0 {
-			log.LogWarn("Session maxPerUser is 0 (unlimited) - this may allow resource exhaustion")
 		}
 	}
 
@@ -397,8 +392,8 @@ func validateGCPServiceAccounts(accounts GCPServiceAccountsConfig) error {
 
 func validateMCPServer(name string, server *MCPClientConfig) error {
 	if server.IsAggregate() {
-		if server.TransportType != MCPClientTypeSSE && server.TransportType != MCPClientTypeStreamable {
-			return fmt.Errorf("aggregate server %s must use 'sse' or 'streamable-http' transport, got '%s'", name, server.TransportType)
+		if server.TransportType != MCPClientTypeStreamable {
+			return fmt.Errorf("aggregate server %s must use 'streamable-http' transport, got '%s'", name, server.TransportType)
 		}
 		if server.Discovery == nil {
 			return fmt.Errorf("aggregate server %s is missing discovery configuration", name)

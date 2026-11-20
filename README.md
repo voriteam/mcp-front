@@ -41,7 +41,7 @@ Organization-wide access control with per-user isolation. No modifications to yo
 
 ## How it works
 
-1. User adds `https://your-domain.com/<service>/sse` to Claude
+1. User adds `https://your-domain.com/<service>` to Claude
 2. Claude redirects to the identity provider for login (first time only)
 3. mcp-front validates the user belongs to your organization
 4. If the service needs a user API key (Notion, Linear), user connects it through a web page
@@ -62,7 +62,11 @@ Save this as `config.json`:
     "filesystem": {
       "transportType": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "gateway": {
+      "type": "aggregate",
+      "servers": ["filesystem"],
       "serviceAuths": [
         {
           "type": "bearer",
@@ -83,7 +87,7 @@ mcp-front -config config.json
 docker run -p 8080:8080 -v $(pwd)/config.json:/app/config.json dgellow/mcp-front:latest
 ```
 
-In Claude.ai, add an MCP server with URL `http://localhost:8080/filesystem/sse`, auth type Bearer Token, token `dev-token-123`.
+In Claude.ai, add an MCP server with URL `http://localhost:8080/gateway`, auth type Bearer Token, token `dev-token-123`.
 
 See the **[Quickstart](https://stainless-api.github.io/mcp-front/quickstart/)** for a full walkthrough.
 
@@ -93,7 +97,7 @@ See the **[Quickstart](https://stainless-api.github.io/mcp-front/quickstart/)** 
 
 **[Configuration](https://stainless-api.github.io/mcp-front/configuration/)** — All config options including Firestore persistence, HTTPS, and per-user service authentication.
 
-**[Server Types](https://stainless-api.github.io/mcp-front/server-types/)** — Stdio, SSE, streamable HTTP, inline tools, and aggregate endpoints.
+**[Server Types](https://stainless-api.github.io/mcp-front/server-types/)** — Streamable HTTP, inline tools, aggregate endpoints, and stdio or SSE backends behind an aggregate.
 
 **[Service Authentication](https://stainless-api.github.io/mcp-front/service-authentication/)** — Per-user tokens for services like Notion, Linear, and other OAuth or API key services. An OAuth-protected remote server needs only its URL: mcp-front reads the authorization and token endpoints, the client registration and the scopes off what the backend advertises, and you supply them in config only when a provider cannot be discovered or you want different values.
 

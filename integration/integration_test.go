@@ -17,7 +17,10 @@ func TestIntegration(t *testing.T) {
 	trace(t, "Starting mcp-front")
 	cfg := buildTestConfig("http://localhost:8080", "mcp-front-test",
 		nil,
-		map[string]any{"postgres": testPostgresServer(withBearerTokens("test-token", "alt-test-token"), withLogEnabled())},
+		map[string]any{
+			"pg":       testPostgresServer(withLogEnabled()),
+			"postgres": testAggregate([]string{"pg"}, withBearerTokens("test-token", "alt-test-token")),
+		},
 	)
 	startMCPFront(t, writeTestConfig(t, cfg))
 
@@ -27,9 +30,9 @@ func TestIntegration(t *testing.T) {
 	// Get initial container count for cleanup
 	initialContainers := getMCPContainers()
 
-	client := NewMCPSSEClient("http://localhost:8080")
+	client := NewMCPClient("http://localhost:8080")
 	require.NotNil(t, client, "Failed to create MCP client")
-	defer client.Close() // Ensure SSE connection is closed
+	defer client.Close()
 
 	// Cleanup any containers created during this test
 	t.Cleanup(func() {
@@ -39,17 +42,15 @@ func TestIntegration(t *testing.T) {
 	err := client.Authenticate()
 	require.NoError(t, err, "Authentication failed")
 
-	// For stdio transports, we need to use the proper session-based approach
-	t.Log("Testing stdio MCP server...")
+	t.Log("Testing stdio MCP server through an aggregate...")
 
-	// Connect to the SSE endpoint - this will establish a session
 	err = client.Connect()
 	require.NoError(t, err, "Failed to connect to MCP server")
 
 	t.Log("Connected to MCP server with session")
 
 	queryParams := map[string]any{
-		"name": "execute_sql",
+		"name": "pg.execute_sql",
 		"arguments": map[string]any{
 			"sql": "SELECT COUNT(*) as user_count FROM users",
 		},
@@ -101,5 +102,5 @@ func TestIntegration(t *testing.T) {
 			}
 		}
 	}
-	assert.Contains(t, toolNames, "execute_sql", "Should have execute_sql tool")
+	assert.Contains(t, toolNames, "pg.execute_sql", "Should have execute_sql tool")
 }

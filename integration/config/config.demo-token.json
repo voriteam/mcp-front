@@ -6,7 +6,7 @@
     "name": "mcp-front-demo"
   },
   "mcpServers": {
-    "postgres": {
+    "pg": {
       "transportType": "stdio",
       "command": "docker",
       "args": [
@@ -21,7 +21,11 @@
       ],
       "options": {
         "logEnabled": true
-      },
+      }
+    },
+    "postgres": {
+      "type": "aggregate",
+      "servers": ["pg"],
       "serviceAuths": [
         {
           "type": "bearer",

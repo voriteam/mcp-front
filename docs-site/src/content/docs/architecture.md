@@ -16,7 +16,7 @@ When a client connects to a specific service, it requests a token scoped to that
 ```
 Claude → GET /authorize?resource=https://mcp.company.com/postgres
 MCP Front → Issues token with aud=["https://mcp.company.com/postgres"]
-Claude → GET /postgres/sse with Authorization: Bearer <token>
+Claude → POST /postgres with Authorization: Bearer <token>
 MCP Front → Validates aud contains "https://mcp.company.com/postgres"
 MCP Front → Proxies to postgres backend
 ```

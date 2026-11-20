@@ -214,12 +214,10 @@ func newTestServerWith(t *testing.T, backends map[string]*mockTransport, configu
 
 	cfg := ServerConfig{
 		Name:            "test-aggregate",
-		TransportType:   config.MCPClientTypeSSE,
 		Backends:        backendConfigs,
 		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken:    getUserToken,
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	}
 	configure(&cfg)
 	srv := NewServer(cfg)
@@ -274,15 +272,13 @@ func TestDiscoverToolsCaching(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -308,8 +304,7 @@ func TestToolHandlerRejectsToolsOutsideTheCallersView(t *testing.T) {
 		return mcp.NewToolResultText("catalog"), nil
 	}
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeStreamable,
+		Name: "test-aggregate",
 		Backends: map[string]*config.MCPClientConfig{"materialize": {
 			TransportType:     config.MCPClientTypeSSE,
 			URL:               "http://localhost/materialize",
@@ -379,12 +374,10 @@ func TestPerUserTokenBackendIsolation(t *testing.T) {
 
 	srv := NewServer(ServerConfig{
 		Name:            "test-aggregate",
-		TransportType:   config.MCPClientTypeSSE,
 		Backends:        backendConfigs,
 		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken:    getUserToken,
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -430,15 +423,13 @@ func TestDiscoverToolsTimeout(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 100 * time.Millisecond, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 100 * time.Millisecond, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -504,7 +495,7 @@ type testGateway struct {
 
 // startGateway serves a gateway over a shared docs backend and two token-gated
 // backends, linear and hubspot, each answering whoami with the caller's email.
-func startGateway(t *testing.T, transportType config.MCPClientType, cacheTTL time.Duration, connected func(userEmail, backendName string) bool) testGateway {
+func startGateway(t *testing.T, cacheTTL time.Duration, connected func(userEmail, backendName string) bool) testGateway {
 	t.Helper()
 	backend := func(requiresUserToken bool) *config.MCPClientConfig {
 		return &config.MCPClientConfig{
@@ -516,8 +507,7 @@ func startGateway(t *testing.T, transportType config.MCPClientType, cacheTTL tim
 		}
 	}
 	srv := NewServer(ServerConfig{
-		Name:          "gw",
-		TransportType: transportType,
+		Name: "gw",
 		Backends: map[string]*config.MCPClientConfig{
 			"docs":    backend(false),
 			"linear":  backend(true),
@@ -566,33 +556,25 @@ func startGateway(t *testing.T, transportType config.MCPClientType, cacheTTL tim
 }
 
 type gatewayClient struct {
-	name      string
-	transport config.MCPClientType
-	modern    bool
+	name   string
+	modern bool
 }
 
 var gatewayClients = []gatewayClient{
-	{name: "sessionless", transport: config.MCPClientTypeStreamable, modern: true},
-	{name: "session", transport: config.MCPClientTypeStreamable},
-	{name: "sse", transport: config.MCPClientTypeSSE},
+	{name: "sessionless", modern: true},
+	{name: "session"},
 }
 
 func (gc gatewayClient) connect(t *testing.T, gw testGateway, userEmail string) *mcpclient.Client {
 	t.Helper()
 	ctx := context.Background()
 	headers := map[string]string{"X-Test-User": userEmail}
-	var tr transport.Interface
-	var err error
-	if gc.transport == config.MCPClientTypeSSE {
-		tr, err = transport.NewSSE(gw.url+"/gw/sse", transport.WithHeaders(headers))
-	} else {
-		trOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
-		if !gc.modern {
-			//lint:ignore SA1019 session-based clients still receive notifications on the GET stream
-			trOpts = append(trOpts, transport.WithContinuousListening()) //nolint:staticcheck
-		}
-		tr, err = transport.NewStreamableHTTP(gw.url+"/gw/", trOpts...)
+	trOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
+	if !gc.modern {
+		//lint:ignore SA1019 session-based clients still receive notifications on the GET stream
+		trOpts = append(trOpts, transport.WithContinuousListening()) //nolint:staticcheck
 	}
+	tr, err := transport.NewStreamableHTTP(gw.url+"/gw/", trOpts...)
 	require.NoError(t, err)
 
 	var opts []mcpclient.ClientOption
@@ -636,7 +618,7 @@ func TestGatewayIsolatesUsers(t *testing.T) {
 	connected := map[string]string{"alice@vori.com": "linear", "bob@vori.com": "hubspot"}
 	for _, gc := range gatewayClients {
 		t.Run(gc.name, func(t *testing.T) {
-			gw := startGateway(t, gc.transport, time.Minute, func(userEmail, backendName string) bool {
+			gw := startGateway(t, time.Minute, func(userEmail, backendName string) bool {
 				return connected[userEmail] == backendName
 			})
 			alice, bob := gc.connect(t, gw, "alice@vori.com"), gc.connect(t, gw, "bob@vori.com")
@@ -667,7 +649,7 @@ func TestGatewayIsolatesUsers(t *testing.T) {
 }
 
 func TestSessionlessClientSkipsInitialize(t *testing.T) {
-	gw := startGateway(t, config.MCPClientTypeStreamable, time.Minute, func(string, string) bool { return false })
+	gw := startGateway(t, time.Minute, func(string, string) bool { return false })
 	c := gatewayClients[0].connect(t, gw, "alice@vori.com")
 
 	assert.Equal(t, []string{"docs.whoami"}, listToolNames(t, c))
@@ -679,7 +661,7 @@ func TestClientsRelistWhenTheirToolsChange(t *testing.T) {
 	for _, gc := range gatewayClients {
 		t.Run(gc.name, func(t *testing.T) {
 			var bobConnected atomic.Bool
-			gw := startGateway(t, gc.transport, 50*time.Millisecond, func(userEmail, backendName string) bool {
+			gw := startGateway(t, 50*time.Millisecond, func(userEmail, backendName string) bool {
 				return backendName == "linear" && (userEmail == "alice@vori.com" || bobConnected.Load())
 			})
 			alice, bob := gc.connect(t, gw, "alice@vori.com"), gc.connect(t, gw, "bob@vori.com")
@@ -763,7 +745,6 @@ func discoverFromBackend(t *testing.T, tools string) (discovered []mcp.Tool, bac
 
 	srv := NewServer(ServerConfig{
 		Name:            "gw",
-		TransportType:   config.MCPClientTypeStreamable,
 		Backends:        map[string]*config.MCPClientConfig{"backend": {TransportType: config.MCPClientTypeStreamable, URL: backend.URL}},
 		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		CreateTransport: client.DefaultTransportCreator,
@@ -818,15 +799,13 @@ func TestPerUserConnectionIsolation(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -856,15 +835,13 @@ func TestConnectionReuse(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -893,15 +870,13 @@ func TestShutdownClosesConnections(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 
@@ -941,15 +916,13 @@ func TestToolFilter(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -989,15 +962,13 @@ func TestDiscoverySurvivesCallerCancellation(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1055,15 +1026,13 @@ func TestConcurrentGetOrCreateConn(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1115,15 +1084,13 @@ func TestAllBackendsFail(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1154,15 +1121,13 @@ func TestEvictConnOnListToolsFailure(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1252,16 +1217,14 @@ func TestRetryOnAuthErrorRemintsToken(t *testing.T) {
 
 	tokens := &countingTokenSource{}
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
 		TokenSources:    map[string]oauth2.TokenSource{"help-docs": tokens},
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1294,16 +1257,14 @@ func TestRetryOnAuthErrorToolCall(t *testing.T) {
 
 	tokens := &countingTokenSource{}
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
 		TokenSources:    map[string]oauth2.TokenSource{"help-docs": tokens},
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1340,15 +1301,13 @@ func TestAuthErrorNotRetriedWithoutCredential(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1382,16 +1341,14 @@ func TestGetUserTokenFailureDegradation(t *testing.T) {
 
 	var tokenCallCount atomic.Int32
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			tokenCallCount.Add(1)
 			return "", fmt.Errorf("token store unavailable")
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1433,15 +1390,13 @@ func TestShutdownDuringActiveToolCall(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 
@@ -1490,15 +1445,13 @@ func TestCacheExpiryAndRediscovery(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 50 * time.Millisecond},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 50 * time.Millisecond},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1539,15 +1492,13 @@ func TestMaxConnsPerUser(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second, MaxConnsPerUser: 2},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second, MaxConnsPerUser: 2},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1579,15 +1530,13 @@ func TestMaxConnsPerUserZeroUnlimited(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second, MaxConnsPerUser: 0},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second, MaxConnsPerUser: 0},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1637,16 +1586,14 @@ func TestTokenSourceAppliedToBackendConfig(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeStreamable,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		TokenSources:    map[string]oauth2.TokenSource{"mintlify": staticTokenSource{"secret-access-token"}},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1698,15 +1645,13 @@ func TestRetryOnSessionInvalidation(t *testing.T) {
 			}
 
 			srv := NewServer(ServerConfig{
-				Name:          "test-aggregate",
-				TransportType: config.MCPClientTypeSSE,
-				Backends:      backendConfigs,
-				Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+				Name:      "test-aggregate",
+				Backends:  backendConfigs,
+				Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 				GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 					return "", nil
 				},
 				CreateTransport: factory,
-				BaseURL:         "http://localhost:8080",
 			})
 			srv.Start()
 			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1777,15 +1722,13 @@ func TestRetryOnSessionInvalidationDuringDiscovery(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -1822,15 +1765,13 @@ func newStaleToolsTestServer(t *testing.T, backends map[string]*mockTransport, d
 	}
 
 	srv := NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeSSE,
-		Backends:      backendConfigs,
-		Discovery:     disc,
+		Name:      "test-aggregate",
+		Backends:  backendConfigs,
+		Discovery: disc,
 		GetUserToken: func(ctx context.Context, userEmail, serviceName string, serviceConfig *config.MCPClientConfig) (string, error) {
 			return "", nil
 		},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -2015,11 +1956,9 @@ func TestBuiltinBackendCarriesUserEmail(t *testing.T) {
 
 	srv := NewServer(ServerConfig{
 		Name:            "test-aggregate",
-		TransportType:   config.MCPClientTypeSSE,
 		Backends:        backendConfigs,
 		Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 		CreateTransport: factory,
-		BaseURL:         "http://localhost:8080",
 	})
 	srv.Start()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -2083,11 +2022,9 @@ func TestUserEmailHeaderAppliedToBackendConfig(t *testing.T) {
 
 		srv := NewServer(ServerConfig{
 			Name:            "test-aggregate",
-			TransportType:   config.MCPClientTypeStreamable,
 			Backends:        backendConfigs,
 			Discovery:       &config.DiscoveryConfig{Timeout: 5 * time.Second, CacheTTL: 60 * time.Second},
 			CreateTransport: factory,
-			BaseURL:         "http://localhost:8080",
 		})
 		srv.Start()
 		t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -2401,8 +2338,7 @@ func newSupersedeFixture(t *testing.T) *supersedeFixture {
 		"http://localhost/linear":           newMockTransport([]mcp.Tool{{Name: "list_issues"}}),
 	}
 	f.srv = NewServer(ServerConfig{
-		Name:          "test-aggregate",
-		TransportType: config.MCPClientTypeStreamable,
+		Name: "test-aggregate",
 		Backends: map[string]*config.MCPClientConfig{
 			"notion":           {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/notion", RequiresUserToken: true},
 			"notion-read-only": {TransportType: config.MCPClientTypeSSE, URL: "http://localhost/notion-read-only"},
@@ -2423,7 +2359,6 @@ func newSupersedeFixture(t *testing.T) *supersedeFixture {
 			}
 			return nil, fmt.Errorf("unknown backend")
 		},
-		BaseURL: "http://localhost:8080",
 	})
 	f.srv.Start()
 	t.Cleanup(func() { _ = f.srv.Shutdown(context.Background()) })
